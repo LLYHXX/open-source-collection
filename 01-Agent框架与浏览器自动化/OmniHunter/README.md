@@ -36,78 +36,369 @@ flowchart LR
 
 - 后端：FastAPI + SQLAlchemy + SQLite + OpenAI 兼容 LLM + Playwright
 - 前端：Vue 3 + Element Plus + Vite + TypeScript + axios
-- 部署：Docker Compose
-- 工具链：nmap · nuclei · sqlmap · httpx（容器内置 nmap/sqlmap，其余按需装）
+- 部署：Docker Compose / 本地前后端分离
+- 工具链：nmap · nuclei · sqlmap · httpx · mitmproxy · bandit · dlint（容器内置 nmap/sqlmap，其余按需装）
 
-## 快速开始
+---
+
+## 部署指南
+
+### 方式一：Docker Compose 一键部署（推荐生产环境）
+
+#### 1. 前置要求
+
+- Docker 20.10+
+- Docker Compose v2+
+- 至少 2GB 可用内存（Playwright Chromium 较吃内存）
+
+#### 2. 克隆 + 配置
 
 ```bash
-# 1. 配置环境变量
+git clone https://github.com/LLYHXX/open-source-collection.git
+cd "open-source-collection/01-Agent框架与浏览器自动化/OmniHunter"
+
+# 复制环境变量模板
 cp backend/.env.example backend/.env
-# 至少填 LLM_API_KEY；推荐填 FOFA_KEY、AUTOHUNTER_API_TOKEN
+```
 
-# 2. 一键启动
+编辑 `backend/.env`，**至少填写以下必填项**：
+
+```ini
+# ===== LLM（必填）=====
+LLM_API_KEY=sk-your-deepseek-key       # 大模型 API Key
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-chat
+
+# ===== 平台 =====
+API_TOKEN=your-random-token-32chars    # 控制台全权令牌（公网必填）
+HOST_PORT=18800                        # 后端端口
+```
+
+推荐填写项：
+
+```ini
+# ===== 资产测绘（至少一个提升效率）=====
+FOFA_KEY=email:key                     # FOFA 资产搜集
+# QUAKE_KEY=
+# HUNTER_KEY=
+# SHODAN_KEY=
+
+# ===== Worker 调度 =====
+WORKER_CONCURRENCY=3                   # Worker 并发数
+WORKER_STEP_BUDGET=40                  # 单目标最大步数
+REVIEWER_STRICT=true                   # 严格初审模式
+
+# ===== 浏览器自动化 =====
+BROWSER_ENABLED=true                   # 开启浏览器 Agent
+BROWSER_HEADLESS=true                  # 无头模式
+
+# ===== 安全 =====
+WAF_ENABLED=true                       # WAF 检测
+CORS_ORIGINS=*                         # 跨域（生产建议限制域名）
+```
+
+#### 3. 构建启动
+
+```bash
 docker compose up -d --build
-
-# 3. 访问
-# 浏览器打开 http://localhost:18800/，用 API_TOKEN 登录
 ```
 
-本地开发（前后端分离）：
-```bash
-# 后端
-cd backend && pip install -r requirements.txt
-cp .env.example .env   # 填 LLM_API_KEY
-uvicorn app.main:app --reload --port 18800
+构建过程说明：
+- **第一阶段**（frontend）：Node 20 构建前端 → 产物到 `dist/`
+- **第二阶段**（backend）：Python 3.12 + apt 安装 nmap/sqlmap + pip 装依赖 + Playwright Chromium
+- 前端静态文件由后端 FastAPI 直接托管（`backend/frontend/dist`）
 
-# 前端
-cd frontend && npm install && npm run dev
-# 打开 http://localhost:5173（自动代理 /api 到 18800）
+#### 4. 验证
+
+```bash
+# 健康检查
+curl http://localhost:18800/api/health
+# 返回 {"status":"ok","version":"0.1.0"} 即正常
+
+# 查看日志
+docker compose logs -f omnihunter
+
+# 进入容器调试
+docker exec -it omnihunter bash
 ```
 
-安装额外挖洞工具（可选）：
+浏览器访问 `http://localhost:18800/`：
+- **本地 IP 访问**（127.0.0.1 / 192.168.x）：直接进入控制台
+- **首次访问**：如未设 `API_TOKEN`，需在「访问控制」页设置密码（bcrypt 哈希存储，6 位以上）
+- **公网访问**：需密码登录，会话有效期 7 天
+
+---
+
+### 方式二：本地开发（前后端分离）
+
+#### 后端
+
 ```bash
+cd backend
+
+# 方式 A：标准 pip 安装
+pip install -r requirements.txt
+
+# 方式 B：vendor 目录安装（不污染系统，沙箱友好）
+# sitecustomize.py 会在 Python 启动时自动把 vendor/ 加入 sys.path
+python -m pip install --target=vendor -r requirements.txt
+# 额外依赖（bandit/dlint 白盒审计 + mitmproxy 流量录制）
+python -m pip install --target=vendor bandit dlint mitmproxy bcrypt jinja2
+
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env，至少填 LLM_API_KEY
+
+# 初始化数据库（首次启动自动建表，无需手动）
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 18800
+```
+
+后端启动后：
+- API 文档：`http://localhost:18800/docs`
+- 健康检查：`http://localhost:18800/api/health`
+- SQLite 数据库：`backend/data/omnihunter.db`（首次启动自动创建）
+
+#### 前端
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+前端开发服务器：`http://localhost:5173`（Vite 自动代理 `/api` → `http://localhost:18800`）
+
+#### 构建前端产物（供后端托管）
+
+```bash
+cd frontend
+npm run build   # 产物到 frontend/dist/
+# 后端 main.py 检测到 dist/ 后自动托管静态文件
+```
+
+---
+
+### 安装额外挖洞工具（可选）
+
+Docker 镜像已内置 nmap 和 sqlmap。以下工具按需安装：
+
+```bash
+# httpx — Web 存活探测 + 指纹识别
 go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+
+# nuclei — 漏洞模板扫描
 go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-playwright install chromium   # 浏览器自动化
+
+# Playwright Chromium — 浏览器自动化（Docker 已装，本地需手动）
+playwright install chromium
+
+# mitmproxy — 流量录制（流量驱动漏洞挖掘必需）
+pip install mitmproxy
+# 或装到 vendor：
+# python -m pip install --target=vendor mitmproxy
+
+# bandit + dlint — 白盒代码审计
+pip install bandit dlint
+# 或：python -m pip install --target=vendor bandit dlint
 ```
 
-## 配置
+工具未安装时，对应功能返回友好提示而非崩溃（对齐 `httpx_tool.py` 风格）。
 
-| 变量 | 必填 | 说明 |
-|---|:---:|---|
-| `LLM_API_KEY` | ✅ | 大模型 Key（DeepSeek/OpenAI/Claude 等兼容） |
-| `LLM_BASE_URL` | | 默认 DeepSeek |
-| `LLM_MODEL` | | 默认 deepseek-chat |
-| `TOOL_COMPAT` | | auto(原生优先，失败切提示词) / prompt / native |
-| `FOFA_KEY` | ⭐ | 资产搜集（可填 `email:key`） |
-| `API_TOKEN` | ⭐ | 控制台令牌，不设则开放访问 |
-| `WORKER_CONCURRENCY` | | Worker 并发（MVP 串行，可扩展） |
-| `BROWSER_ENABLED` | | 浏览器自动化开关 |
+---
+
+### 公网访问部署
+
+OmniHunter 支持「本地免密 + 公网密码验证」的双模式访问控制。
+
+#### 1. 后端绑定 0.0.0.0
+
+```bash
+# 本地开发
+python -m uvicorn app.main:app --host 0.0.0.0 --port 18800
+
+# Docker（docker-compose.yml 已配置 ports: "18800:18800"）
+docker compose up -d
+```
+
+#### 2. 防火墙放行端口
+
+```bash
+# Linux (ufw)
+sudo ufw allow 18800/tcp
+
+# Windows (PowerShell 管理员)
+New-NetFirewallRule -DisplayName "OmniHunter" -Direction Inbound -Protocol TCP -LocalPort 18800 -Action Allow
+```
+
+#### 3. 路由器端口转发（如需外网访问）
+
+在路由器管理页面设置：
+- 内部 IP：你的电脑局域网 IP（如 192.168.1.100）
+- 内部端口：18800
+- 外部端口：18800（或自定义）
+- 协议：TCP
+
+#### 4. 访问控制机制
+
+| 访问来源 | 认证方式 |
+|----------|----------|
+| 本地 IP（127.0.0.1 / 192.168.x / 10.x / 172.16-31.x） | 免密直接进入 |
+| 公网 IP | 首次设密码 → 后续密码登录 → 7 天会话 |
+| API 调用 | `Authorization: Bearer <API_TOKEN>` 或 `X-Access-Session: <token>` |
+
+安全措施：
+- 密码 bcrypt 哈希存储（cost=12），不存明文
+- 登录限流 5 次/分钟（IP 级，空 deque 自动清理防内存泄漏）
+- 会话令牌 32 字节随机值
+- 直读 `Request.client.host`，不依赖 `X-Forwarded-For` 防伪造
+
+---
+
+### 一键更新
+
+OmniHunter 支持增量更新，无需重新下载整包：
+
+```bash
+# 在 Settings 页面点击「检查更新」按钮，或手动执行：
+cd "path/to/OmniHunter/backend"
+git pull origin master                              # 增量拉取代码
+python -m pip install --target=vendor -r requirements.txt  # 同步新依赖
+# uvicorn --reload 会自动热重载，无需重启服务
+```
+
+系统更新接口（`POST /api/system/update`）封装了上述流程，前端 Settings 页面有对应按钮。
+
+---
+
+### 定时任务部署
+
+OmniHunter 内置 APScheduler 定时任务调度：
+
+1. **控制台 → 定时任务 → 新建**：设置名称、cron 表达式/间隔分钟、任务模板
+2. **期限管理**：默认期限 1 个月，到期自动停用，可手动延长
+3. **自动执行**：每次触发按 task_template 生成新 Task 执行完整流水线
+
+定时任务存储在 `Schedule` 表，启动时自动载入未过期的任务。
+
+---
+
+### 漏洞报告模板
+
+内置 7 个 SRC 报告模板（补天/EDUSRC/漏洞盒子/CNVD/CNNVD/企业自检/通用），首次启动自动预置。
+
+- **渲染引擎**：Jinja2（优先），未安装时 `{{var}}` 简单替换兜底
+- **自定义模板**：控制台 → 报告 → 新建，支持 Jinja2 语法
+
+---
+
+## 配置项详解
+
+| 变量 | 必填 | 默认值 | 说明 |
+|---|:---:|---|---|
+| `LLM_API_KEY` | ✅ | — | 大模型 Key（DeepSeek/OpenAI/Claude 等兼容） |
+| `LLM_BASE_URL` | | `https://api.deepseek.com/v1` | LLM API 地址 |
+| `LLM_MODEL` | | `deepseek-chat` | 模型名 |
+| `LLM_PROTOCOL` | | `auto` | auto / openai_chat / anthropic_messages |
+| `TOOL_COMPAT` | | `auto` | auto(原生优先,失败切提示词) / prompt / native |
+| `FOFA_KEY` | ⭐ | — | FOFA 资产搜集（`email:key` 格式） |
+| `QUAKE_KEY` | | — | 360 Quake |
+| `HUNTER_KEY` | | — | 长鹰 Hunter |
+| `SHODAN_KEY` | | — | Shodan |
+| `ZOOMEYE_KEY` | | — | ZoomEye |
+| `CENSYS_KEY` | | — | Censys |
+| `API_TOKEN` | ⭐ | — | 控制台全权令牌，不设则公网需密码 |
+| `HOST_PORT` | | `18800` | 后端端口 |
+| `DATABASE_URL` | | `sqlite:///./data/omnihunter.db` | 数据库 |
+| `WORKER_CONCURRENCY` | | `3` | Worker 并发（MVP 串行，可扩展） |
+| `WORKER_STEP_BUDGET` | | `40` | 单目标最大步数 |
+| `WORKER_TIMEOUT` | | `1800` | 超时秒数 |
+| `REVIEWER_STRICT` | | `true` | 严格初审（verified=False 强制降级） |
+| `BROWSER_ENABLED` | | `true` | 浏览器自动化开关 |
+| `BROWSER_HEADLESS` | | `true` | 无头模式 |
+| `WAF_ENABLED` | | `true` | WAF 检测 |
+| `CORS_ORIGINS` | | `*` | 跨域（生产建议限制域名） |
 
 ## 使用流程
 
 1. **控制台 → 任务 → 新建**：填名称、来源（FOFA/手动/单站）、漏洞类型。
-2. **启动流水线**：Collector 搜集 → Recon 侦察 → Worker 自主挖洞 → Verifier 复现 → Reviewer 初审。
+2. **启动流水线**：
+   - **黑盒流量驱动**：Collector → Modeler → SiteProfiler → AttackTree → Attacker(多轮) → Verifier → Reviewer
+   - **浏览器单站协作**：BrowserAgent 登录后挖越权/逻辑漏洞
+   - **白盒代码审计**：Bandit + Dlint 静态扫源码 → Reviewer 校准入库
+   - **多 Agent 合作**：Master 调度 + 并行专精 + DAG 编排
 3. **任务详情**：实时看 Agent 事件流（think/tool/result）、漏洞结果。
 4. **漏洞复审**：AI 初审过的洞，几分钟内通过/打回/编辑/标记提交。
 5. **情报库**：沉淀的凭证/指纹自动被后续 Worker 复用。
+6. **定时任务**：设置周期触发，7×24 不停歇挖洞。
+7. **漏洞报告**：选模板一键生成 SRC 报告。
 
 ## 目录结构
 
 ```
 OmniHunter/
 ├── backend/
-│   └── app/
-│       ├── core/        # LLM / base_agent / orchestrator / state_machine / memory / planner / tool_registry
-│       ├── agents/      # collector / recon / worker / browser_agent / verifier / reviewer
-│       ├── tools/       # nmap / nuclei / sqlmap / httpx 适配
-│       ├── routers/     # tasks / agents / vulns / intel / settings
-│       ├── models.py / schemas.py / database.py / config.py / auth.py / main.py
+│   ├── app/
+│   │   ├── core/            # orchestrator / llm / llm_router / memory / scheduler / state_machine / tool_registry / workflow_dag / access_control
+│   │   ├── agents/          # collector / recon / worker / browser_agent / verifier / reviewer / modeler / attacker / site_profiler / attack_tree / code_auditor / master / specialists
+│   │   ├── tools/           # nmap / nuclei / sqlmap / httpx / mitmproxy(traffic) / bandit+dlint(code_audit) / bettercap / crypto / asset / payload / reverse / cutter / mitan / agentreach / anti_waf
+│   │   ├── routers/         # tasks / agents / vulns / intel / settings / schedules / reports / access / system
+│   │   ├── models.py / schemas.py / database.py / config.py / auth.py / main.py
+│   ├── data/                # SQLite 数据库（.gitignore 排除）
+│   ├── vendor/             # pip --target 安装的依赖（.gitignore 排除）
+│   ├── sitecustomize.py     # 自动把 vendor/ 加入 sys.path
+│   ├── .env.example         # 环境变量模板
+│   ├── requirements.txt
+│   └── get-pip.py
 ├── frontend/
-│   └── src/  views/ api/ router/ App.vue main.ts
-├── Dockerfile / docker-compose.yml
+│   ├── src/
+│   │   ├── views/           # Dashboard / Tasks / TaskDetail / Vulns / Intel / Reports / Schedules / Settings / Access
+│   │   ├── api/index.ts     # axios 封装
+│   │   ├── router/index.ts
+│   │   ├── App.vue / main.ts / styles.css
+│   ├── index.html / package.json / vite.config.ts / tsconfig.json
+├── Dockerfile               # 多阶段构建（frontend build → backend runtime）
+├── docker-compose.yml
+└── README.md
 ```
+
+## 常见问题
+
+### Q: 启动后编辑器/IDE 大量红点？
+
+vendor 目录未安装依赖。执行：
+```bash
+cd backend
+python -m pip install --target=vendor -r requirements.txt
+python -m pip install --target=vendor bandit dlint mitmproxy bcrypt jinja2
+```
+`sitecustomize.py` 会在 Python 启动时自动把 `vendor/` 加入 `sys.path`。
+
+### Q: Docker 构建失败？
+
+- 确保 Docker 有足够内存（建议 2GB+）
+- Playwright Chromium 下载慢：配置 Docker 代理或预下载
+- npm install 慢：配置 npm 镜像 `npm config set registry https://registry.npmmirror.com`
+
+### Q: 公网访问需要密码但本地不用？
+
+访问控制中间件 (`AccessControlMiddleware`) 判断逻辑：
+- `Request.client.host` 是本地/私网 IP → 免密
+- 公网 IP → 需 `X-Access-Session` 会话令牌或 `Authorization: Bearer <API_TOKEN>`
+- 首次公网访问：在 `/access` 页面设置密码
+
+### Q: 流量驱动挖掘不工作？
+
+需要安装 mitmproxy 并配置浏览器代理：
+```bash
+python -m pip install --target=vendor mitmproxy
+# 启动后按提示把浏览器代理指向 127.0.0.1:8082
+```
+
+### Q: 白盒审计扫描不到文件？
+
+- 确认路径存在且是目录或 `.py` 文件
+- 系统敏感目录（/etc, /proc, /sys, C:\Windows）被安全守卫阻断
+- bandit/dlint 未装时返回友好提示
 
 ## 免责声明
 
