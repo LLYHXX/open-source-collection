@@ -1,0 +1,14 @@
+services:
+  omnihunter:
+    build: .
+    container_name: omnihunter
+    ports:
+      - "18800:18800"
+    env_file:
+      - backend/.env
+    volumes:
+      - omnihunter_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  omnihunter_data:

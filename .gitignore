@@ -2,3 +2,19 @@
 _download_log.txt
 _retry_log.txt
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Dependencies (vendor = pip --target, node_modules = npm)
+**/vendor/
+**/node_modules/
+
+# Build output
+**/dist/
+
+# Data & env
+*.db
+**/.env
+
