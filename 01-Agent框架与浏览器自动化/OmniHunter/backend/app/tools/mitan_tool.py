@@ -15,7 +15,7 @@ def mitan_assets(query: str, limit: int = 50, timeout: int = 60) -> str:
     完整 MCP 接入流程（推荐）：
       1. 本地启动 mitan MCP 服务（见 03-渗透测试与逆向工程/安全测试工具/mitan）
       2. 在 Trae 设置 → MCP 添加 mitan server 配置
-      3. OmniHunter 通过 MCP 协议调用其 39 个工具
+      3. aififteen Hunter 通过 MCP 协议调用其 39 个工具
 
     本适配器为 MVP：检测环境变量 MITAN_MCP_READY 标志，
     未配置时返回配置指引，便于流程跑通。

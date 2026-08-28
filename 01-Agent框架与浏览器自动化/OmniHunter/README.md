@@ -1,4 +1,4 @@
-# OmniHunter · 多 Agent 协同漏洞挖掘平台
+# aififteen Hunter · 多 Agent 协同漏洞挖掘平台
 
 > 整合 [01-Agent框架与浏览器自动化](../) 下多个开源框架之长，取其精华去其糟粕，参考 [AutoHunter](https://github.com/StanleyNull/AutoHunter) 的流水线，构建的多 Agent 漏洞挖掘 Web 应用。
 >
@@ -6,7 +6,7 @@
 
 ## 这是什么
 
-OmniHunter 是一个多 Agent 协同的自动化漏洞挖掘系统。一台机器 = 7×24 不停歇的挖洞平台，你只做「人工复审员」。
+aififteen Hunter 是一个多 Agent 协同的自动化漏洞挖掘系统。一台机器 = 7×24 不停歇的挖洞平台，你只做「人工复审员」。
 
 ```mermaid
 flowchart LR
@@ -116,10 +116,10 @@ curl http://localhost:18800/api/health
 # 返回 {"status":"ok","version":"0.1.0"} 即正常
 
 # 查看日志
-docker compose logs -f omnihunter
+docker compose logs -f aififteen_hunter
 
 # 进入容器调试
-docker exec -it omnihunter bash
+docker exec -it aififteen_hunter bash
 ```
 
 浏览器访问 `http://localhost:18800/`：
@@ -156,7 +156,7 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 18800
 后端启动后：
 - API 文档：`http://localhost:18800/docs`
 - 健康检查：`http://localhost:18800/api/health`
-- SQLite 数据库：`backend/data/omnihunter.db`（首次启动自动创建）
+- SQLite 数据库：`backend/data/aififteen_hunter.db`（首次启动自动创建）
 
 #### 前端
 
@@ -208,7 +208,7 @@ pip install bandit dlint
 
 ### 公网访问部署
 
-OmniHunter 支持「本地免密 + 公网密码验证」的双模式访问控制。
+aififteen Hunter 支持「本地免密 + 公网密码验证」的双模式访问控制。
 
 #### 1. 后端绑定 0.0.0.0
 
@@ -227,7 +227,7 @@ docker compose up -d
 sudo ufw allow 18800/tcp
 
 # Windows (PowerShell 管理员)
-New-NetFirewallRule -DisplayName "OmniHunter" -Direction Inbound -Protocol TCP -LocalPort 18800 -Action Allow
+New-NetFirewallRule -DisplayName "aififteen Hunter" -Direction Inbound -Protocol TCP -LocalPort 18800 -Action Allow
 ```
 
 #### 3. 路由器端口转发（如需外网访问）
@@ -256,7 +256,7 @@ New-NetFirewallRule -DisplayName "OmniHunter" -Direction Inbound -Protocol TCP -
 
 ### 一键更新
 
-OmniHunter 支持增量更新，无需重新下载整包：
+aififteen Hunter 支持增量更新，无需重新下载整包：
 
 ```bash
 # 在 Settings 页面点击「检查更新」按钮，或手动执行：
@@ -272,7 +272,7 @@ python -m pip install --target=vendor -r requirements.txt  # 同步新依赖
 
 ### 定时任务部署
 
-OmniHunter 内置 APScheduler 定时任务调度：
+aififteen Hunter 内置 APScheduler 定时任务调度：
 
 1. **控制台 → 定时任务 → 新建**：设置名称、cron 表达式/间隔分钟、任务模板
 2. **期限管理**：默认期限 1 个月，到期自动停用，可手动延长
@@ -308,7 +308,7 @@ OmniHunter 内置 APScheduler 定时任务调度：
 | `CENSYS_KEY` | | — | Censys |
 | `API_TOKEN` | ⭐ | — | 控制台全权令牌，不设则公网需密码 |
 | `HOST_PORT` | | `18800` | 后端端口 |
-| `DATABASE_URL` | | `sqlite:///./data/omnihunter.db` | 数据库 |
+| `DATABASE_URL` | | `sqlite:///./data/aififteen_hunter.db` | 数据库 |
 | `WORKER_CONCURRENCY` | | `3` | Worker 并发（MVP 串行，可扩展） |
 | `WORKER_STEP_BUDGET` | | `40` | 单目标最大步数 |
 | `WORKER_TIMEOUT` | | `1800` | 超时秒数 |

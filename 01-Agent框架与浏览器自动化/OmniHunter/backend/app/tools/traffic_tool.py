@@ -82,7 +82,7 @@ def start_traffic_capture(proxy_port: int = 8082, duration: int = 60) -> str:
                     "并确认 backend/sitecustomize.py 已把 vendor 加入 sys.path。")
 
         flow_file = tempfile.NamedTemporaryFile(
-            suffix=".flow", delete=False, prefix="omnihunter_traffic_"
+            suffix=".flow", delete=False, prefix="aififteen_hunter_traffic_"
         ).name
 
         # console_script 调用约定：mitmdump() 内部用 argparse 解析 sys.argv[1:]，

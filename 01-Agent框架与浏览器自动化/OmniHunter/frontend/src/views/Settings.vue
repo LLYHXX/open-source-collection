@@ -6,7 +6,7 @@ import { api } from '@/api'
 const list = ref<any[]>([])
 const newKey = ref('')
 const newVal = ref('')
-const tokenInput = ref(localStorage.getItem('omnihunter_token') || '')
+const tokenInput = ref(localStorage.getItem('aififteen_hunter_token') || '')
 
 // 系统更新
 const version = ref<any>(null)
@@ -17,7 +17,7 @@ async function load() {
   list.value = await api.listSettings()
 }
 function setToken() {
-  localStorage.setItem('omnihunter_token', tokenInput.value)
+  localStorage.setItem('aififteen_hunter_token', tokenInput.value)
   ElMessage.success('访问令牌已保存到本地')
 }
 async function save() {

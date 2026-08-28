@@ -1,14 +1,14 @@
 services:
-  omnihunter:
+  aififteen_hunter:
     build: .
-    container_name: omnihunter
+    container_name: aififteen_hunter
     ports:
       - "18800:18800"
     env_file:
       - backend/.env
     volumes:
-      - omnihunter_data:/app/data
+      - aififteen_hunter_data:/app/data
     restart: unless-stopped
 
 volumes:
-  omnihunter_data:
+  aififteen_hunter_data:

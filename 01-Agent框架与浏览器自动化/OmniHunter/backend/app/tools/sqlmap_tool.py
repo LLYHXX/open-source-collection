@@ -11,7 +11,7 @@ def scan(url: str, data: str = "", cookie: str = "", timeout: int = 240) -> str:
     exe = which("sqlmap")
     if not exe:
         return "sqlmap 未安装。安装: pip install sqlmap"
-    cmd = [exe, "-u", url, "--batch", "--level=1", "--risk=1", "--output-dir=/tmp/omnihunter-sqlmap"]
+    cmd = [exe, "-u", url, "--batch", "--level=1", "--risk=1", "--output-dir=/tmp/aififteen_hunter-sqlmap"]
     if data:
         cmd += ["--data", data]
     if cookie:

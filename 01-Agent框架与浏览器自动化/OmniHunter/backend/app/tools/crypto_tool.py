@@ -113,7 +113,7 @@ def analyze_crypto_js(js_source: str) -> str:
 
 # ===== 方案 B：动态 JS Hook 脚本生成 =====
 
-_HOOK_TEMPLATE = """// OmniHunter 自动生成 - Hook 前端加密函数实现明文变异
+_HOOK_TEMPLATE = """// aififteen Hunter 自动生成 - Hook 前端加密函数实现明文变异
 // 注入方式：mitmproxy --inline-script this_file.py，或浏览器 DevTools 粘贴
 (function() {
     var TARGET_FN = "{func_name}";
@@ -153,7 +153,7 @@ _HOOK_TEMPLATE = """// OmniHunter 自动生成 - Hook 前端加密函数实现�
             if (HIT_COUNT < MAX_HITS) {{
                 var mutated = applyMutation(plaintext);
                 if (mutated !== plaintext) {{
-                    console.log('[OmniHunter Hook] ' + TARGET_FN +
+                    console.log('[aififteen Hunter Hook] ' + TARGET_FN +
                                 ' plaintext mutated: ' + plaintext +
                                 ' -> ' + mutated);
                     arguments[0] = mutated;
@@ -162,7 +162,7 @@ _HOOK_TEMPLATE = """// OmniHunter 自动生成 - Hook 前端加密函数实现�
             }}
             return original.apply(this, arguments);
         }};
-        console.log('[OmniHunter Hook] wrapped ' + TARGET_FN);
+        console.log('[aififteen Hunter Hook] wrapped ' + TARGET_FN);
         return true;
     }}
 

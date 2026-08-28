@@ -43,7 +43,7 @@ async function submit() {
       mode.value === 'setup'
         ? await api.accessSetup({ password: password.value })
         : await api.accessLogin({ password: password.value })
-    localStorage.setItem('omnihunter_session', res.session_token)
+    localStorage.setItem('aififteen_hunter_session', res.session_token)
     ElMessage.success(mode.value === 'setup' ? '密码设置成功' : '登录成功')
     router.push('/')
   } catch (e: any) {
@@ -57,7 +57,7 @@ async function submit() {
 <template>
   <div class="access-wrap">
     <el-card class="access-card" shadow="always">
-      <div class="logo">OmniHunter</div>
+      <div class="logo">aififteen Hunter</div>
       <h3 class="title">{{ mode === 'setup' ? '设置访问密码' : '登录' }}</h3>
       <el-form @submit.prevent="submit">
         <el-form-item>

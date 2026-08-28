@@ -40,7 +40,7 @@ router.beforeEach(async (to) => {
       return { path: '/access', query: { mode: 'setup' } }
     }
     // 已设密码但无会话 → 引导登录
-    if (!localStorage.getItem('omnihunter_session')) {
+    if (!localStorage.getItem('aififteen_hunter_session')) {
       return { path: '/access', query: { mode: 'login' } }
     }
     return true

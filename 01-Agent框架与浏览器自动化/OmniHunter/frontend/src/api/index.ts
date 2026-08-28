@@ -3,10 +3,10 @@ import axios from 'axios'
 const http = axios.create({ baseURL: '/api', timeout: 30000 })
 
 http.interceptors.request.use((config) => {
-  const token = localStorage.getItem('omnihunter_token')
+  const token = localStorage.getItem('aififteen_hunter_token')
   if (token) config.headers.Authorization = `Bearer ${token}`
   // 公网访问会话令牌（密码登录后签发），本地访问可无
-  const session = localStorage.getItem('omnihunter_session')
+  const session = localStorage.getItem('aififteen_hunter_session')
   if (session) config.headers['X-Access-Session'] = session
   return config
 })
@@ -16,7 +16,7 @@ http.interceptors.response.use(
   (r) => r,
   (err) => {
     if (err.response?.status === 401) {
-      localStorage.removeItem('omnihunter_session')
+      localStorage.removeItem('aififteen_hunter_session')
       const path = window.location.pathname
       if (path !== '/access') {
         // 动态导入避免与 router 循环依赖

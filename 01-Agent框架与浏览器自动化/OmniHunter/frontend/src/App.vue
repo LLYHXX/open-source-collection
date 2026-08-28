@@ -27,7 +27,7 @@ function go(index: string) {
   <router-view v-if="isAccessPage" />
   <el-container v-else style="height: 100vh">
     <el-aside width="210px" class="aside">
-      <div class="logo">OmniHunter</div>
+      <div class="logo">aififteen Hunter</div>
       <el-menu
         :default-active="route.path"
         background-color="#001529"

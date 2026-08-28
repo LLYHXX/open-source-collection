@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # 程序化访问令牌；不设则本地免密、公网须密码登录（不再"开放访问"）
     api_token: str = ""
     host_port: int = 18800
-    database_url: str = "sqlite:///./data/omnihunter.db"
+    database_url: str = "sqlite:///./data/aififteen_hunter.db"
     # 受信反向代理 IP（逗号分隔）；为空则不信任 X-Forwarded-For，
     # 直接用直连对端 IP 判定本地/公网。反向代理部署时需填代理 IP，
     # 否则所有公网请求会被判为本地从而绕过密码保护。

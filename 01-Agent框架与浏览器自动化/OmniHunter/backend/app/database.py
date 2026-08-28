@@ -14,7 +14,7 @@ def _ensure_sqlite_dir(url: str) -> None:
     """sqlite 相对路径数据库：确保 data 目录存在，否则启动报 unable to open。"""
     if not url.startswith("sqlite"):
         return
-    # 形如 sqlite:///./data/omnihunter.db -> 取 ./data/omnihunter.db
+    # 形如 sqlite:///./data/aififteen_hunter.db -> 取 ./data/aififteen_hunter.db
     path_part = url.replace("sqlite:///", "", 1)
     # 去掉查询参数
     path_part = path_part.split("?", 1)[0]

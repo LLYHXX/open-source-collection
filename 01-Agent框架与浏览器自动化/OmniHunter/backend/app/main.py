@@ -1,4 +1,4 @@
-"""OmniHunter 后端入口：FastAPI + CORS + 鉴权 + 路由 + 前端静态托管。"""
+"""aififteen Hunter 后端入口：FastAPI + CORS + 鉴权 + 路由 + 前端静态托管。"""
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -35,17 +35,17 @@ async def lifespan(app: FastAPI):
         try:
             n = seed_preset_templates(db)
             if n:
-                print(f"[OmniHunter] 已预置 {n} 个 SRC 报告模板")
+                print(f"[aififteen Hunter] 已预置 {n} 个 SRC 报告模板")
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001
-        print(f"[OmniHunter] 预置模板 seed 失败（不阻塞启动）: {e}")
+        print(f"[aififteen Hunter] 预置模板 seed 失败（不阻塞启动）: {e}")
     yield
     if scheduler.running:
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="OmniHunter", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="aififteen Hunter", version="0.1.0", lifespan=lifespan)
 
 # 访问控制：本地/私网 IP 免密，公网须会话(X-Access-Session)或 API Token
 # 注册在 CORS 之前（内层），保证 CORS 预检 OPTIONS 不受鉴权拦截

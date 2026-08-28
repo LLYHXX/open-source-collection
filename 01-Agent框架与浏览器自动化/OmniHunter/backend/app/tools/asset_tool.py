@@ -41,7 +41,7 @@ def subdomain_enum(domain: str, limit: int = 50) -> str:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0 OmniHunter"})
+            url, headers={"User-Agent": "Mozilla/5.0 aififteen Hunter"})
         # nosec B310 — 仅请求 crt.sh 固定 https URL 取证书透明度数据
         with urllib.request.urlopen(req, timeout=15, context=ctx) as r:  # nosec B310
             data = json.loads(r.read().decode("utf-8", errors="ignore"))
