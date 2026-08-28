@@ -152,9 +152,10 @@ def get_captured_traffic(filter: str = "", max_items: int = 50) -> str:
 
 
 def stop_traffic_capture() -> str:
-    """主动停止监听并清理临时 flow 文件。
+    """主动停止监听，flow 文件保留供 get_captured_traffic 读取。
 
-    停止后 flow 文件会被删除，请在停止前调用 get_captured_traffic 读取流量。
+    停止后可调用 get_captured_traffic 读取完整流量（进程终止后数据完整刷盘）。
+    下次 start_traffic_capture 时自动清理旧 flow 文件防磁盘泄漏。
     """
     with _lock:
         proc = _session.get("process")
@@ -167,15 +168,10 @@ def stop_traffic_capture() -> str:
                 proc.wait(timeout=10)
             except Exception:  # noqa: BLE001
                 proc.kill()
-        # 清理临时 flow 文件，防磁盘泄漏
-        if flow_file:
-            try:
-                os.unlink(flow_file)
-            except Exception:  # noqa: BLE001 文件可能已被删或被占用
-                pass
         _session["process"] = None
-        _session["flow_file"] = ""
-        return f"已停止监听，已清理 flow 文件: {flow_file}"
+        # flow_file 保留在 _session 中，供 get_captured_traffic 读取
+        # 下次 start_traffic_capture 时自动清理旧文件
+        return f"已停止监听，flow 文件: {flow_file}"
 
 
 def _summarize_flow(flow) -> str:
