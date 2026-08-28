@@ -1,0 +1,47 @@
+meta {
+  name: get traceid indexes
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{host}}/tracer/trace/get_trace_id_by_index/?project_version_id=12699fb2-ec79-46d6-9df1-4f786b0cb8e1
+  body: json
+  auth: bearer
+}
+
+params:query {
+  project_version_id: 12699fb2-ec79-46d6-9df1-4f786b0cb8e1
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    // "filters" : [
+    // {
+    // "column_id": "56",
+    // "filter_config":
+    // {
+    // "filter_type": "number",
+    // "filter_op": "equals",
+    // "filter_value": 100
+    // }
+    // },
+    // {
+    // "column_id": "node_type",
+    // "filter_config":
+    // {
+    // "filter_type": "text",
+    // "filter_op": "equals",
+    // "filter_value": "chain"
+    // }
+    // }
+    // ]
+
+    "trace_id": "22317997-4b5f-4f63-94c7-1a0c36b90dbb"
+
+  }
+}

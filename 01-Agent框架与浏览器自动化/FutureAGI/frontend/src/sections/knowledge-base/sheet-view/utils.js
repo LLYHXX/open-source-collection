@@ -1,0 +1,1 @@
+export const NUMBER_OF_ROWS_THAT_CAN_BE_SELECTED = 20;

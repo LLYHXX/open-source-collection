@@ -1,0 +1,21 @@
+meta {
+  name: Delete Project
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{host}}/tracer/project/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_ids" : ["e19b951b-10cc-434d-b9aa-076790fa7adb","3f5597bd-d2f1-49d1-86ae-7393741b34ae"]
+  }
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Create Project version
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/tracer/project-version/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "241358a5-7558-4987-bb57-e4d033db159c",
+    "name": "Version_3",
+    "start_time": "2024-10-01T14:30:00Z"
+  }
+}

@@ -1,0 +1,30 @@
+meta {
+  name: Create Insight
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/insight/create/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "modelId": "16c713c0-c2e1-4b85-93bf-b0bfa2b69784",
+      "name": "Fine Report",
+      "prompt": "Insight prompt is put here",
+      "metricType": 1,
+      "datasets": [
+          {
+              "environment": "Production",
+              "model_version": "v1"
+          }
+      ]
+  }
+}

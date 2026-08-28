@@ -1,0 +1,54 @@
+meta {
+  name: Create bulk Traces
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/tracer/trace/bulk_create
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "traces": [
+      {
+        "project": "b4a51794-d8ec-4a91-9e4e-a47823c14522",
+        "name": "trace_8",
+        "input":{
+          "test_metadata": "trace number 8"
+        },
+        "project_version": "27b80b8f-283f-4aed-bb00-b4717c17dfe5"
+      },
+          {
+        "project": "b4a51794-d8ec-4a91-9e4e-a47823c14522",
+        "name": "trace_9",
+        "input":{
+          "test_metadata": "trace number 9"
+        },
+        "project_version": "27b80b8f-283f-4aed-bb00-b4717c17dfe5"
+      },
+          {
+        "project": "b4a51794-d8ec-4a91-9e4e-a47823c14522",
+        "name": "trace_10",
+        "input":{
+          "test_metadata": "trace number 10"
+        },
+        "project_version": "27b80b8f-283f-4aed-bb00-b4717c17dfe5"
+      },
+          {
+        "project": "b4a51794-d8ec-4a91-9e4e-a47823c14522",
+        "name": "trace_11",
+        "input":{
+          "test_metadata": "trace number 11"
+        },
+        "project_version": "27b80b8f-283f-4aed-bb00-b4717c17dfe5"
+      }
+    ]
+  }
+}

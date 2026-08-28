@@ -1,0 +1,56 @@
+meta {
+  name: create feedback v2
+  type: http
+  seq: 26
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/feedback/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "source": "experiment",
+    "source_id": "<eval-column-uuid>",
+    "user_eval_metric": "<user-eval-metric-uuid>",
+    "value": "Failed",
+    "explanation": "The output contains hallucinations",
+    "row_id": "<row-uuid>"
+  }
+}
+
+vars:pre-request {
+  experimentId: <experiment-uuid>
+}
+
+docs {
+  ## Create Experiment Feedback V2
+
+  Creates a new feedback record scoped to an experiment.
+
+  ### Request Body
+  - `source` (required) - Must be "experiment"
+  - `source_id` (required) - Column UUID of the eval column in the snapshot dataset (from `columnConfig[].id` in rows API)
+  - `user_eval_metric` (required) - UserEvalMetric UUID (from `columnConfig[].group.id` in rows API)
+  - `value` (required) - The user's corrected score/label
+  - `explanation` (optional) - Explanation of why the eval was wrong
+  - `row_id` (optional) - Row UUID from the experiment rows API
+  - `feedback_improvement` (optional) - Additional improvement text
+  - `action_type` (optional) - Can be set later via submit-feedback
+
+  ### Response
+  ```json
+  {
+    "result": {
+      "id": "<feedback-uuid>"
+    },
+    "status": 200
+  }
+  ```
+}

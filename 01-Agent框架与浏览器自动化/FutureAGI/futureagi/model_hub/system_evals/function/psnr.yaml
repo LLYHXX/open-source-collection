@@ -1,0 +1,53 @@
+eval_id: 161
+name: psnr
+description: Computes Peak Signal-to-Noise Ratio (PSNR) between two images. Higher PSNR indicates more similar images. Returns
+  a normalized score (0-1) where PSNR is mapped from 0-50 dB range.
+criteria: Measures pixel-level image fidelity using mean squared error relative to peak signal.
+eval_tags:
+- Image
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    output: Output image (URL, file path, or base64 string)
+    expected: Reference image (URL, file path, or base64 string)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import os, io, base64, math
+        try:
+            from PIL import Image
+            import numpy as np
+        except ImportError:
+            return {"score": 0.0, "reason": "Requires PIL and numpy"}
+        def _load(img):
+            if isinstance(img, str) and os.path.isfile(img):
+                return Image.open(img).convert("RGB")
+            try:
+                return Image.open(io.BytesIO(base64.b64decode(str(img)))).convert("RGB")
+            except Exception:
+                return None
+        img1 = _load(kwargs.get("output", output))
+        img2 = _load(kwargs.get("expected", expected))
+        if img1 is None or img2 is None:
+            return {"score": 0.0, "reason": "Cannot load one or both images"}
+        if img1.size != img2.size:
+            img2 = img2.resize(img1.size)
+        a1 = np.array(img1, dtype=np.float64)
+        a2 = np.array(img2, dtype=np.float64)
+        mse = np.mean((a1-a2)**2)
+        if mse == 0:
+            return {"score": 1.0, "reason": "PSNR: inf (identical images)"}
+        psnr = 10 * math.log10(255.0**2 / mse)
+        score = max(0.0, min(1.0, psnr / 50.0))
+        return {"score": float(score), "reason": f"PSNR: {psnr:.2f} dB, normalized={score:.4f}"}

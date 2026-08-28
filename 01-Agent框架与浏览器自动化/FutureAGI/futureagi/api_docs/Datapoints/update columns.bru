@@ -1,0 +1,37 @@
+meta {
+  name: update columns
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/data-points/column-config/6ea5d672-7d86-404d-b730-0007251f7997/Training-v1/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "columns": [
+      {
+        "label": "Input",
+        "value": "input",
+        "enabled": true
+      },
+      {
+        "label": "Output",
+        "value": "output",
+        "enabled": true
+      },
+      {
+        "label": "Date Created",
+        "value": "dateCreated",
+        "enabled": true
+      }
+    ]
+  }
+}

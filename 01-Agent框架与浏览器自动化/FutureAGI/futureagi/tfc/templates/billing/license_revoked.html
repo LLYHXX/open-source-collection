@@ -1,0 +1,23 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}License Revoked — Future AGI{% endblock %}
+{% block preheader %}Your Enterprise Edition license has been revoked.{% endblock %}
+{% block txid %}◦ LICENSE / REVOKED{% endblock %}
+{% block content %}
+<h1 class="hx" style="font-family:'Inter',sans-serif; font-size:26px; line-height:1.2; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:0 0 14px 0;">Your EE license has been revoked</h1>
+<p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:0 0 16px 0;">
+  Your Future AGI Enterprise Edition license has been revoked by the license administrator. EE features will be disabled after the grace period.
+</p>
+
+<div class="log" style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:10px; padding:20px 22px; margin:22px 0; font-family:'Inter',sans-serif; color:#c7c7cc;">
+  <p class="log-hdr" style="margin:0 0 12px 0; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+    <span style="display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:10px; vertical-align:middle; background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,0.55);"></span>Support<span style="color:#71717a; font-weight:500; margin-left:6px;">· If this is unexpected</span>
+  </p>
+  <p style="margin:0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.6; color:#c7c7cc;">
+    If you believe this is an error, contact your account manager or Future AGI support.
+  </p>
+</div>
+
+<div style="margin: 8px 0 0 0;">
+  {% include "billing/_button.html" with url="mailto:support@futureagi.com" text="Contact support" variant="primary" %}
+</div>
+{% endblock %}

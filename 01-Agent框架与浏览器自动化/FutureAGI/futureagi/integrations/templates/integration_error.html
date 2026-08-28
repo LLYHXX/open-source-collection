@@ -1,0 +1,34 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}{{ platform }} integration error — {{ connection_name }}{% endblock %}
+{% block preheader %}Your {{ platform }} connection "{{ connection_name }}" has been failing for over an hour.{% endblock %}
+{% block txid %}◦ INTEGRATION / ERROR{% endblock %}
+{% block content %}
+  <span class="eyebrow" style="display:inline-block; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#fca5a5; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); padding:5px 10px; border-radius:999px; margin-bottom:20px;">
+    <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:#ef4444; margin-right:8px; vertical-align:middle; box-shadow:0 0 8px rgba(239,68,68,0.7);"></span>Integration Down
+  </span>
+
+  <h1 class="hx" style="font-family:'Inter',sans-serif; font-size:26px; line-height:1.22; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:16px 0 14px 0;">
+    {{ platform }} integration error
+  </h1>
+
+  <p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#d4d4d8; margin:0 0 16px 0;">
+    Your <strong style="color:#fafafa;">{{ platform }}</strong> connection <span class="mono" style="font-family:'JetBrains Mono',monospace; color:#fafafa;">{{ connection_name }}</span> has been in an error state for over an hour. Events may be dropping or arriving late.
+  </p>
+
+  <div class="log" style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:10px; padding:20px 22px; margin:22px 0; font-family:'Inter',sans-serif; color:#c7c7cc;">
+    <p class="log-hdr" style="margin:0 0 12px 0; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+      <span style="display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:10px; vertical-align:middle; background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,0.55);"></span>Error<span style="color:#71717a; font-weight:500; margin-left:6px;">· {{ platform }}</span>
+    </p>
+    <p style="margin:0; font-family:'JetBrains Mono',monospace; font-size:13px; line-height:1.6; color:#fafafa; word-break:break-word;">
+      {{ error_message }}
+    </p>
+  </div>
+
+  <p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:20px 0 20px 0;">
+    Check the connection settings, re-authenticate if the credentials expired, and re-run a test event.
+  </p>
+
+  <div style="margin: 8px 0 0 0;">
+    {% include "billing/_button.html" with url="https://app.futureagi.com/dashboard/settings/integrations" text="Fix connection" variant="danger" %}
+  </div>
+{% endblock %}

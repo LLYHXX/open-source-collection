@@ -1,0 +1,29 @@
+meta {
+  name: user list
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{host}}/accounts/user/list/?page=1&limit=10
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page: 1
+  limit: 10
+  ~search: ""
+  ~sort: ["-created_at"]
+  ~filterStatus: ["Active"]
+  ~filterRole: ["MEMBER", "ADMIN"]
+}
+
+headers {
+  X-Workspace-ID: 201f171b-8dbd-4c86-a792-b76127546c13
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}

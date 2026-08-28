@@ -1,0 +1,235 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "src/utils/test-utils";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+const mockGet = vi.fn();
+const mockPost = vi.fn();
+const mockPut = vi.fn();
+const mockDelete = vi.fn();
+
+vi.mock("src/utils/axios", () => ({
+  default: {
+    get: (...args) => mockGet(...args),
+    post: (...args) => mockPost(...args),
+    put: (...args) => mockPut(...args),
+    delete: (...args) => mockDelete(...args),
+  },
+  endpoints: {
+    settings: {
+      v2: {
+        billingOverview: "/usage/v2/billing-overview/",
+        invoices: "/usage/v2/invoices/",
+        invoiceDetail: (id) => `/usage/v2/invoices/${id}/`,
+        notifications: "/usage/v2/notifications/",
+        budgets: "/usage/v2/budgets/",
+        budgetDetail: (id) => `/usage/v2/budgets/${id}/`,
+        paymentMethods: "/usage/v2/payment-methods/",
+        paymentMethodSetupIntent: "/usage/v2/payment-methods/setup-intent/",
+        paymentMethodDefault: (id) =>
+          `/usage/v2/payment-methods/${id}/default/`,
+        paymentMethodDelete: (id) => `/usage/v2/payment-methods/${id}/`,
+      },
+    },
+  },
+}));
+
+vi.mock("src/utils/format-number", () => ({
+  fCurrency: (val, compact) => `$${Number(val || 0).toFixed(compact ? 4 : 2)}`,
+}));
+
+vi.mock("notistack", () => ({
+  enqueueSnackbar: vi.fn(),
+}));
+
+vi.mock("src/pages/dashboard/settings/stripeVariables", () => ({
+  stripePromise: Promise.resolve({
+    confirmCardSetup: vi
+      .fn()
+      .mockResolvedValue({ setupIntent: { status: "succeeded" } }),
+  }),
+}));
+
+const MOCK_BILLING = {
+  data: {
+    result: {
+      plan: "payg",
+      period: "2026-04",
+      total: 125.5,
+      line_items: [
+        { description: "Storage (75 GB)", amount: 50 },
+        { description: "AI Credits (3,500)", amount: 15 },
+        { description: "Free tier savings", amount: -10 },
+      ],
+    },
+  },
+};
+
+const MOCK_INVOICES = {
+  data: {
+    result: {
+      invoices: [
+        {
+          id: "inv-001",
+          period_start: "2026-03-01",
+          period_end: "2026-03-31",
+          plan: "payg",
+          total: 95.0,
+          status: "paid",
+          stripe_pdf_url: "https://stripe.com/pdf/inv-001",
+        },
+      ],
+    },
+  },
+};
+
+const MOCK_NOTIFICATIONS = {
+  data: {
+    result: {
+      banners: [
+        {
+          id: "warn-ai_credits",
+          type: "warning",
+          message: "AI Credits at 85% of free tier",
+          action: {
+            label: "View details",
+            url: "/settings/billing#ai_credits",
+          },
+        },
+      ],
+    },
+  },
+};
+
+const MOCK_BUDGETS = {
+  data: { result: { budgets: [] } },
+};
+
+const MOCK_PAYMENT_METHODS = {
+  data: {
+    result: [
+      {
+        id: "pm_123",
+        brand: "Visa",
+        last4: "4242",
+        exp_month: 12,
+        exp_year: 2028,
+        is_default: true,
+      },
+    ],
+  },
+};
+
+function renderWithQuery(ui) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+}
+
+describe("BillingPageV2", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGet.mockImplementation((url) => {
+      if (url.includes("billing-overview"))
+        return Promise.resolve(MOCK_BILLING);
+      if (url.includes("invoices")) return Promise.resolve(MOCK_INVOICES);
+      if (url.includes("notifications"))
+        return Promise.resolve(MOCK_NOTIFICATIONS);
+      if (url.includes("budgets")) return Promise.resolve(MOCK_BUDGETS);
+      if (url.includes("payment-methods"))
+        return Promise.resolve(MOCK_PAYMENT_METHODS);
+      return Promise.resolve({ data: { result: {} } });
+    });
+  });
+
+  it("should be importable", async () => {
+    const module = await import("../BillingPage");
+    expect(module.default).toBeDefined();
+  });
+
+  it("renders current period summary with line items", async () => {
+    const { default: BillingPageV2 } = await import("../BillingPage");
+    renderWithQuery(<BillingPageV2 />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Current Period")).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByText("$125.50").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Storage (75 GB)")).toBeInTheDocument();
+  });
+
+  it("renders alert banners from notifications API", async () => {
+    const { default: BillingPageV2 } = await import("../BillingPage");
+    renderWithQuery(<BillingPageV2 />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("AI Credits at 85% of free tier"),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("renders invoice history with expandable rows", async () => {
+    const { default: BillingPageV2 } = await import("../BillingPage");
+    renderWithQuery(<BillingPageV2 />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Invoice History")).toBeInTheDocument();
+    });
+
+    // Invoice row visible
+    expect(screen.getByText("2026-03-01 — 2026-03-31")).toBeInTheDocument();
+    expect(screen.getByText("Paid")).toBeInTheDocument();
+  });
+
+  it("renders payment methods section with card details", async () => {
+    const { default: BillingPageV2 } = await import("../BillingPage");
+    renderWithQuery(<BillingPageV2 />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Payment Methods")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Visa •••• 4242")).toBeInTheDocument();
+    expect(screen.getByText("Default")).toBeInTheDocument();
+  });
+
+  it("renders budget manager section", async () => {
+    const { default: BillingPageV2 } = await import("../BillingPage");
+    renderWithQuery(<BillingPageV2 />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Usage Budgets")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Add Budget")).toBeInTheDocument();
+  });
+
+  it("shows free plan message when plan is free", async () => {
+    mockGet.mockImplementation((url) => {
+      if (url.includes("billing-overview"))
+        return Promise.resolve({
+          data: {
+            result: {
+              plan: "free",
+              period: "2026-04",
+              total: 0,
+              line_items: [],
+            },
+          },
+        });
+      if (url.includes("notifications"))
+        return Promise.resolve({ data: { result: { banners: [] } } });
+      if (url.includes("budgets")) return Promise.resolve(MOCK_BUDGETS);
+      if (url.includes("payment-methods"))
+        return Promise.resolve({ data: { result: { paymentMethods: [] } } });
+      return Promise.resolve({ data: { result: {} } });
+    });
+
+    const { default: BillingPageV2 } = await import("../BillingPage");
+    renderWithQuery(<BillingPageV2 />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Free plan/i)).toBeInTheDocument();
+    });
+  });
+});

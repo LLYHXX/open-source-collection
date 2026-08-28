@@ -1,0 +1,77 @@
+meta {
+  name: Edit Agent Version
+  type: http
+  seq: 4
+}
+
+put {
+  url: http://localhost:8000/simulate/agent-definitions/{{agent_id}}/versions/{{version_id}}/edit/
+  body: json
+  auth: bearer
+}
+
+body:json {
+  {
+    "version_name": "v3.1",
+    "status": "active",
+    "score": 8.9,
+    "test_count": 50,
+    "pass_rate": 94.0,
+    "description": "Improved empathy responses and added product knowledge base with enhanced performance",
+    "release_notes": "This version includes:\n- Improved empathy responses\n- Enhanced product knowledge base\n- Better escalation handling\n- Updated greeting scripts\n- Performance optimizations"
+  }
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Edit Agent Version
+  description: Update an existing agent version with new metadata and performance metrics
+  request: {
+    "version_name": "v3.1",
+    "status": "active",
+    "score": 8.9,
+    "test_count": 50,
+    "pass_rate": 94.0,
+    "description": "Improved empathy responses and added product knowledge base with enhanced performance",
+    "release_notes": "This version includes:\n- Improved empathy responses\n- Enhanced product knowledge base\n- Better escalation handling\n- Updated greeting scripts\n- Performance optimizations"
+  }
+  response: {
+    "message": "Agent version updated successfully",
+    "version": {
+      "id": "v3-uuid-here",
+      "version_number": 3,
+      "version_name": "v3.1",
+      "version_name_display": "v3.1",
+      "status": "active",
+      "status_display": "Active",
+      "score": 8.9,
+      "test_count": 50,
+      "pass_rate": 94.0,
+      "description": "Improved empathy responses and added product knowledge base with enhanced performance",
+      "release_notes": "This version includes:\n- Improved empathy responses\n- Enhanced product knowledge base\n- Better escalation handling\n- Updated greeting scripts\n- Performance optimizations",
+      "agent_definition": "agent-uuid-here",
+      "organization": "org-uuid-here",
+      "configuration_snapshot": {
+        "id": "agent-uuid-here",
+        "agent_name": "Customer Service Rep",
+        "contact_number": "+1 555-0123",
+        "inbound": true,
+        "description": "Friendly customer service agent for handling support inquiries with empathy and efficiency",
+        "assistant_id": "asst_customer_001",
+        "language": "en",
+        "websocket_url": "wss://example.com/ws",
+        "websocket_headers": {},
+        "organization": "org-uuid-here",
+        "created_at": "2025-01-15T09:15:00Z",
+        "updated_at": "2025-01-20T10:30:00Z"
+      },
+      "is_active": true,
+      "is_latest": true,
+      "created_at": "2025-01-20T10:30:00Z",
+      "updated_at": "2025-01-21T15:30:00Z"
+    }
+  }
+}

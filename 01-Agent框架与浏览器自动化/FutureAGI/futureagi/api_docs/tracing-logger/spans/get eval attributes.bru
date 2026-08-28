@@ -1,0 +1,32 @@
+meta {
+  name: get eval attributes
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/tracer/observation-span/get_eval_attributes_list/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "filters" : [
+    {
+    "column_id": "observation_type",
+    "filter_config":
+    {
+    "filter_type": "text",
+    "filter_op": "equals",
+    "filter_value": "chain"
+    }
+    }
+    ]
+
+  }
+}

@@ -1,0 +1,17 @@
+meta {
+  name: create embedding
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8080/model/v1/embed
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "text": "hello"
+  }
+}

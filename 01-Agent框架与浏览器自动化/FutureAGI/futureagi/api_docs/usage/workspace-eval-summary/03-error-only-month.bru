@@ -1,0 +1,42 @@
+meta {
+  name: 03 - Error - Only Month Provided
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/usage/workspace-eval-summary/?workspace_id={{workspace_id}}&month=1
+  body: none
+  auth: bearer
+}
+
+params:query {
+  workspace_id: {{workspace_id}}
+  month: 1
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Workspace Evaluation Summary - Month Without Year
+
+  ### Test Scenario
+  - workspace_id and month provided but year is missing
+  - Tests validation that month and year must be provided together
+
+  ### Expected Response
+  - Status: 400 Bad Request
+  - Response structure:
+    ```json
+    {
+      "status": false,
+      "message": "Error message about missing year"
+    }
+    ```
+
+  ### Notes
+  - Month and year must be provided together
+  - Cannot provide just one of them
+}

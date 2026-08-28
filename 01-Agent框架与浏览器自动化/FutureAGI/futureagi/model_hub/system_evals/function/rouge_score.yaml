@@ -1,0 +1,48 @@
+eval_id: 102
+name: rouge_score
+description: Computes a rouge score between the expected gold answer and the model output.
+criteria: Check if the generated caption or description is similar to the reference caption or description. If the generated
+  caption or description is not similar to the reference caption or description then return Failed else return Passed
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - reference
+  - hypothesis
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        # ROUGE-1 F-measure (unigram overlap).
+        from collections import Counter
+        reference = kwargs.get("reference", expected or "")
+        hypothesis = kwargs.get("hypothesis", output or "")
+        if not reference or not hypothesis:
+            return {"score": 0.0, "reason": "Missing reference or hypothesis"}
+        ref_tokens = str(reference).lower().split()
+        hyp_tokens = str(hypothesis).lower().split()
+        if not ref_tokens or not hyp_tokens:
+            return {"score": 0.0, "reason": "Empty reference or hypothesis after tokenization"}
+        ref_counts = Counter(ref_tokens)
+        hyp_counts = Counter(hyp_tokens)
+        # Overlap = sum of min counts across unigrams.
+        overlap = sum((ref_counts & hyp_counts).values())
+        precision = overlap / len(hyp_tokens) if hyp_tokens else 0.0
+        recall = overlap / len(ref_tokens) if ref_tokens else 0.0
+        if precision + recall == 0:
+            f1 = 0.0
+        else:
+            f1 = 2 * precision * recall / (precision + recall)
+        return {
+            "score": float(f1),
+            "reason": f"ROUGE-1 F1: {f1:.4f} (P={precision:.3f}, R={recall:.3f})",
+        }

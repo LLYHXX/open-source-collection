@@ -1,0 +1,25 @@
+meta {
+  name: Get draft by id
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/data-connector/draft/:id
+  body: none
+  auth: bearer
+}
+
+params:path {
+  id: 23afa0b0-058a-43dc-856c-6403bed703bd
+}
+
+headers {
+  ~X-Api-Key: {{api_key}}
+  ~X-Secret-Key: {{secret_key}}
+  ~token:
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

@@ -1,0 +1,23 @@
+eval_id: 195
+name: type_token_ratio
+description: "Computes Type-Token Ratio (TTR): unique tokens divided by total tokens. Measures lexical diversity."
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [text]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {text: Text to evaluate}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        text = str(kwargs.get("text", output or "")).strip().lower()
+        tokens = text.split()
+        if not tokens: return {"score": 0.0, "reason": "Empty text"}
+        score = len(set(tokens))/len(tokens)
+        return {"score": float(score), "reason": f"TTR: {score:.4f} ({len(set(tokens))} types / {len(tokens)} tokens)"}

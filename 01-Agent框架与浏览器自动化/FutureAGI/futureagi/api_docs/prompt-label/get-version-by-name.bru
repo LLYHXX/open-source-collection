@@ -1,0 +1,16 @@
+meta {
+  name: get-version-by-name
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{host}}/model-hub/prompt-labels/get-by-name/?name={{template_name}}&version={{version}}
+  body: none
+  auth: inherit
+}
+
+params:query {
+  name: {{template_name}}
+  version: {{version}}
+}

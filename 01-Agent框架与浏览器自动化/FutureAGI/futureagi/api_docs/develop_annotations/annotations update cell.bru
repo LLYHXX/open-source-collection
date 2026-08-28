@@ -1,0 +1,43 @@
+meta {
+  name: annotations update cell
+  type: http
+  seq: 6
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "Document Classification",
+    "dataset": "d88474b7-2d2d-48da-a988-0e0b2b26559d",
+    "labels": [
+      "c38e3da1-0a49-4999-90e0-9c1f468379fb","287aff8e-f19e-494e-ac8b-6f996e5a2cdc"  ],
+    "assigned_users": [
+      "ca49889d-5fdf-4f75-b8dc-be9f326581c7"
+    ],
+    "static_fields": [
+      {
+        "column_id": "document_type",
+        "type": "plain_text",
+        "view": "default_collapsed"
+      }
+    ],
+    "response_fields": [
+      {
+        "column_id": "document_type",
+        "type": "plain_text",
+        "view": "default_collapsed",
+        "edit":"editable"
+      }
+    ],
+    "responses": 3
+  }
+}

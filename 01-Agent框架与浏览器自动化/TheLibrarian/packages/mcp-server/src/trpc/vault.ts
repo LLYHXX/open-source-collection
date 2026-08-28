@@ -1,0 +1,380 @@
+// Vault explorer/editor tRPC procedures (rethink T18/T19, spec §8 / D15).
+//
+// The dashboard's Obsidian-lite surface over the whole vault. All procedures
+// are admin-gated like the sibling routers; the heavy lifting (tree walk,
+// lenient reads, per-kind save validation, compare-and-swap, wikilink-integrity
+// renames, path discipline incl. traversal/symlink rejection) lives on
+// `store.vaultFiles` — every mutation goes through the store layer (git commit
+// per write + recall-index invalidation), never a raw fs write.
+//
+// Error mapping (teaching messages pass through verbatim):
+//   bad/escaping path, invalid document  → BAD_REQUEST
+//   absent file                          → NOT_FOUND
+//   stale-hash save, create-over-existing → CONFLICT
+
+import {
+  GitHashError,
+  VaultFileExistsError,
+  VaultFileNotFoundError,
+  VaultPathError,
+  VaultValidationError,
+  VaultWriteConflictError,
+  processUrlCapture,
+  recordPending,
+  renderImportedReference,
+  slugifyTitle,
+} from "@librarian/core";
+import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import { adminProcedure, memberProcedure, publicProcedure, router } from "./trpc.js";
+
+// Generous bound for a vault-relative path; the store re-validates shape.
+const VaultPathSchema = z.string().min(1).max(512);
+
+// 50 KB ceiling mirrors the largest document the system accepts elsewhere
+// (store_handoff's document_md cap) — far above the 2 KB primer/addendum caps.
+const RawContentSchema = z
+  .string()
+  .max(
+    50_000,
+    "vault documents are capped at 50,000 characters when edited through the dashboard — " +
+      "a larger file (e.g. a big reference) can still be read and restored here, but must be " +
+      "edited on disk",
+  );
+
+// A git commit hash — full or abbreviated, plain hex only (the store
+// re-validates before anything reaches git's argv).
+const HashSchema = z
+  .string()
+  .regex(/^[0-9a-f]{7,40}$/i, "expected a git commit hash (7-40 hex characters)");
+
+const ReadInputSchema = z.object({ path: VaultPathSchema });
+// Reference lookup input. `limit` mirrors the `search_references` MCP tool's
+// declared 1–100 bound; the store re-clamps, so an out-of-range value is a
+// boundary error here, not a silent surprise downstream.
+const SearchReferencesInputSchema = z.object({
+  query: z.string(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+const AtCommitInputSchema = z.object({ path: VaultPathSchema, hash: HashSchema });
+const DiffInputSchema = z.object({
+  path: VaultPathSchema,
+  /** Older side; omitted → the file's birth (whole file as additions). */
+  from: HashSchema.optional(),
+  /** Newer side; omitted → the working tree (current content). */
+  to: HashSchema.optional(),
+});
+const WriteInputSchema = z.object({
+  path: VaultPathSchema,
+  raw: RawContentSchema,
+  /** The content hash returned by `read` — supply it to make the save compare-and-swap. */
+  expectedHash: z.string().optional(),
+});
+const CreateInputSchema = z.object({ path: VaultPathSchema, raw: RawContentSchema });
+/**
+ * Add a reference from the dashboard (spec 073 T5) — pasted or uploaded
+ * Markdown (`content`), or a page to fetch (`url`). Exactly one of the two;
+ * both-or-neither is a teaching BAD_REQUEST rather than a silent preference.
+ */
+const AddReferenceInputSchema = z.object({
+  content: RawContentSchema.optional(),
+  url: z.string().min(1).max(2048).optional(),
+  title: z.string().max(512).optional(),
+});
+const RenameInputSchema = z.object({ from: VaultPathSchema, to: VaultPathSchema });
+const ResolveInputSchema = z.object({ target: z.string().min(1).max(512) });
+
+/** The first line's `# Heading`, used to name an untitled paste. */
+function firstHeading(markdown: string): string | null {
+  const [line] = markdown.trimStart().split("\n");
+  const match = /^#\s+(.+?)\s*$/.exec(line ?? "");
+  return match?.[1] ?? null;
+}
+
+/** Map a vault-file store error onto the tRPC code the dashboard branches on. */
+function rethrow(error: unknown): never {
+  if (
+    error instanceof VaultPathError ||
+    error instanceof VaultValidationError ||
+    error instanceof GitHashError
+  ) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+  }
+  if (error instanceof VaultFileNotFoundError) {
+    throw new TRPCError({ code: "NOT_FOUND", message: error.message });
+  }
+  if (error instanceof VaultWriteConflictError || error instanceof VaultFileExistsError) {
+    throw new TRPCError({ code: "CONFLICT", message: error.message });
+  }
+  throw error;
+}
+
+export const vaultRouter = router({
+  /**
+   * The narrow capability bit the shared dashboard detail view needs to choose
+   * direct move versus proposal copy. It discloses no role names or shelf
+   * layout; anonymous callers simply have no direct-move authority.
+   */
+  moveAccess: publicProcedure.query(({ ctx }) => ({
+    canDirectMove: ctx.principal.roles.includes("admin"),
+  })),
+
+  /**
+   * The principal's memory-visible shelves, deduped by the filter key. Prefixes are private
+   * layout and never cross the wire. Shared ids merge with first-occurrence label precedence
+   * and writable OR, so the capability bit agrees with move-destination resolution.
+   */
+  shelves: memberProcedure.query(({ ctx }) => {
+    const byId = new Map<string, { id: string; label?: string; writable: boolean }>();
+    for (const shelf of ctx.store.shelvesForPrincipal(ctx.principal)) {
+      const existing = byId.get(shelf.id);
+      if (existing) {
+        existing.writable ||= shelf.writable;
+        continue;
+      }
+      byId.set(shelf.id, {
+        id: shelf.id,
+        ...(shelf.label !== undefined ? { label: shelf.label } : {}),
+        writable: shelf.writable,
+      });
+    }
+    return [...byId.values()];
+  }),
+
+  /** The explorer tree: every visible vault entry (plumbing excluded), dirs first. */
+  tree: adminProcedure.query(({ ctx }) => ctx.store.vaultFiles.tree()),
+
+  /**
+   * One file, explorer-shaped: raw text + lenient frontmatter + body, the
+   * compare-and-swap hash, outbound wikilinks (resolved to vault paths) and
+   * the backlinks pane's "what links here".
+   */
+  read: adminProcedure.input(ReadInputSchema).query(({ ctx, input }) => {
+    try {
+      const file = ctx.store.vaultFiles.readFile(input.path);
+      return {
+        ...file,
+        links: ctx.store.vaultFiles.outboundLinks(file.path),
+        backlinks: ctx.store.vaultFiles.backlinks(file.path),
+      };
+    } catch (error) {
+      rethrow(error);
+    }
+  }),
+
+  /** Resolve a wikilink target to a vault path (same alias/slug logic as links). */
+  resolve: adminProcedure.input(ResolveInputSchema).query(({ ctx, input }) => ({
+    path: ctx.store.vaultFiles.resolveLink(input.target),
+  })),
+
+  /**
+   * Tier-0 reference lookup — the dashboard's "References" retrieval tester,
+   * and the browse surface's References tab. spec 065 SC 7: member tier +
+   * principal-scoped in the same change — a thin pass-through to 062's
+   * `store.searchReferencesForPrincipal` (the `"search"` op; merged multi-shelf
+   * hits with provenance labels), the SAME surface the `search_references` MCP
+   * tool calls, so what the operator sees here is exactly what an agent sees;
+   * with the default router this is exactly the old `store.searchReferences`,
+   * byte-identical. A mutation (not a query) to mirror the sibling
+   * `memories.recall`: this is a user-triggered "run the verb", not a cacheable
+   * read, and tRPC query-caching must not mask a re-run.
+   */
+  searchReferences: memberProcedure
+    .input(SearchReferencesInputSchema)
+    .mutation(async ({ ctx, input }) => {
+      // Mirror the MCP tool's guard: reject a whitespace-only query with a
+      // teaching message, and pass the ORIGINAL (untrimmed) query through so
+      // results match the tool byte-for-byte.
+      if (!input.query.trim()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "search_references needs a non-empty query — got only whitespace.",
+        });
+      }
+      const references = await ctx.store.searchReferencesForPrincipal(
+        ctx.principal,
+        input.query,
+        input.limit,
+      );
+      // `searched` is the count of reference docs the PRINCIPAL can search — the
+      // dashboard uses it to tell "no references filed" apart from "filed but
+      // none matched" (the hybrid index drops a doc with neither keyword overlap
+      // nor positive cosine, so an empty `references` does NOT imply an empty
+      // vault). Principal-scoped (Σ over the "search" shelf set — the vault-global
+      // count would leak corpus size to a scoped member); with the default router
+      // it is exactly the old vault-global count, byte-identical. `references` is
+      // byte-identical to the MCP tool's payload; the extra field is
+      // dashboard-only diagnostics and doesn't affect parity.
+      return { references, searched: ctx.store.countReferencesForPrincipal(ctx.principal) };
+    }),
+
+  /** Overwrite an existing file — validated for its kind, optionally compare-and-swap. */
+  write: adminProcedure.input(WriteInputSchema).mutation(({ ctx, input }) => {
+    try {
+      return ctx.store.vaultFiles.writeFile(
+        input.path,
+        input.raw,
+        input.expectedHash !== undefined ? { expectedHash: input.expectedHash } : {},
+        ctx.principal.actorId,
+      );
+    } catch (error) {
+      rethrow(error);
+    }
+  }),
+
+  /**
+   * File a reference from the dashboard (spec 073 T5) — the affordance the
+   * product's "upload a spec once and every agent can search it" promise
+   * needed and never had.
+   *
+   * MEMBER tier by decision (Jim, 25/07/2026, §7 Q3): consistent with the
+   * existing trust model rather than a widening — the `/ingest` URL path is
+   * already reachable with a capture-scoped token, not admin, and it is the
+   * SSRF guard, not the tier, that makes fetching safe.
+   *
+   * That makes attribution load-bearing: the write is principal-scoped
+   * (`resolveWriteTarget` → `forShelf` → prefix) and carries the CALLER's actor
+   * id, so a member's reference commits under that member — never the server.
+   */
+  addReference: memberProcedure.input(AddReferenceInputSchema).mutation(async ({ ctx, input }) => {
+    const url = input.url?.trim();
+    const content = input.content?.trim();
+    if (url && content) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Send either a url to fetch or content to file — not both.",
+      });
+    }
+    if (!url && !content) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Nothing to file — supply a url to fetch, or Markdown content.",
+      });
+    }
+
+    const shelf = ctx.store.resolveWriteTarget(ctx.principal);
+    const scoped = ctx.store.forShelf(shelf, ctx.principal);
+    const { prefix } = shelf;
+    const actorId = ctx.principal.actorId;
+
+    if (url) {
+      // The same capture pipeline the clippers run through, shelf-scoped.
+      // The wrappers thread `actorId` explicitly: TypeScript would accept a
+      // shorter-arity function here and SILENTLY DROP the actor.
+      const captureStore = {
+        ...ctx.store,
+        vaultFiles: {
+          createFile: (rel: string, raw: string) =>
+            scoped.vaultFiles.createFile(prefix + rel, raw, actorId),
+          writeFile: (rel: string, raw: string, options: { expectedHash?: string }) =>
+            scoped.vaultFiles.writeFile(prefix + rel, raw, options, actorId),
+        },
+      } as unknown as Parameters<typeof processUrlCapture>[0];
+
+      const id = recordPending(ctx.store, { source: url, via: "dashboard" });
+      const result = await processUrlCapture(captureStore, { url, via: "dashboard" }, id, {});
+      if (result.status === "failed") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Could not capture ${url} — ${result.error ?? "unknown error"}`,
+        });
+      }
+      return { path: result.path as string };
+    }
+
+    // Pasted or uploaded Markdown: keep whatever frontmatter it already
+    // carries and fill only the gaps (D4) — the same rule `refs add <file>`
+    // follows, so a file imported here and by the CLI reads identically.
+    const document = renderImportedReference({
+      raw: content as string,
+      via: "dashboard",
+      capturedAt: new Date().toISOString(),
+      ...(input.title ? { fallbackTitle: input.title } : {}),
+    });
+    const titleForSlug =
+      input.title?.trim() || firstHeading(content as string) || "untitled reference";
+    const relative = `references/${slugifyTitle(titleForSlug)}.md`;
+    try {
+      scoped.vaultFiles.createFile(prefix + relative, document, actorId);
+    } catch (error) {
+      rethrow(error);
+    }
+    return { path: relative };
+  }),
+
+  /** Create a new document (refused when the path exists). */
+  create: adminProcedure.input(CreateInputSchema).mutation(({ ctx, input }) => {
+    try {
+      return ctx.store.vaultFiles.createFile(input.path, input.raw, ctx.principal.actorId);
+    } catch (error) {
+      rethrow(error);
+    }
+  }),
+
+  /** Move a file, rewriting wikilinks that target its old filename stem. */
+  rename: adminProcedure.input(RenameInputSchema).mutation(({ ctx, input }) => {
+    try {
+      return ctx.store.vaultFiles.renameFile(input.from, input.to, ctx.principal.actorId);
+    } catch (error) {
+      rethrow(error);
+    }
+  }),
+
+  /** Hard-delete a document (recoverable from the vault's git history). */
+  delete: adminProcedure.input(ReadInputSchema).mutation(({ ctx, input }) => {
+    try {
+      ctx.store.vaultFiles.deleteFile(input.path, ctx.principal.actorId);
+      return { deleted: input.path };
+    } catch (error) {
+      rethrow(error);
+    }
+  }),
+
+  // ── per-file history / diff / restore (rethink T20, spec §8 / D16) ──────────
+
+  /** The file's commits newest-first (follows renames; each entry carries its then-path). */
+  history: adminProcedure.input(ReadInputSchema).query(({ ctx, input }) => {
+    try {
+      return ctx.store.vaultFiles.fileHistory(input.path);
+    } catch (error) {
+      rethrow(error);
+    }
+  }),
+
+  /** The file's full content as of one commit (rename-aware). */
+  atCommit: adminProcedure.input(AtCommitInputSchema).query(({ ctx, input }) => {
+    try {
+      return ctx.store.vaultFiles.fileAtCommit(input.path, input.hash);
+    } catch (error) {
+      rethrow(error);
+    }
+  }),
+
+  /** Unified diff text for one file between two commits (or birth/worktree). */
+  diff: adminProcedure.input(DiffInputSchema).query(({ ctx, input }) => {
+    try {
+      return {
+        diff: ctx.store.vaultFiles.fileDiff(input.path, {
+          ...(input.from !== undefined ? { from: input.from } : {}),
+          ...(input.to !== undefined ? { to: input.to } : {}),
+        }),
+      };
+    } catch (error) {
+      rethrow(error);
+    }
+  }),
+
+  /**
+   * Restore the file to its content at `hash` — a NEW commit through the
+   * validated store write path, never a history rewrite. A version that fails
+   * the path's current validation is refused with the errors (teaching the
+   * manual-edit path).
+   */
+  restoreVersion: adminProcedure.input(AtCommitInputSchema).mutation(({ ctx, input }) => {
+    try {
+      return ctx.store.vaultFiles.restoreFileVersion(input.path, input.hash, ctx.principal.actorId);
+    } catch (error) {
+      rethrow(error);
+    }
+  }),
+});

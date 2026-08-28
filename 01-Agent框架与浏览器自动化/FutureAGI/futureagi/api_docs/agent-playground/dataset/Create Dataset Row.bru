@@ -1,0 +1,70 @@
+meta {
+  name: Create Dataset Row
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/agent-playground/graphs/:graph_id/dataset/rows/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  graph_id: b946e73c-f5bb-4a38-a796-a0805add877d
+}
+
+docs {
+  # Create Dataset Row
+
+  Creates a single new row with empty cells pre-created for every column in the dataset.
+
+  ## Path Parameters
+  - `graph_id`: Graph UUID
+
+  ## Request Body
+  None required. The row is created with null values for all columns.
+
+  ## Response (Success - 201)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "row-uuid",
+      "order": 3,
+      "cells": [
+        {
+          "column_id": "column-uuid",
+          "column_name": "prompt",
+          "value": null
+        }
+      ]
+    }
+  }
+  ```
+
+  ## Response (Error - No Columns)
+  ```json
+  {
+    "status": false,
+    "result": "No columns exist in the dataset."
+  }
+  ```
+  This happens when no graph changes have created exposed input ports yet (columns are created on node/port/connection CRUD and on version activation).
+
+  ## Response (Error - Dataset Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Graph dataset not found."
+  }
+  ```
+}

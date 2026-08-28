@@ -1,0 +1,55 @@
+meta {
+  name: Delete Run Test
+  type: http
+  seq: 17
+}
+
+delete {
+  url: http://localhost:8000/simulate/run-tests/run-test-1/delete/
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Delete Run Test
+  description: Delete a specific run test and all its associated test executions
+  request: {
+    "method": "DELETE",
+    "url": "http://localhost:8000/simulate/run-tests/{run_test_id}/delete/",
+    "headers": {
+      "Authorization": "Bearer {token}",
+      "Content-Type": "application/json"
+    }
+  }
+  response: {
+    "message": "Run test deleted successfully"
+  }
+  error_responses: [
+    {
+      "status": 400,
+      "error": "Cannot delete a run test that has test executions currently running."
+    },
+    {
+      "status": 404,
+      "error": "Organization not found for the user."
+    },
+    {
+      "status": 404,
+      "error": "Run test not found"
+    },
+    {
+      "status": 500,
+      "error": "Failed to delete run test: {error_message}"
+    }
+  ]
+  notes: [
+    "This endpoint will delete the run test and all its associated test executions",
+    "Cannot delete run tests that have test executions currently running",
+    "Requires authentication and organization access",
+    "Returns a success message on successful deletion",
+    "This is a soft delete - the run test is marked as deleted but not physically removed"
+  ]
+}

@@ -1,0 +1,10 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<h2>{{ title }}</h2>
+<p>These are the currently blocked IPs and users stored in Redis. You can delete individual keys to unblock them.</p>
+{{ content }}
+{% endblock %}

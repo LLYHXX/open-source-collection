@@ -1,0 +1,36 @@
+meta {
+  name: enhanced invite team with default workspace
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/accounts/team/users/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "members": [
+      {
+        "email": "member1@example.com",
+        "name": "Member One",
+        "organization_role": "MEMBER"
+      },
+      {
+        "email": "member2@example.com",
+        "name": "Member Two",
+        "organization_role": "MEMBER"
+      }
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+meta {
+  name: update session config
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/tracer/project/update_project_session_config/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_id": "1b4d85f8-d122-46f9-be1c-0875ae70e558",
+    "visibility": {
+      "run_name": true
+    }
+  }
+}

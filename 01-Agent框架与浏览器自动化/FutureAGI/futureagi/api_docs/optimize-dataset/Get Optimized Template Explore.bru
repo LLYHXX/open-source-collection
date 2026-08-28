@@ -1,0 +1,28 @@
+meta {
+  name: Get Optimized Template Explore
+  type: http
+  seq: 5
+}
+
+post {
+  url: http://localhost:8000/model-hub/optimize-dataset/{{model_id}}/prompt-template-explore/{{optmization_id}}/
+  body: json
+  auth: none
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}
+
+body:json {
+  {
+    "page" : 1,
+    "limit" : 15
+  }
+}
+
+vars:pre-request {
+  model_id: 23e33a4c-36ea-4491-9e06-f4bd7964a639
+  optmization_id: 864b35b3-6de8-4590-838b-19d2cdf84d5f
+}

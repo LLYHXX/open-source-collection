@@ -1,0 +1,84 @@
+meta {
+  name: resend welcome email
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{host}}/accounts/password-reset-initiate/
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+      "email": "user@futureagi.com",
+      "resend_email": true
+  }
+}
+
+docs {
+  # Resend Welcome Email
+
+  Resends the welcome email with a new generated password to the user.
+
+  ## Request Body
+
+  ```json
+  {
+    "email": "user@futureagi.com",
+    "resend_email": true
+  }
+  ```
+
+  ## What it does
+
+  1. Generates a new password for the user
+  2. Resets the user's password to the new one
+  3. Activates the user account (sets is_active=True)
+  4. Sends "Welcome to Future AGI" email with the new password
+
+  ## Email Template
+
+  The email uses the `user_onboard.html` template and includes:
+  - User's first name
+  - Generated password
+  - App URL
+
+  ## Response
+
+  ```json
+  {
+    "success": true,
+    "data": {
+      "message": "Welcome email has been sent to user@futureagi.com."
+    }
+  }
+  ```
+
+  ## Use Cases
+
+  - Resend credentials to new team members
+  - User lost their welcome email
+  - Admin wants to reset and send new credentials
+  - User never received initial welcome email
+
+  ## Security Notes
+
+  - No authentication required (public endpoint)
+  - For security, returns success even if email doesn't exist
+  - Cannot be used for SSO-enabled organizations
+  - New password is auto-generated and sent via email
+  - User account is automatically activated
+
+  ## Difference from Password Reset
+
+  | Feature | Reset Password | Resend Welcome |
+  |---------|---------------|----------------|
+  | Parameter | `resend_email: false` | `resend_email: true` |
+  | Email Template | reset_password.html | user_onboard.html |
+  | Email Subject | "Reset Password" | "Welcome to Future AGI" |
+  | Contains | Reset link | New password |
+  | User Action | Click link to set password | Use password to login |
+  | Account Status | Not changed | Set to active |
+}

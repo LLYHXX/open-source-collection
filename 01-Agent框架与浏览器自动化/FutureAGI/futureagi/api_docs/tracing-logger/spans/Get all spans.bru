@@ -1,0 +1,44 @@
+meta {
+  name: Get all spans
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/tracer/observation-span/list_spans/?project=6014e118-8a2f-43e9-84fd-53e1fab43489&project_version_id=8946ca2f-2474-41ff-aeab-86a77aef6b7f
+  body: json
+  auth: bearer
+}
+
+params:query {
+  project: 6014e118-8a2f-43e9-84fd-53e1fab43489
+  project_version_id: 8946ca2f-2474-41ff-aeab-86a77aef6b7f
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "filters": [
+      {
+        "column_id": "var_7",
+        "filter_config": {
+          "filter_type": "number",
+          "filter_op": "less_than",
+          "filter_value": 50,
+          "col_type": "SPAN_ATTRIBUTE"
+        }
+      },
+      {
+        "column_id": "node_type",
+        "filter_config": {
+          "filter_type": "text",
+          "filter_op": "equals",
+          "filter_value": "chain"
+        }
+      }
+    ]
+  }
+}

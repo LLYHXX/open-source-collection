@@ -1,0 +1,41 @@
+meta {
+  name: 02 - Error - Missing Month Parameter
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/usage/usage-summary/?year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Usage Summary - Missing Month Parameter
+
+  ### Test Scenario
+  - Year provided but month parameter is missing
+  - Tests validation that both month and year are required
+
+  ### Expected Response
+  - Status: 400 Bad Request
+  - Response structure:
+    ```json
+    {
+      "status": false,
+      "message": "Error message containing 'month' or 'required'"
+    }
+    ```
+
+  ### Notes
+  - Both month and year parameters are mandatory
+  - This tests the parameter validation logic
+}

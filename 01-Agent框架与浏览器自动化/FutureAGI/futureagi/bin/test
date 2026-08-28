@@ -1,0 +1,311 @@
+#!/bin/bash
+# Test runner script
+# Usage: bin/test [options] [pytest-args]
+
+set -e
+
+COMPOSE_FILE="docker-compose.test.yml"
+COMPOSE_PROJECT="futureagi-test"
+PYTHON_BIN="${PYTHON_BIN:-}"
+
+if [ -z "$PYTHON_BIN" ]; then
+    if [ -x ".venv/bin/python" ]; then
+        PYTHON_BIN=".venv/bin/python"
+    elif command -v python > /dev/null 2>&1; then
+        PYTHON_BIN="python"
+    elif command -v python3 > /dev/null 2>&1; then
+        PYTHON_BIN="python3"
+    else
+        echo "Error: python, python3, or .venv/bin/python is required" >&2
+        exit 127
+    fi
+fi
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# Test environment variables
+export DJANGO_SETTINGS_MODULE=tfc.settings.test
+export DATABASE_URL=postgres://test_user:test_password@localhost:15432/test_tfc
+export REDIS_URL=redis://localhost:16379/0
+export TEST_CLICKHOUSE_HOST=localhost
+export TEST_CLICKHOUSE_PORT=18123
+
+# CH-backed tests: use the compose sidecar (docker-compose.test.yml), not the
+# dev .env host/database; :- lets CI override.
+export CH_HOST="${CH_HOST:-localhost}"
+export CH_DATABASE="${CH_DATABASE:-test_tfc}"
+export CH25_HOST="${CH25_HOST:-localhost}"
+export CH25_HTTP_PORT="${CH25_HTTP_PORT:-18123}"
+export CH25_DATABASE="${CH25_DATABASE:-test_tfc}"
+
+export MINIO_ENDPOINT=localhost:19005
+export MINIO_ACCESS_KEY=minioadmin
+export MINIO_SECRET_KEY=minioadmin
+export DEBUG=1
+export TEST=1
+
+show_help() {
+    echo "Usage: bin/test [command] [options]"
+    echo ""
+    echo "Commands:"
+    echo "  (none)        Run all tests"
+    echo "  unit          Run unit tests only"
+    echo "  integration   Run integration tests"
+    echo "  app <name>    Run tests for specific app"
+    echo "  stress        Run the stress suite (manual only; rebuilds CH default DB)"
+    echo "  changed       Run tests for changed files only"
+    echo "  watch         Watch mode - rerun tests on file changes"
+    echo "  up            Start test services"
+    echo "  down          Stop test services"
+    echo "  logs          Show service logs"
+    echo "  reset         Reset test database"
+    echo "  status        Show service status"
+    echo ""
+    echo "Options:"
+    echo "  -x            Stop on first failure"
+    echo "  -v            Verbose output"
+    echo "  -k <pattern>  Run tests matching pattern"
+    echo "  --no-services Skip starting services"
+    echo ""
+    echo "Examples:"
+    echo "  bin/test                     # Run all tests"
+    echo "  bin/test unit                # Run unit tests"
+    echo "  bin/test app model_hub       # Run model_hub tests"
+    echo "  bin/test -x -v               # Stop on failure, verbose"
+    echo "  bin/test --no-services unit  # Unit tests without services"
+}
+
+# Check if services are running
+services_running() {
+    docker compose -f $COMPOSE_FILE -p $COMPOSE_PROJECT ps --status running 2>/dev/null | grep -q "test-db"
+}
+
+# Wait for services to be healthy
+wait_for_services() {
+    echo -e "${YELLOW}Waiting for services...${NC}"
+
+    for ((i = 1; i <= 30; i++)); do
+        missing=()
+
+        if ! "$PYTHON_BIN" - localhost 15432 > /dev/null 2>&1 <<'PY'
+import socket
+import sys
+
+with socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=1):
+    pass
+PY
+        then
+            missing+=("postgres:15432")
+        fi
+
+        if ! "$PYTHON_BIN" - localhost 16379 > /dev/null 2>&1 <<'PY'
+import socket
+import sys
+
+with socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=1):
+    pass
+PY
+        then
+            missing+=("redis:16379")
+        fi
+
+        if ! curl -fsS --max-time 2 http://localhost:18123/ping > /dev/null 2>&1; then
+            missing+=("clickhouse:18123")
+        fi
+
+        if ! curl -fsS --max-time 2 http://localhost:19005/minio/health/live > /dev/null 2>&1; then
+            missing+=("minio:19005")
+        fi
+
+        if [ ${#missing[@]} -eq 0 ]; then
+            echo -e "${GREEN}Services ready${NC}"
+            return
+        fi
+
+        sleep 1
+    done
+
+    echo -e "${RED}Error: test services did not become reachable: ${missing[*]}${NC}" >&2
+    docker compose -f $COMPOSE_FILE -p $COMPOSE_PROJECT ps >&2 || true
+    exit 1
+}
+
+# Start services
+start_services() {
+    if services_running; then
+        echo -e "${GREEN}Services already running${NC}"
+    else
+        echo -e "${YELLOW}Starting test services...${NC}"
+        docker compose -f $COMPOSE_FILE -p $COMPOSE_PROJECT up -d
+    fi
+
+    wait_for_services
+}
+
+# Stop services
+stop_services() {
+    echo -e "${YELLOW}Stopping test services...${NC}"
+    docker compose -f $COMPOSE_FILE -p $COMPOSE_PROJECT down -v
+    echo -e "${GREEN}Services stopped${NC}"
+}
+
+# Run migrations
+run_migrations() {
+    echo -e "${YELLOW}Running migrations...${NC}"
+    local log_file
+    log_file="$(mktemp "${TMPDIR:-/tmp}/futureagi-test-migrate.XXXXXX")"
+
+    if ! "$PYTHON_BIN" manage.py migrate --run-syncdb > "$log_file" 2>&1; then
+        echo -e "${RED}Error: migrations failed${NC}" >&2
+        tail -n 80 "$log_file" >&2 || true
+        echo "Full migration log: $log_file" >&2
+        exit 1
+    fi
+
+    rm -f "$log_file"
+}
+
+# Run pytest
+run_pytest() {
+    "$PYTHON_BIN" -m pytest --reuse-db --import-mode=importlib "$@"
+}
+
+# Get changed test files
+get_changed_files() {
+    local base_branch="main"
+    git rev-parse --verify main > /dev/null 2>&1 || base_branch="master"
+
+    git diff --name-only $base_branch...HEAD -- '*.py' | grep -E 'test_.*\.py$' || true
+    git diff --name-only -- '*.py' | grep -E 'test_.*\.py$' || true
+}
+
+# Watch mode
+watch_mode() {
+    echo -e "${YELLOW}Watch mode - press Ctrl+C to stop${NC}"
+
+    if ! command -v fswatch &> /dev/null; then
+        echo -e "${RED}fswatch not installed. Install with: brew install fswatch${NC}"
+        exit 1
+    fi
+
+    run_pytest "$@"
+
+    fswatch -o --exclude '\.pyc$' --exclude '__pycache__' -e '.*' -i '\.py$' . | while read; do
+        echo -e "\n${YELLOW}File changed, rerunning tests...${NC}\n"
+        run_pytest "$@"
+    done
+}
+
+# Check for --no-services flag
+NO_SERVICES=false
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--no-services" ]; then
+        NO_SERVICES=true
+    else
+        ARGS+=("$arg")
+    fi
+done
+set -- "${ARGS[@]}"
+
+# Main
+case "${1:-}" in
+    help|-h|--help)
+        show_help
+        ;;
+    up)
+        start_services
+        ;;
+    down)
+        stop_services
+        ;;
+    logs)
+        docker compose -f $COMPOSE_FILE -p $COMPOSE_PROJECT logs -f
+        ;;
+    status)
+        docker compose -f $COMPOSE_FILE -p $COMPOSE_PROJECT ps
+        ;;
+    reset)
+        echo -e "${YELLOW}Resetting test database...${NC}"
+        stop_services
+        start_services
+        run_migrations
+        echo -e "${GREEN}Database reset complete${NC}"
+        ;;
+    unit)
+        shift
+        if [ "$NO_SERVICES" = false ]; then
+            start_services
+            run_migrations
+        fi
+        echo -e "${GREEN}Running unit tests...${NC}"
+        run_pytest -m "unit" "$@"
+        ;;
+    integration)
+        shift
+        if [ "$NO_SERVICES" = false ]; then
+            start_services
+            run_migrations
+        fi
+        echo -e "${GREEN}Running integration tests...${NC}"
+        run_pytest -m "integration" "$@"
+        ;;
+    app)
+        if [ -z "${2:-}" ]; then
+            echo -e "${RED}Error: Specify app name (e.g., bin/test app model_hub)${NC}"
+            exit 1
+        fi
+        app_name="$2"
+        shift 2
+        if [ "$NO_SERVICES" = false ]; then
+            start_services
+            run_migrations
+        fi
+        echo -e "${GREEN}Running tests for $app_name...${NC}"
+        run_pytest "$app_name/tests/" -v "$@"
+        ;;
+    stress)
+        shift
+        if [ "$NO_SERVICES" = false ]; then
+            start_services
+            run_migrations
+        fi
+        echo -e "${GREEN}Running stress suite (manual only)...${NC}"
+        run_pytest -m stress tests/stress/ "$@"
+        ;;
+    changed)
+        shift
+        changed_files=$(get_changed_files)
+        if [ -z "$changed_files" ]; then
+            echo -e "${YELLOW}No changed test files found${NC}"
+            exit 0
+        fi
+        if [ "$NO_SERVICES" = false ]; then
+            start_services
+            run_migrations
+        fi
+        echo -e "${GREEN}Running tests for changed files:${NC}"
+        echo "$changed_files"
+        run_pytest $changed_files "$@"
+        ;;
+    watch)
+        shift
+        if [ "$NO_SERVICES" = false ]; then
+            start_services
+            run_migrations
+        fi
+        watch_mode "$@"
+        ;;
+    *)
+        if [ "$NO_SERVICES" = false ]; then
+            start_services
+            run_migrations
+        fi
+        echo -e "${GREEN}Running tests...${NC}"
+        run_pytest "$@"
+        ;;
+esac

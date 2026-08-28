@@ -1,0 +1,20 @@
+meta {
+  name: user info
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/accounts/user-info/
+  body: none
+  auth: bearer
+}
+
+headers {
+  X-Workspace-ID: ed160bc1-c783-4d56-963a-c129549e0c09
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}

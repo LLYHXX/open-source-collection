@@ -1,0 +1,45 @@
+meta {
+  name: feedback get template v2
+  type: http
+  seq: 25
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/feedback/get-template/?user_eval_metric_id={{userEvalMetricId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+vars:pre-request {
+  experimentId: <experiment-uuid>
+  userEvalMetricId: <user-eval-metric-uuid>
+}
+
+docs {
+  ## Get Feedback Template V2
+
+  Returns the evaluation template details for rendering the feedback form in an experiment context.
+
+  ### Query Parameters
+  - `user_eval_metric_id` (required) - UUID of the UserEvalMetric
+
+  ### Response
+  ```json
+  {
+    "result": {
+      "output_type": "Pass/Fail",
+      "eval_description": "...",
+      "eval_name": "...",
+      "user_eval_name": "...",
+      "choices": ["Passed", "Failed"]
+    },
+    "status": 200
+  }
+  ```
+
+  For `choices` output type, also returns `multi_choice` boolean.
+}

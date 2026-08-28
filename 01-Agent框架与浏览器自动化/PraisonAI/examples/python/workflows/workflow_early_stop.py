@@ -1,0 +1,61 @@
+"""
+Workflow Early Stop Example
+
+Demonstrates how to stop a workflow early using custom handler
+functions that return StepResult with stop_workflow=True.
+"""
+
+from praisonaiagents import (
+    AgentFlow, Task, WorkflowContext, StepResult
+)
+
+# Custom validator that can stop the workflow
+def validate_data(context: WorkflowContext) -> StepResult:
+    """Check if data is valid and stop workflow if not."""
+    data = context.variables.get("data", {})
+    
+    if data.get("value", 0) < 0:
+        return StepResult(
+            output="❌ Validation failed: negative value detected. Stopping workflow.",
+            stop_workflow=True  # This stops the entire workflow
+        )
+    
+    return StepResult(
+        output="✅ Validation passed: data is valid.",
+        stop_workflow=False  # Continue to next step
+    )
+
+# Create workflow with early stop capability
+workflow = AgentFlow(
+    name="Data Processing",
+    description="Process data with validation gate",
+    variables={
+        "data": {"value": -5}  # Invalid data - will trigger early stop
+    },
+    steps=[
+        Task(
+            name="validate",
+            handler=validate_data  # Custom function
+        ),
+        Task(
+            name="process",
+            action="Process the validated data."  # Won't run if validation fails
+        ),
+        Task(
+            name="report",
+            action="Generate final report."  # Won't run if validation fails
+        )
+    ]
+)
+
+if __name__ == "__main__":
+    print("=== Testing with invalid data ===")
+    result = workflow.run("", llm="gpt-4o-mini", verbose=True)
+    for step in result.get("steps", []):
+        print(f"  {step.get('step', 'step')}: {step.get('output', step.get('status'))}")
+
+    print("\n=== Testing with valid data ===")
+    workflow.variables["data"] = {"value": 42}
+    result = workflow.run("", llm="gpt-4o-mini", verbose=True)
+    for step in result.get("steps", []):
+        print(f"  {step.get('step', 'step')}: {step.get('status', 'completed')}")

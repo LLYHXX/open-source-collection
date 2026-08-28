@@ -1,0 +1,96 @@
+eval_id: 162
+name: image_properties
+description: Validates image properties including dimensions, format, and file size. Useful for ensuring generated images meet
+  specific requirements.
+eval_tags:
+- Image
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  function_params_schema:
+    expected_width:
+      type: integer
+      default: null
+      nullable: true
+    expected_height:
+      type: integer
+      default: null
+      nullable: true
+    min_width:
+      type: integer
+      default: null
+      nullable: true
+    min_height:
+      type: integer
+      default: null
+      nullable: true
+    max_file_size_kb:
+      type: integer
+      default: null
+      nullable: true
+    expected_format:
+      type: string
+      default: null
+      nullable: true
+  config_params_desc:
+    text: Image as URL, file path, or base64 string
+    expected_width: Exact expected width in pixels
+    expected_height: Exact expected height in pixels
+    min_width: Minimum width in pixels
+    min_height: Minimum height in pixels
+    max_file_size_kb: Maximum file size in KB
+    expected_format: Expected format (JPEG, PNG, etc.)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        ew = kwargs.get("expected_width")
+        eh = kwargs.get("expected_height")
+        mw = kwargs.get("min_width")
+        mh = kwargs.get("min_height")
+        mfs = kwargs.get("max_file_size_kb")
+        ef = kwargs.get("expected_format")
+        if all(value is None for value in (ew, eh, mw, mh, mfs, ef)):
+            return {"score": 0.0, "reason": "At least one image constraint must be provided"}
+        import os, io, base64
+        try:
+            from PIL import Image
+        except ImportError:
+            return {"score": 0.0, "reason": "Requires PIL"}
+        text = kwargs.get("text", output or "")
+        try:
+            if isinstance(text, str) and os.path.isfile(text):
+                fsize = os.path.getsize(text)
+                img = Image.open(text)
+            else:
+                data = base64.b64decode(str(text))
+                fsize = len(data)
+                img = Image.open(io.BytesIO(data))
+        except Exception as e:
+            return {"score": 0.0, "reason": f"Cannot load image: {e}"}
+        w, h = img.size
+        fmt = img.format or "unknown"
+        issues = []
+        if ew is not None and w != int(ew):
+            issues.append(f"width {w} != {ew}")
+        if eh is not None and h != int(eh):
+            issues.append(f"height {h} != {eh}")
+        if mw is not None and w < int(mw):
+            issues.append(f"width {w} < min {mw}")
+        if mh is not None and h < int(mh):
+            issues.append(f"height {h} < min {mh}")
+        if mfs is not None and fsize > int(mfs)*1024:
+            issues.append(f"size {fsize/1024:.1f}KB > max {mfs}KB")
+        if ef is not None and fmt.upper() != str(ef).upper():
+            issues.append(f"format {fmt} != {ef}")
+        if issues:
+            return {"score": 0.0, "reason": f"Failed: {'; '.join(issues)}"}
+        return {"score": 1.0, "reason": f"OK: {w}x{h}, {fmt}, {fsize/1024:.1f}KB"}

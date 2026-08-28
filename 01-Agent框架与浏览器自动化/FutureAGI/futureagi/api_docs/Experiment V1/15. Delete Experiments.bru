@@ -1,0 +1,45 @@
+meta {
+  name: Delete Experiments
+  type: http
+  seq: 18
+}
+
+delete {
+  url: {{baseUrl}}/experiments/delete/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "experiment_ids": [
+      "uuid-experiment-1",
+      "uuid-experiment-2"
+    ]
+  }
+}
+
+docs {
+  ## Delete Experiments (V1)
+
+  Soft-deletes multiple experiments (sets deleted=True).
+  Used by DevelopBar.jsx.
+
+  ### Request Body
+  - `experiment_ids` — Array of experiment UUIDs to delete
+
+  ### Response
+  ```json
+  {
+    "message": {
+      "message": "2 experiments deleted successfully",
+      "deleted_count": 2
+    },
+    "status": 200
+  }
+  ```
+}

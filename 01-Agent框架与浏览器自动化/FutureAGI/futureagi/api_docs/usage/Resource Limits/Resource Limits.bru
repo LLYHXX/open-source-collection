@@ -1,0 +1,15 @@
+meta {
+  name: Resource Limits
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/usage/resource-limits/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

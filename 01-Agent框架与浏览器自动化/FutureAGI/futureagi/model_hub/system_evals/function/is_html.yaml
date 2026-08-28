@@ -1,0 +1,68 @@
+eval_id: 173
+name: is_html
+description: Validates if text contains well-formed HTML with proper tag nesting. Checks for the presence of HTML tags and validates
+  that all non-void tags are properly closed.
+eval_tags:
+- Output Format
+- Code
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    text: The text to validate as HTML
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        from html.parser import HTMLParser
+        text = str(kwargs.get("text", output or "")).strip()
+        if not text:
+            return {"score": 0.0, "reason": "Empty text"}
+        class V(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.errors = []
+                self.stack = []
+                self.has_tags = False
+            def handle_starttag(self, tag, attrs):
+                self.has_tags = True
+                void = {"area","base","br","col","embed","hr","img","input","link","meta","param","source","track","wbr"}
+                if tag.lower() not in void:
+                    self.stack.append(tag.lower())
+            def handle_endtag(self, tag):
+                tag = tag.lower()
+                if not self.stack:
+                    self.errors.append(f"orphan </{tag}>")
+                    return
+                if self.stack[-1] != tag:
+                    if tag in self.stack:
+                        self.errors.append(
+                            f"mismatched </{tag}> (expected </{self.stack[-1]}>)"
+                        )
+                        while self.stack and self.stack[-1] != tag:
+                            self.stack.pop()
+                        if self.stack:
+                            self.stack.pop()
+                    else:
+                        self.errors.append(f"orphan </{tag}>")
+                    return
+                self.stack.pop()
+        try:
+            v = V()
+            v.feed(text)
+            if not v.has_tags:
+                return {"score": 0.0, "reason": "No HTML tags found"}
+            if v.errors:
+                return {"score": 0.0, "reason": "; ".join(v.errors[:3])}
+            if v.stack:
+                return {"score": 0.0, "reason": f"Unclosed tags: {', '.join(v.stack)}"}
+            return {"score": 1.0, "reason": "Valid HTML"}
+        except Exception as e:
+            return {"score": 0.0, "reason": f"HTML error: {e}"}

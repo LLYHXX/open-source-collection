@@ -1,0 +1,53 @@
+meta {
+  name: create experiment v2 - llm agent
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/model-hub/experiments/v2/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "LLM Agent + Prompt Experiment 08",
+    "dataset_id": "d45c7229-b80a-4f77-bc97-94b720eea501",
+    "column_id": "912ddd27-0a34-4670-8573-f03a59eff5af",
+    "experiment_type": "llm",
+    "prompt_config": [
+      {
+        "name": "my-agent",
+        "agent_id": "cffb1fc7-116a-4fb3-a8d5-c1db81f00e0a",
+        "agent_version": "3e591a6d-1e29-40b7-a4e7-120edc0b0ea5"
+      },
+      {
+        "name": "my-agent",
+        "agent_id": "cffb1fc7-116a-4fb3-a8d5-c1db81f00e0a",
+        "agent_version": "3e591a6d-1e29-40b7-a4e7-120edc0b0ea5"
+      }
+    ],
+    "user_eval_metrics": [
+      {
+        "template_id": "8fb9c73b-ff61-432a-9e7d-8741fa8317bf",
+        "name": "Relevance Check",
+        "config": {
+          "mapping": {
+            "input": "prompt_chain",
+            "output": "output"
+          },
+          "config": {},
+          "reasonColumn": false
+        },
+        "model": "turing_flash",
+        "error_localizer": false,
+        "kb_id": null
+      }
+    ]
+  }
+}

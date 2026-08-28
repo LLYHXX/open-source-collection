@@ -1,0 +1,112 @@
+meta {
+  name: Update Run Test Components
+  type: http
+  seq: 18
+}
+
+patch {
+  url: http://localhost:8000/simulate/run-tests/run-test-1/components/
+  auth: bearer
+  body: json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "agent_definition_id": "agent-def-123",
+    "simulator_agent_id": "sim-agent-456",
+    "scenarios": {
+      "add": ["scenario-1", "scenario-2"],
+      "remove": ["scenario-3"]
+    }
+  }
+}
+
+docs {
+  name: Update Run Test Components
+  description: Update AgentDefinition, SimulatorAgent, and Scenarios of a run test with granular control for scenarios
+  request: {
+    "method": "PATCH",
+    "url": "http://localhost:8000/simulate/run-tests/{run_test_id}/components/",
+    "headers": {
+      "Authorization": "Bearer {token}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "agent_definition_id": "uuid (optional)",
+      "simulator_agent_id": "uuid (optional)",
+      "scenarios": {
+        "add": ["scenario_id_1", "scenario_id_2"],
+        "remove": ["scenario_id_3", "scenario_id_4"]
+      }
+    }
+  }
+  response: {
+    "id": "run_test_id",
+    "name": "Run Test Name",
+    "description": "Description",
+    "agent_definition": "agent_definition_id",
+    "agent_definition_detail": {...},
+    "scenarios": ["scenario_id_1", "scenario_id_2"],
+    "scenarios_detail": [...],
+    "simulator_agent": "simulator_agent_id",
+    "simulator_agent_detail": {...},
+    "organization": "organization_id",
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
+  }
+  error_responses: [
+    {
+      "status": 400,
+      "error": "Cannot update a run test that has test executions currently running."
+    },
+    {
+      "status": 400,
+      "error": "Scenarios must be provided as an object with 'add' and/or 'remove' arrays"
+    },
+    {
+      "status": 400,
+      "error": "Scenarios 'add' must be an array of scenario IDs"
+    },
+    {
+      "status": 400,
+      "error": "Scenarios 'remove' must be an array of scenario IDs"
+    },
+    {
+      "status": 404,
+      "error": "Organization not found for the user."
+    },
+    {
+      "status": 404,
+      "error": "Run test not found"
+    },
+    {
+      "status": 404,
+      "error": "Agent definition not found"
+    },
+    {
+      "status": 404,
+      "error": "Simulator agent not found"
+    },
+    {
+      "status": 404,
+      "error": "Scenarios not found: [scenario_id_1, scenario_id_2]"
+    },
+    {
+      "status": 500,
+      "error": "Failed to update run test components: {error_message}"
+    }
+  ]
+  notes: [
+    "This endpoint allows granular control over run test components",
+    "AgentDefinition and SimulatorAgent can be updated individually",
+    "Scenarios can be added and/or removed in the same request",
+    "Cannot update run tests that have test executions currently running",
+    "Requires authentication and organization access",
+    "All components must belong to the user's organization",
+    "Returns the complete updated run test object"
+  ]
+}

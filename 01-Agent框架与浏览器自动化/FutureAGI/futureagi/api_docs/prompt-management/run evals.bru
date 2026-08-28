@@ -1,0 +1,38 @@
+meta {
+  name: run evals
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{host}}/model-hub/prompt-templates/5a9341c0-40b8-42ff-a3a8-b7e0440a7994/run-evals-on-multiple-versions/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "version_to_run": ["v1"],
+    "eval_id": ["33cb4756-9ffd-475c-8ece-824c4ae3fe80"]
+  }
+}
+
+body:multipart-form {
+  version_to_run[1]: v1
+  eval_id: 90c611d7-e68c-4da2-a096-be5a788092da
+}
+
+tests {
+  /*
+  Test cases:
+
+  1. Run eval on single version,
+  2. Run eval on multiple version,
+  3. Run multiple eval on single/multiple versions
+  4. Run additional evals on single/multiple versions
+  */
+}

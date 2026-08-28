@@ -1,0 +1,24 @@
+meta {
+  name: Delete Knowledge Base
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{host}}/model-hub/kb/2bddfa4e-47fd-4a26-b6cf-006c5263d959/
+  body: none
+  auth: bearer
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  This request deletes a specific knowledge base.
+  Replace {{knowledge_base_id}} with the actual ID of the knowledge base.
+}

@@ -1,0 +1,504 @@
+import pytest
+import asyncio
+import time
+from praisonai_bot.gateway.rate_limiter import AuthRateLimiter
+from praisonai_bot.gateway.pairing import PairingStore
+from praisonai_bot.gateway.exec_approval import ExecApprovalManager, Resolution
+from praisonai_bot.gateway.gateway_approval import GatewayApprovalBackend
+from praisonaiagents.approval import ApprovalRequest
+
+from unittest.mock import patch
+
+def test_auth_rate_limiter():
+    limiter = AuthRateLimiter(max_attempts=2, window_seconds=1.0, lockout_seconds=1.0)
+    
+    with patch("time.time") as mock_time:
+        mock_time.return_value = 1000.0
+        assert limiter.allow("test", "ip1") is True
+        assert limiter.allow("test", "ip1") is True
+        assert limiter.allow("test", "ip1") is False  # rate limited
+        
+        # different ip should work
+        assert limiter.allow("test", "ip2") is True
+        
+        # advance time past lockout
+        mock_time.return_value = 1001.5
+        
+        # should be allowed again
+        assert limiter.allow("test", "ip1") is True
+
+@pytest.mark.asyncio
+async def test_pairing_store():
+    store = PairingStore()
+    
+    # generate code
+    code = store.generate_code()
+    assert len(code) == 8
+    
+    # generate a few to fill store
+    code2 = store.generate_code()
+    
+    # simulate user verifying
+    device_id = "dev_123"
+    result = store.verify_and_pair(code, device_id, "test_channel")
+    assert result is True
+    
+    # verify second time should fail (code consumed)
+    assert store.verify_and_pair(code, device_id, "test_channel") is False
+    
+    # revoke
+    store.revoke(device_id, "test_channel")
+
+
+@pytest.mark.asyncio
+async def test_pairing_store_channel_bound_code():
+    store = PairingStore()
+    code = store.generate_code(channel_type="telegram", channel_id="tg_user_1")
+
+    # Should resolve channel_id from pending code when omitted
+    assert store.verify_and_pair(code, None, "telegram") is True
+    assert store.is_paired("tg_user_1", "telegram") is True
+
+
+@pytest.mark.asyncio
+async def test_pairing_store_rejects_channel_id_mismatch():
+    store = PairingStore()
+    code = store.generate_code(channel_type="telegram", channel_id="tg_user_1")
+
+    # Mismatched explicit channel_id must be rejected
+    assert store.verify_and_pair(code, "tg_user_2", "telegram") is False
+
+@pytest.mark.asyncio
+async def test_exec_approval_manager():
+    mgr = ExecApprovalManager()
+    
+    # Register request
+    req_id, future = await mgr.register(tool_name="rm", arguments={"path": "/"}, risk_level="critical")
+    assert req_id in mgr._pending
+    
+    # List pending
+    pending = mgr.list_pending()
+    assert len(pending) == 1
+    assert pending[0]["request_id"] == req_id
+    assert pending[0]["tool_name"] == "rm"
+    
+    # Resolve it
+    mgr.resolve(req_id, Resolution(approved=True, reason="Unit test allowed"))
+    
+    await asyncio.sleep(0.01)
+    
+    # Check future is resolved
+    assert future.done()
+    decision = await future
+    assert decision.approved is True
+    assert decision.reason == "Unit test allowed"
+    
+    # No pending
+    assert len(mgr.list_pending()) == 0
+
+@pytest.mark.asyncio
+async def test_gateway_approval_backend():
+    mgr = ExecApprovalManager()
+    backend = GatewayApprovalBackend(mgr)
+    
+    req = ApprovalRequest(tool_name="test_tool", arguments={}, risk_level="high")
+    
+    # Start request in background
+    task = asyncio.create_task(backend.request_approval(req))
+    
+    # Give it a tiny bit to register
+    await asyncio.sleep(0.01)
+    
+    pending = mgr.list_pending()
+    assert len(pending) == 1
+    req_id = pending[0]["request_id"]
+    
+    # Resolve
+    mgr.resolve(req_id, Resolution(approved=False, reason="Denied by test"))
+    
+    decision = await task
+    assert decision.approved is False
+    assert decision.reason == "Denied by test"
+
+@pytest.mark.asyncio
+async def test_exec_approval_allowlist():
+    mgr = ExecApprovalManager(durable=False)
+    backend = GatewayApprovalBackend(mgr)
+    
+    # Add to allowlist
+    mgr.allowlist.add("safe_tool")
+    
+    req = ApprovalRequest(tool_name="safe_tool", arguments={}, risk_level="high")
+    
+    # Should resolve immediately without waiting
+    decision = await backend.request_approval(req)
+    assert decision.approved is True
+    assert decision.reason == "allow-always"
+
+    # Pending shouldn't be populated
+    assert len(mgr.list_pending()) == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_persists_across_instances():
+    """Pending codes should survive PairingStore recreation (cross-process test).
+
+    Codes are hashed at rest, so the raw code is NOT recoverable from a fresh
+    instance — but the pending request is still visible and verifiable.
+    """
+    import tempfile
+    import os
+    import json
+
+    # Create temporary directory for this test
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Instance A generates a code (no explicit secret - uses persisted secret file)
+        store_a = PairingStore(store_dir=tmpdir)
+        code = store_a.generate_code(channel_type="telegram", channel_id="tg_42")
+        assert len(code) == 8
+
+        # The raw code must never be written to disk in plaintext.
+        with open(os.path.join(tmpdir, "pairing.json")) as fh:
+            raw = fh.read()
+        assert code not in raw
+        assert "code_hash" in json.loads(raw)["pending"][0]
+
+        # Instance B (simulating CLI in separate process) should see the pending
+        # request (metadata) but not the raw code.
+        store_b = PairingStore(store_dir=tmpdir)
+        pending = store_b.list_pending()
+        assert len(pending) == 1
+        assert pending[0]["code"] is None
+        assert pending[0]["channel_type"] == "telegram"
+        assert pending[0]["channel_id"] == "tg_42"
+
+        # And it can still verify the code presented from chat (hash match).
+        assert store_b.verify_and_pair(code, None, "telegram") is True
+
+
+@pytest.mark.asyncio 
+async def test_secret_persists_across_instances():
+    """Two PairingStore instances with same dir should be able to verify each other's codes."""
+    import tempfile
+    import os
+    import stat
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Instance A generates a code (no explicit secret)
+        store_a = PairingStore(store_dir=tmpdir)
+        code = store_a.generate_code(channel_type="telegram", channel_id="tg_secret_test")
+        
+        # Verify .gateway_secret file was created with correct permissions
+        secret_path = os.path.join(tmpdir, ".gateway_secret")
+        assert os.path.exists(secret_path)
+        mode = stat.S_IMODE(os.stat(secret_path).st_mode)
+        assert mode == 0o600
+        
+        # Instance B should be able to verify the code (shared secret from file)
+        store_b = PairingStore(store_dir=tmpdir)
+        result = store_b.verify_and_pair(code, None, "telegram")
+        assert result is True
+        assert store_b.is_paired("tg_secret_test", "telegram") is True
+
+
+@pytest.mark.asyncio
+async def test_secret_created_mode_0600():
+    """New secret files must be owner-only (0600) on POSIX."""
+    import tempfile
+    import os
+    import stat
+
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits are not authoritative on Windows")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        PairingStore(store_dir=tmpdir)
+        secret_path = os.path.join(tmpdir, ".gateway_secret")
+        assert os.path.exists(secret_path)
+        mode = stat.S_IMODE(os.stat(secret_path).st_mode)
+        assert mode == 0o600
+
+
+@pytest.mark.asyncio
+async def test_insecure_file_chmod_on_load():
+    """An existing 0o666 secret file should be remediated to 0o600 on load."""
+    import tempfile
+    import os
+    import stat
+
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits are not authoritative on Windows")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        secret_path = os.path.join(tmpdir, ".gateway_secret")
+        with open(secret_path, "wb") as f:
+            f.write(b"x" * 64)
+        os.chmod(secret_path, 0o666)
+        assert stat.S_IMODE(os.stat(secret_path).st_mode) == 0o666
+
+        # Instantiating should remediate the insecure permissions.
+        PairingStore(store_dir=tmpdir)
+        assert stat.S_IMODE(os.stat(secret_path).st_mode) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_insecure_file_remediated_across_instances():
+    """Repeated inits should not spam warnings after permissions are fixed."""
+    import tempfile
+    import os
+    import stat
+
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits are not authoritative on Windows")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        secret_path = os.path.join(tmpdir, ".gateway_secret")
+        with open(secret_path, "wb") as f:
+            f.write(b"y" * 64)
+        os.chmod(secret_path, 0o644)
+
+        PairingStore(store_dir=tmpdir)
+        assert stat.S_IMODE(os.stat(secret_path).st_mode) == 0o600
+
+        # Second instance sees an already-secured file (no further change).
+        PairingStore(store_dir=tmpdir)
+        assert stat.S_IMODE(os.stat(secret_path).st_mode) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_chmod_failure_fails_closed_without_rotating_secret():
+    """A chmod failure must raise (fail closed), not swallow and regenerate.
+
+    Silently regenerating would rotate the HMAC key and invalidate all
+    outstanding pairing codes, so the OSError must propagate instead of
+    being caught by the file-read handler.
+    """
+    import tempfile
+    import os
+    from unittest import mock
+
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits are not authoritative on Windows")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        secret_path = os.path.join(tmpdir, ".gateway_secret")
+        original = b"z" * 64
+        with open(secret_path, "wb") as f:
+            f.write(original)
+        os.chmod(secret_path, 0o666)
+
+        with mock.patch(
+            "praisonai_bot.gateway.pairing.os.chmod",
+            side_effect=OSError("chmod denied"),
+        ):
+            with pytest.raises(OSError):
+                PairingStore(store_dir=tmpdir)
+
+        # The secret file was NOT rewritten/rotated.
+        with open(secret_path, "rb") as f:
+            assert f.read() == original
+
+
+@pytest.mark.asyncio
+async def test_cli_approve_e2e():
+    """Test CLI pairing approve command end-to-end."""
+    import tempfile
+    from typer.testing import CliRunner
+    from praisonai.cli.commands.pairing import app as pairing_app
+    
+    runner = CliRunner()
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Seed a PairingStore with a bound code (uses persisted secret file)
+        store = PairingStore(store_dir=tmpdir)
+        code = store.generate_code(channel_type="telegram", channel_id="tg_test")
+        
+        # Invoke CLI approve (2-arg form, no explicit channel_id)
+        result = runner.invoke(pairing_app, [
+            "approve", "telegram", code, "--store-dir", tmpdir
+        ])
+        
+        # Should succeed
+        assert result.exit_code == 0
+        
+        # Verify the channel is now paired (fresh instance uses same secret file)
+        fresh_store = PairingStore(store_dir=tmpdir)
+        assert fresh_store.is_paired("tg_test", "telegram") is True
+
+
+@pytest.mark.asyncio
+async def test_cli_approve_invalid_code():
+    """CLI approve should exit non-zero for invalid codes and leave store unchanged."""
+    import tempfile
+    from typer.testing import CliRunner
+    from praisonai.cli.commands.pairing import app as pairing_app
+    
+    runner = CliRunner()
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create empty store (uses persisted secret file)
+        store = PairingStore(store_dir=tmpdir)
+        initial_paired = len(store.list_paired())
+        
+        # Try to approve nonexistent code
+        result = runner.invoke(pairing_app, [
+            "approve", "telegram", "deadbeef", "--store-dir", tmpdir
+        ])
+        
+        # Should fail
+        assert result.exit_code != 0
+        output = result.output or ""
+        assert "invalid" in output.lower() or "expired" in output.lower()
+        
+        # Store should be unchanged (fresh instance uses same secret file)
+        fresh_store = PairingStore(store_dir=tmpdir)
+        assert len(fresh_store.list_paired()) == initial_paired
+
+
+@pytest.mark.asyncio
+async def test_cli_approve_survives_restart():
+    """Generate code, drop instance, create fresh one, approve should succeed."""
+    import tempfile
+    from typer.testing import CliRunner
+    from praisonai.cli.commands.pairing import app as pairing_app
+    
+    runner = CliRunner()
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Generate code and drop the instance (uses persisted secret file)
+        store = PairingStore(store_dir=tmpdir)
+        code = store.generate_code(channel_type="telegram", channel_id="tg_restart")
+        del store  # Explicitly drop the instance to simulate restart
+        
+        # Fresh instance should be able to approve the code (same secret file)
+        result = runner.invoke(pairing_app, [
+            "approve", "telegram", code, "--store-dir", tmpdir
+        ])
+        
+        # Should succeed
+        assert result.exit_code == 0
+        
+        # Verify pairing persisted (fresh instance uses same secret file)
+        final_store = PairingStore(store_dir=tmpdir)
+        assert final_store.is_paired("tg_restart", "telegram") is True
+
+
+@pytest.mark.asyncio
+async def test_codes_use_unambiguous_alphabet():
+    """Generated codes must avoid ambiguous characters (0/O/1/I)."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = PairingStore(store_dir=tmpdir)
+        for _ in range(50):
+            code = store.generate_code(channel_type="telegram")
+            assert len(code) == 8
+            assert set(code) <= set("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+
+
+@pytest.mark.asyncio
+async def test_codes_hashed_at_rest():
+    """The raw pairing code must never be written to pairing.json."""
+    import tempfile
+    import os
+    import json
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = PairingStore(store_dir=tmpdir)
+        code = store.generate_code(channel_type="telegram", channel_id="tg_hash")
+
+        with open(os.path.join(tmpdir, "pairing.json")) as fh:
+            data = json.load(fh)
+        entry = data["pending"][0]
+        assert "code" not in entry
+        assert entry["code_hash"] != code
+        assert len(entry["code_hash"]) == 64  # sha256 hexdigest
+
+
+@pytest.mark.asyncio
+async def test_store_level_brute_force_lockout():
+    """After N failed verifications a channel_type is locked out uniformly."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = PairingStore(
+            store_dir=tmpdir,
+            max_failures=3,
+            lockout_window=60.0,
+            lockout_cooldown=300.0,
+        )
+        good = store.generate_code(channel_type="telegram", channel_id="tg_bf")
+
+        # Enough wrong codes to exceed the ceiling and trip the lockout window.
+        for _ in range(4):
+            assert store.verify_and_pair("WRONGXXX", "tg_bf", "telegram") is False
+
+        # Once locked out, even the VALID code is refused while the cooldown is
+        # active — protection is store-level (not tied to a single surface).
+        assert store.verify_and_pair(good, "tg_bf", "telegram") is False
+        assert store.is_paired("tg_bf", "telegram") is False
+
+
+@pytest.mark.asyncio
+async def test_successful_verify_clears_failures():
+    """A successful pairing resets the failed-attempt counter."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = PairingStore(store_dir=tmpdir, max_failures=3)
+        # Two failures, then a success should clear the counter.
+        assert store.verify_and_pair("WRONGXXX", "tg_ok", "telegram") is False
+        assert store.verify_and_pair("WRONGYYY", "tg_ok", "telegram") is False
+        code = store.generate_code(channel_type="telegram", channel_id="tg_ok")
+        assert store.verify_and_pair(code, "tg_ok", "telegram") is True
+
+        # Counter cleared: a fresh burst of failures is allowed again without
+        # the earlier two counting toward the ceiling.
+        code2 = store.generate_code(channel_type="telegram", channel_id="tg_ok2")
+        assert store.verify_and_pair("WRONGZZZ", "tg_ok2", "telegram") is False
+        assert store.verify_and_pair("WRONGWWW", "tg_ok2", "telegram") is False
+        assert store.verify_and_pair(code2, "tg_ok2", "telegram") is True
+
+
+@pytest.mark.asyncio
+async def test_channel_id_mismatch_does_not_reset_failures():
+    """A valid code presented with the wrong channel_id must not clear the
+    brute-force counter — otherwise each rejected binding hands the next guess
+    a fresh attempt budget."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = PairingStore(store_dir=tmpdir, max_failures=3)
+        # Three failed guesses prime the counter right up to the ceiling.
+        assert store.verify_and_pair("WRONGXXX", "tg_x", "telegram") is False
+        assert store.verify_and_pair("WRONGYYY", "tg_x", "telegram") is False
+        assert store.verify_and_pair("WRONGZZZ", "tg_x", "telegram") is False
+
+        # A valid code bound to tg_bound, but presented with the WRONG
+        # channel_id: it is rejected and must NOT reset the primed counter.
+        good = store.generate_code(channel_type="telegram", channel_id="tg_bound")
+        assert store.verify_and_pair(good, "tg_wrong", "telegram") is False
+
+        # Counter was preserved, so the next failure trips the lockout.
+        assert store.verify_and_pair("WRONGWWW", "tg_x", "telegram") is False
+        # Locked out now: even a fresh valid code is refused during cooldown.
+        good2 = store.generate_code(channel_type="telegram", channel_id="tg_bound2")
+        assert store.verify_and_pair(good2, "tg_bound2", "telegram") is False
+
+
+@pytest.mark.asyncio
+async def test_max_pending_counts_rehydrated_entries():
+    """max_pending must count entries rehydrated from disk after a restart,
+    not just in-memory raw codes — otherwise repeated restarts grow the store
+    past the configured bound."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_a = PairingStore(store_dir=tmpdir, max_pending=2)
+        store_a.generate_code(channel_type="telegram", channel_id="tg_1")
+        store_a.generate_code(channel_type="telegram", channel_id="tg_2")
+
+        # Fresh instance rehydrates both pending entries as hashes only.
+        store_b = PairingStore(store_dir=tmpdir, max_pending=2)
+        with pytest.raises(RuntimeError):
+            store_b.generate_code(channel_type="telegram", channel_id="tg_3")

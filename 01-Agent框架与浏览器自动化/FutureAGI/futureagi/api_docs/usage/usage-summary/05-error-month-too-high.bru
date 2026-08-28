@@ -1,0 +1,42 @@
+meta {
+  name: 05 - Error - Month Above Range (13)
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}/usage/usage-summary/?month=13&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 13
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Usage Summary - Month Above Valid Range
+
+  ### Test Scenario
+  - Month set to 13 (invalid - above maximum)
+  - Tests month range validation (must be <= 12)
+
+  ### Expected Response
+  - Status: 400 Bad Request
+  - Response structure:
+    ```json
+    {
+      "status": false,
+      "message": "Error message containing 'month'"
+    }
+    ```
+
+  ### Notes
+  - Month must be between 1 and 12 (inclusive)
+  - Tests upper boundary validation
+}

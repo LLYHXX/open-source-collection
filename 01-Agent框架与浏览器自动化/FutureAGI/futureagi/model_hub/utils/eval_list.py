@@ -1,0 +1,676 @@
+"""
+Utility functions for the eval template list API (Phase 1).
+
+Handles: queryset building, eval type derivation, output type derivation,
+30-day chart data computation.
+"""
+
+from collections import defaultdict
+from collections.abc import Iterable
+from copy import deepcopy
+from datetime import timedelta
+from typing import TYPE_CHECKING
+
+from django.db.models import Count, Q, QuerySet
+
+_RUN_CONFIG_DEFAULTS: dict = {
+    "agent_mode": "agent",
+    "check_internet": False,
+    "summary": "concise",
+    "pass_threshold": 0.5,
+    "error_localizer_enabled": False,
+    "data_injection": {},
+    "knowledge_bases": [],
+    "tools": {},
+}
+
+
+def build_run_config_view(eval_config) -> dict:
+    from model_hub.services.error_localizer_service import error_localizer_enabled
+
+    binding_json = getattr(eval_config, "config", None) or {}
+    run_config = binding_json.get("run_config") or {}
+    view = {k: run_config.get(k, deepcopy(v)) for k, v in _RUN_CONFIG_DEFAULTS.items()}
+    summary = view["summary"]
+    if isinstance(summary, dict):
+        view["summary"] = summary.get("type", _RUN_CONFIG_DEFAULTS["summary"])
+    view["error_localizer_enabled"] = error_localizer_enabled(eval_config)
+    return view
+
+
+def normalize_search_for_name(search: str) -> Q:
+    """Build a Q object that matches eval template names regardless of
+    whether the user typed spaces, underscores, or hyphens.
+
+    Eval template names are stored as slug-style identifiers using
+    underscores and hyphens (e.g. ``context_adherence``), but users
+    naturally search with spaces (e.g. ``context adherence``).  A plain
+    ``name__icontains`` lookup treats them as distinct, returning zero
+    results.
+
+    This helper expands the search term into OR-ed lookups so that
+    ``"context adherence"`` also matches ``context_adherence`` and
+    ``context-adherence`` in the database.
+
+    Args:
+        search: Raw search string (will be stripped).
+
+    Returns:
+        A ``Q`` object that can be passed to ``.filter()``.
+    """
+    term = search.strip()
+    return (
+        Q(name__icontains=term)
+        | Q(name__icontains=term.replace(" ", "_"))
+        | Q(name__icontains=term.replace(" ", "-"))
+    )
+
+
+from agentic_eval.core_evals.fi_evals.eval_type import (
+    FunctionEvalTypeId,
+    FutureAgiEvalTypeId,
+    GroundedEvalTypeId,
+    LlmEvalTypeId,
+)
+from model_hub.models.choices import EvalOutputType, OwnerChoices
+from model_hub.types import EvalListFilters, ThirtyDayDataPoint
+from tfc.constants.api_calls import APICallStatusChoices
+
+if TYPE_CHECKING:
+    from model_hub.models.evals_metric import EvalTemplate
+
+# Pre-compute sets for fast lookup
+_FUNCTION_EVAL_IDS = {e.value for e in FunctionEvalTypeId}
+_LLM_EVAL_IDS = {e.value for e in LlmEvalTypeId}
+_FUTUREAGI_EVAL_IDS = {e.value for e in FutureAgiEvalTypeId}
+_GROUNDED_EVAL_IDS = {e.value for e in GroundedEvalTypeId}
+
+# LLM-based evaluators that use an LLM to judge (even if they have deterministic output)
+# DeterministicEvaluator and RankingEvaluator are in FutureAgiEvalTypeId but they're
+# LLM-based evaluators that use structured prompts — NOT code/function evals.
+_LLM_BASED_EVAL_IDS = (
+    _LLM_EVAL_IDS
+    | _FUTUREAGI_EVAL_IDS  # DeterministicEvaluator, RankingEvaluator
+    | _GROUNDED_EVAL_IDS  # AnswerSimilarity
+    | {
+        # Additional LLM-based evaluators not in the enum files
+        "PerplexityEvaluator",
+        "OutputEvaluator",
+        "ChunkUtilization",
+        "ChunkAttribution",
+        "ConversationResolution",
+        "ImageInstructionEvaluator",
+        "AudioTranscriptionEvaluator",
+        "ContextSimilarity",
+        "CustomPrompt",
+    }
+)
+
+# Tags that indicate agent-type evals
+_AGENT_TAGS = {"agent", "agentic", "agent_eval"}
+# Tags that indicate code/function-type evals (NOT "deterministic" — that's an LLM output type)
+_CODE_TAGS = {"code", "function"}
+
+# Mapping from config output values to our normalized output types
+_OUTPUT_TYPE_MAP = {
+    EvalOutputType.PASS_FAIL.value: "pass_fail",
+    EvalOutputType.SCORE.value: "percentage",
+    EvalOutputType.NUMERIC.value: "percentage",
+    EvalOutputType.REASON.value: "percentage",
+    EvalOutputType.CHOICES.value: "deterministic",
+    EvalOutputType.EMPTY.value: "percentage",
+}
+
+# Mapping from composite_child_axis to normalized output types
+# (mirrors the axis_map in derive_output_type)
+_COMPOSITE_AXIS_MAP = {
+    "pass_fail": "pass_fail",
+    "percentage": "percentage",
+    "choices": "deterministic",
+    "code": "pass_fail",
+}
+
+
+def derive_eval_type(template: "EvalTemplate") -> str:
+    """
+    Derive the eval type (llm/code/agent) from an EvalTemplate.
+
+    Uses the dedicated eval_type field if set.
+    Falls back to tag/config-based detection for backward compatibility.
+    For composites, returns a single normalized type so response schemas and
+    filters stay compatible with the 3-type contract.
+    """
+    # Composite: return a single canonical type
+    if getattr(template, "template_type", "single") == "composite":
+        return _derive_composite_eval_type(template)
+
+    # Prefer the dedicated field (set by migration 0077+)
+    if hasattr(template, "eval_type") and template.eval_type:
+        return template.eval_type
+
+    # Fallback: derive from tags and config (pre-migration records)
+    config = template.config or {}
+    tags = {t.lower() for t in (template.eval_tags or [])}
+    eval_type_id = config.get("eval_type_id", "")
+
+    if tags & _AGENT_TAGS or eval_type_id == "AgentEvaluator":
+        return "agent"
+
+    if eval_type_id:
+        if eval_type_id in _FUNCTION_EVAL_IDS:
+            return "code"
+        if eval_type_id in _LLM_BASED_EVAL_IDS:
+            return "llm"
+
+    if tags & _CODE_TAGS:
+        return "code"
+
+    return "llm"
+
+
+def _derive_composite_eval_type(template: "EvalTemplate") -> str:
+    """Return a single canonical eval type for a composite."""
+    from model_hub.models.evals_metric import CompositeEvalChild
+
+    child_types = list(
+        CompositeEvalChild.objects.filter(parent=template, deleted=False)
+        .select_related("child")
+        .values_list("child__eval_type", flat=True)
+    )
+    return infer_composite_eval_type(child_types)
+
+
+def infer_composite_eval_type(child_types: Iterable[str | None]) -> str:
+    """Collapse composite child types into one API-safe eval type.
+
+    Mixed composites still need a single `eval_type` because the API and DB
+    field only support `llm`, `code`, or `agent`. We use the strongest child
+    type present so agent-containing composites remain discoverable as agent
+    evals, code-only mixes remain code, and llm is the fallback.
+    """
+    normalized = {t if t in {"llm", "code", "agent"} else "llm" for t in child_types}
+    if "agent" in normalized:
+        return "agent"
+    if "code" in normalized:
+        return "code"
+    return "llm"
+
+
+def derive_output_type(template: "EvalTemplate") -> str:
+    """
+    Derive the normalized output type from an EvalTemplate's config.
+
+    Maps:
+    - "Pass/Fail" -> "pass_fail"
+    - "score" / "numeric" / "reason" / "" -> "percentage"
+    - "choices" -> "deterministic"
+    For composites, returns the composite_child_axis mapped to output type.
+    """
+    # Composite: use the axis as the output type
+    if getattr(template, "template_type", "single") == "composite":
+        axis = getattr(template, "composite_child_axis", "") or ""
+        return _COMPOSITE_AXIS_MAP.get(axis, "percentage")
+
+    if getattr(template, "output_type_normalized", None):
+        return template.output_type_normalized
+
+    config = template.config or {}
+    output = config.get("output", "")
+    return _OUTPUT_TYPE_MAP.get(output, "percentage")
+
+
+def get_organization_display_name(template: "EvalTemplate") -> str:
+    organization = getattr(template, "organization", None)
+    if not organization:
+        return "User"
+
+    display_name = (
+        getattr(organization, "display_name", "")
+        or getattr(organization, "name", "")
+        or ""
+    ).strip()
+    return display_name or "User"
+
+
+def get_created_by_name(template: "EvalTemplate") -> str:
+    """
+    Get display name for the template creator.
+
+    Returns "System" for system-owned templates, or the user's name/email
+    for user-owned templates. Falls back to EvalTemplateVersion.created_by,
+    then to the organization display name for legacy rows without creator metadata.
+    """
+    if template.owner == OwnerChoices.SYSTEM.value:
+        return "System"
+
+    # Try to get user from evaluators linked to this template
+    evaluators = getattr(template, "_prefetched_evaluators", None)
+    if evaluators is not None:
+        for evaluator in evaluators:
+            if evaluator.user:
+                name = getattr(evaluator.user, "name", "") or ""
+                if name.strip():
+                    return name.strip()
+                return evaluator.user.email
+    else:
+        # Fallback: query the evaluator relationship
+        evaluator = (
+            template.evaluators.select_related("user")
+            .filter(user__isnull=False)
+            .first()
+        )
+        if evaluator and evaluator.user:
+            name = getattr(evaluator.user, "name", "") or ""
+            if name.strip():
+                return name.strip()
+            return evaluator.user.email
+
+    # Fallback: check EvalTemplateVersion for creator (v2 API path)
+    try:
+        from model_hub.models.evals_metric import EvalTemplateVersion
+
+        # Prefer a prefetched, version_number-ordered list when the caller
+        # supplied one (e.g. via Prefetch(..., to_attr="_prefetched_versions"))
+        # so we don't issue a per-row query inside a list loop (N+1).
+        prefetched_versions = getattr(template, "_prefetched_versions", None)
+        if prefetched_versions is not None:
+            version = prefetched_versions[0] if prefetched_versions else None
+        else:
+            version = (
+                EvalTemplateVersion.objects.filter(eval_template=template)
+                .select_related("created_by")
+                .order_by("version_number")
+                .first()
+            )
+        if version and version.created_by:
+            name = getattr(version.created_by, "name", "") or ""
+            if name.strip():
+                return name.strip()
+            return version.created_by.email
+    except Exception:
+        pass
+
+    return get_organization_display_name(template)
+
+
+def build_user_eval_list_items(
+    user_evals: Iterable, *, is_experiment_scope: bool = False
+) -> list[dict]:
+    """Build the canonical user-eval item shape used by get_evals_list."""
+    from model_hub.models.develop_dataset import Column, SourceChoices
+    from model_hub.utils.evals import NOT_UI_EVALS
+
+    user_evals = list(user_evals)
+    column_qs = Column.objects.filter(
+        source_id__in=[str(user_eval.id) for user_eval in user_evals],
+        deleted=False,
+    )
+    if is_experiment_scope:
+        column_qs = column_qs.filter(source=SourceChoices.EXPERIMENT_EVALUATION.value)
+    column_rows = list(column_qs.values("source_id", "id", "status"))
+    column_map = {row["source_id"]: row["id"] for row in column_rows}
+    column_status_map = {row["source_id"]: row["status"] for row in column_rows}
+
+    run_evals: list[dict] = []
+
+    for user_eval in user_evals:
+        template = user_eval.template
+
+        if not template or template.name in NOT_UI_EVALS:
+            continue
+
+        run_config_raw = (user_eval.config or {}).get("run_config", {}) or {}
+
+        item = {
+            "id": user_eval.id,
+            "name": user_eval.name,
+            "template_name": template.name,
+            "eval_template_name": template.name,
+            "eval_required_keys": (template.config or {}).get("required_keys", []),
+            "eval_template_tags": template.eval_tags,
+            "description": template.description,
+            "config": user_eval.config or {},
+            "model": run_config_raw.get("model")
+            or (user_eval.config or {}).get("config", {}).get("model", ""),
+            "column_id": column_map.get(str(user_eval.id)),
+            "updated_at": user_eval.updated_at,
+            "eval_group": user_eval.eval_group.name if user_eval.eval_group else None,
+            "status": (
+                column_status_map.get(str(user_eval.id)) or user_eval.status
+                if is_experiment_scope
+                else user_eval.status
+            ),
+            "eval_type": template.eval_type or "agent",
+            "template_type": template.template_type or "single",
+            "template_id": str(template.id),
+            "owner": template.owner or "user",
+            "mapping": (user_eval.config or {}).get("mapping", {}),
+            "params": (user_eval.config or {}).get("params", {}),
+            "error_localizer": user_eval.error_localizer,
+            "run_config": build_run_config_view(user_eval),
+            "output_type": template.output_type_normalized or "pass_fail",
+            "pinned_version_id": str(user_eval.pinned_version_id)
+            if user_eval.pinned_version_id
+            else None,
+        }
+
+        if template.template_type == "composite":
+            item.update(
+                {
+                    "aggregation_function": template.aggregation_function,
+                    "aggregation_enabled": template.aggregation_enabled,
+                    "children_count": template.composite_children.filter(
+                        deleted=False
+                    ).count(),
+                    "composite_weight_overrides": user_eval.composite_weight_overrides,
+                }
+            )
+
+        run_evals.append(item)
+
+    return run_evals
+
+
+def build_eval_list_queryset(
+    organization,
+    workspace,
+    owner_filter: str = "all",
+    search: str | None = None,
+    filters: dict | EvalListFilters | None = None,
+) -> QuerySet:
+    """
+    Build a filtered, scoped QuerySet for EvalTemplate.
+
+    Args:
+        organization: Organization instance
+        workspace: Workspace instance (optional)
+        owner_filter: "all", "user", or "system"
+        search: Search string for name filtering
+        filters: Advanced filters (eval_type, output_type, tags)
+
+    Returns:
+        Filtered QuerySet of EvalTemplate
+    """
+    from model_hub.models.evals_metric import EvalTemplate
+
+    # Use no_workspace_objects to bypass the BaseModelManager's automatic
+    # workspace filtering — system evals have no workspace/org and would
+    # be excluded by the manager. We handle scoping manually below.
+    qs = EvalTemplate.no_workspace_objects.filter(
+        visible_ui=True,
+    )
+
+    # Scoping:
+    # - System evals: always visible, NO workspace filter
+    # - User evals: scoped to org + workspace
+    if owner_filter == "system":
+        qs = qs.filter(owner=OwnerChoices.SYSTEM.value)
+    elif owner_filter == "user":
+        user_q = Q(owner=OwnerChoices.USER.value, organization=organization)
+        if workspace:
+            user_q &= Q(workspace=workspace) | Q(workspace__isnull=True)
+        qs = qs.filter(user_q)
+    else:
+        # "all" - system evals (no workspace filter) + user evals (workspace filtered)
+        system_q = Q(owner=OwnerChoices.SYSTEM.value)
+        user_q = Q(owner=OwnerChoices.USER.value, organization=organization)
+        if workspace:
+            user_q &= Q(workspace=workspace) | Q(workspace__isnull=True)
+        qs = qs.filter(system_q | user_q)
+
+    # Search by name (normalize spaces/underscores/hyphens)
+    if search:
+        qs = qs.filter(normalize_search_for_name(search))
+
+    # Advanced filters
+    if filters:
+        # Support both dict (from DRF serializer) and Pydantic object
+        def _f(key):
+            if isinstance(filters, dict):
+                return filters.get(key)
+            return getattr(filters, key, None)
+
+        # Output type filter
+        if _f("output_type"):
+            filter_types = set(_f("output_type"))
+            # Singles: collect ALL raw values that map to requested types
+            include_raw = [
+                raw
+                for raw, normalized in _OUTPUT_TYPE_MAP.items()
+                if normalized in filter_types
+            ]
+            # Composites: collect axis values that map to requested types
+            include_axes = [
+                axis
+                for axis, norm in _COMPOSITE_AXIS_MAP.items()
+                if norm in filter_types
+            ]
+            if "percentage" in filter_types:
+                include_axes.append("")  # empty axis defaults to percentage
+            parts = []
+            if include_raw:
+                parts.append(
+                    Q(config__output__in=include_raw) & ~Q(template_type="composite")
+                )
+            if include_axes:
+                parts.append(
+                    Q(template_type="composite", composite_child_axis__in=include_axes)
+                )
+            if parts:
+                combined = parts[0]
+                for p in parts[1:]:
+                    combined |= p
+                qs = qs.filter(combined)
+
+        # Tags filter — case-insensitive by lowercasing both sides.
+        # The DB expression ARRAY(SELECT LOWER(u) FROM UNNEST(eval_tags) u)
+        # normalises stored tags at query time so any casing (iOS, coDe,
+        # GPT4, ...) matches a lowercased filter value.
+        if _f("tags") or _f("tags_not"):
+            from django.contrib.postgres.fields import ArrayField as PGArrayField
+            from django.db.models import Func, TextField
+            from django.db.models.functions import Cast
+
+            class _LowerArray(Func):
+                function = "ARRAY"
+                template = (
+                    "%(function)s(SELECT LOWER(u) FROM UNNEST(%(expressions)s) u)"
+                )
+                output_field = PGArrayField(TextField())
+
+            qs = qs.annotate(_tags_lower=_LowerArray("eval_tags"))
+
+            if _f("tags"):
+                lower_filter = [t.lower() for t in _f("tags")]
+                qs = qs.filter(_tags_lower__overlap=lower_filter)
+            if _f("tags_not"):
+                lower_not = [t.lower() for t in _f("tags_not")]
+                qs = qs.exclude(_tags_lower__overlap=lower_not)
+
+        # Template type filter (single/composite)
+        if _f("template_type"):
+            qs = qs.filter(template_type__in=_f("template_type"))
+        if _f("template_type_not"):
+            qs = qs.exclude(template_type__in=_f("template_type_not"))
+
+        # Exact-name multi-select (dropdown picker)
+        if _f("names"):
+            qs = qs.filter(name__in=_f("names"))
+        if _f("names_not"):
+            qs = qs.exclude(name__in=_f("names_not"))
+
+        # Created by filter (user names)
+        if _f("created_by"):
+            from model_hub.models.evals_metric import EvalTemplateVersion
+
+            created_by_list = _f("created_by")
+            version_template_ids = EvalTemplateVersion.all_objects.filter(
+                is_default=True,
+                deleted=False,
+                created_by__name__in=created_by_list,
+            ).values_list("eval_template_id", flat=True)
+            version_template_ids_email = EvalTemplateVersion.all_objects.filter(
+                is_default=True,
+                deleted=False,
+                created_by__email__in=created_by_list,
+            ).values_list("eval_template_id", flat=True)
+            org_q = Q(organization__display_name__in=created_by_list) | Q(
+                organization__name__in=created_by_list
+            )
+            if "System" in created_by_list:
+                qs = qs.filter(
+                    Q(id__in=version_template_ids)
+                    | Q(id__in=version_template_ids_email)
+                    | org_q
+                    | Q(owner="system")
+                )
+            else:
+                qs = qs.filter(
+                    Q(id__in=version_template_ids)
+                    | Q(id__in=version_template_ids_email)
+                    | org_q
+                )
+
+        # Output type negation filter
+        if _f("output_type_not"):
+            excluded_types = set(_f("output_type_not"))
+            # Singles: collect raw config.output values to exclude
+            exclude_raw = [
+                raw
+                for raw, normalized in _OUTPUT_TYPE_MAP.items()
+                if normalized in excluded_types
+            ]
+            # Composites: collect axis values to exclude
+            exclude_axes = [
+                axis
+                for axis, norm in _COMPOSITE_AXIS_MAP.items()
+                if norm in excluded_types
+            ]
+            if "percentage" in excluded_types:
+                exclude_axes.append("")  # empty axis defaults to percentage
+            parts = []
+            if exclude_raw:
+                parts.append(
+                    Q(config__output__in=exclude_raw) & ~Q(template_type="composite")
+                )
+            if exclude_axes:
+                parts.append(
+                    Q(template_type="composite", composite_child_axis__in=exclude_axes)
+                )
+            if parts:
+                combined = parts[0]
+                for p in parts[1:]:
+                    combined |= p
+                qs = qs.exclude(combined)
+
+        # Created by exclusion filter
+        if _f("created_by_not"):
+            from model_hub.models.evals_metric import EvalTemplateVersion
+
+            excluded_by_list = _f("created_by_not")
+            exc_ids = (
+                EvalTemplateVersion.all_objects.filter(
+                    is_default=True,
+                    deleted=False,
+                )
+                .filter(
+                    Q(created_by__name__in=excluded_by_list)
+                    | Q(created_by__email__in=excluded_by_list)
+                )
+                .values_list("eval_template_id", flat=True)
+            )
+            org_q = Q(organization__display_name__in=excluded_by_list) | Q(
+                organization__name__in=excluded_by_list
+            )
+            qs = qs.exclude(Q(id__in=exc_ids) | org_q)
+
+        # Note: eval_type filter is applied in-memory after fetching because
+        # eval_type is derived from multiple fields (config + tags), not a single
+        # DB column. For better performance with large datasets, consider adding
+        # a denormalized eval_type field to EvalTemplate in a future phase.
+
+    return qs
+
+
+def fetch_version_metadata(
+    template_ids: Iterable[str],
+) -> tuple[dict[str, int], dict[str, int]]:
+    """
+    Bulk-fetch version count and default version_number for a set of templates.
+
+    Returns:
+        (counts_by_template_id, default_version_number_by_template_id)
+        Templates with no versions are absent from both maps; callers should
+        fall back to count=1 / "V1" for display.
+    """
+    from model_hub.models.evals_metric import EvalTemplateVersion
+
+    tids = [str(t) for t in template_ids]
+    if not tids:
+        return {}, {}
+
+    counts: dict[str, int] = {}
+    for row in (
+        EvalTemplateVersion.objects.filter(eval_template_id__in=tids)
+        .values("eval_template_id")
+        .annotate(c=Count("id"))
+    ):
+        counts[str(row["eval_template_id"])] = row["c"]
+
+    defaults: dict[str, int] = {}
+    for v in EvalTemplateVersion.objects.filter(
+        eval_template_id__in=tids, is_default=True
+    ).only("eval_template_id", "version_number"):
+        defaults[str(v.eval_template_id)] = v.version_number
+
+    return counts, defaults
+
+
+def compute_thirty_day_data(
+    template_id: str,
+    logs_map: dict,
+    start_date,
+    template=None,
+) -> tuple[list[ThirtyDayDataPoint], list[ThirtyDayDataPoint], int]:
+    """
+    Compute 30-day chart data and error rate for a template.
+
+    Args:
+        template_id: String UUID of the template
+        logs_map: Dict mapping template_id -> list of log dicts
+        start_date: Start date for the 30-day window
+        template: EvalTemplate instance (for average calculation)
+
+    Returns:
+        Tuple of (chart_data, error_rate_data, run_count)
+    """
+    template_logs = logs_map.get(template_id, [])
+    run_count = len(template_logs)
+
+    # Group logs by date
+    daily_counts: dict = defaultdict(int)
+    daily_errors: dict = defaultdict(int)
+
+    for log in template_logs:
+        day = log["created_at"].date()
+        daily_counts[day] += 1
+        if log.get("status") == APICallStatusChoices.ERROR.value:
+            daily_errors[day] += 1
+
+    # Generate 31-day time series
+    chart_data = []
+    error_data = []
+    current = start_date
+
+    for _ in range(31):
+        day = current.date() if hasattr(current, "date") else current
+        ts = day.strftime("%Y-%m-%dT00:00:00")
+        chart_data.append(
+            ThirtyDayDataPoint(timestamp=ts, value=daily_counts.get(day, 0))
+        )
+        error_data.append(
+            ThirtyDayDataPoint(timestamp=ts, value=daily_errors.get(day, 0))
+        )
+        current += timedelta(days=1)
+
+    return chart_data, error_data, run_count

@@ -1,0 +1,137 @@
+"""
+Interrupt Controller - Cooperative cancellation for agent runs.
+
+Provides thread-safe, cooperative cancellation mechanism for long-running agent
+operations. Follows protocol-driven design with zero overhead when not used.
+"""
+
+import threading
+from typing import Optional, Protocol, Set
+from dataclasses import dataclass, field
+
+__all__ = ["InterruptControllerProtocol", "InterruptController"]
+
+
+class InterruptControllerProtocol(Protocol):
+    """Protocol for interrupt controller extension point."""
+    
+    def request(self, reason: str = "user") -> None:
+        """Request cancellation with optional reason."""
+        ...
+    
+    def clear(self) -> None:
+        """Clear interrupt state."""
+        ...
+    
+    def is_set(self) -> bool:
+        """Check if interrupt was requested."""
+        ...
+    
+    @property
+    def reason(self) -> Optional[str]:
+        """Get interrupt reason if set."""
+        ...
+    
+    def check(self) -> None:
+        """Check for interrupt and raise if set."""
+        ...
+
+
+@dataclass
+class InterruptController:
+    """Thread-safe cooperative cancellation for agent runs.
+    
+    Provides a lightweight mechanism for requesting cancellation of agent
+    operations. Uses threading.Event for thread safety and cooperative
+    checking patterns.
+    
+    Examples:
+        Basic usage:
+        >>> controller = InterruptController()
+        >>> # In another thread:
+        >>> controller.request("user_cancel")
+        >>> # In agent loop:
+        >>> if controller.is_set():
+        >>>     return f"Cancelled: {controller.reason}"
+    """
+    
+    _flag: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _reason: Optional[str] = field(default=None, init=False)
+    _active_turns: Set[int] = field(default_factory=set, init=False, repr=False)
+    _cancelled_turns: Set[int] = field(default_factory=set, init=False, repr=False)
+    _next_turn_id: int = field(default=0, init=False, repr=False)
+    _pending_turn_cancel: bool = field(default=False, init=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
+    def request(self, reason: str = "user") -> None:
+        """Request cancellation with a reason.
+        
+        Args:
+            reason: Human-readable reason for cancellation
+        """
+        with self._lock:
+            if not self._flag.is_set():
+                self._reason = reason
+                self._flag.set()
+            if self._active_turns:
+                self._cancelled_turns.update(self._active_turns)
+            else:
+                self._pending_turn_cancel = True
+
+    def _begin_turn(self) -> int:
+        """Register an Agent turn and consume any request made while idle."""
+        with self._lock:
+            self._next_turn_id += 1
+            turn_id = self._next_turn_id
+            self._active_turns.add(turn_id)
+            if self._pending_turn_cancel:
+                self._cancelled_turns.add(turn_id)
+                self._pending_turn_cancel = False
+            return turn_id
+
+    def _turn_is_cancelled(self, turn_id: int) -> bool:
+        """Return whether a registered turn was targeted by a request."""
+        with self._lock:
+            return turn_id in self._cancelled_turns
+
+    def _end_turn(self, turn_id: int) -> None:
+        """Unregister a turn so its request cannot affect a future turn."""
+        with self._lock:
+            self._active_turns.discard(turn_id)
+            self._cancelled_turns.discard(turn_id)
+
+    def clear(self) -> None:
+        """Clear the cancellation request."""
+        with self._lock:
+            self._reason = None
+            self._flag.clear()
+            self._pending_turn_cancel = False
+            self._cancelled_turns.clear()
+
+    def is_set(self) -> bool:
+        """Check if cancellation has been requested.
+        
+        Returns:
+            True if cancellation was requested
+        """
+        return self._flag.is_set()
+
+    @property
+    def reason(self) -> Optional[str]:
+        """Get the reason for cancellation.
+        
+        Returns:
+            Reason string if cancelled, None otherwise
+        """
+        with self._lock:
+            return self._reason
+
+    def check(self) -> None:
+        """Check for cancellation and raise if requested.
+        
+        Raises:
+            InterruptedError: If cancellation was requested
+        """
+        if self.is_set():
+            reason = self.reason or "unknown"
+            raise InterruptedError(f"Operation cancelled: {reason}")

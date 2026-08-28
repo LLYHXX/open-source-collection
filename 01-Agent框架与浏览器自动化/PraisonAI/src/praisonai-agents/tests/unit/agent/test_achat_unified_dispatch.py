@@ -1,0 +1,171 @@
+"""Unit tests for unified achat dispatch (Issue #1703)."""
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from praisonaiagents import Agent
+
+
+def _fake_completion(content: str = "Mock async reply"):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content, reasoning_content=None))]
+    )
+
+
+@pytest.mark.asyncio
+async def test_unified_achat_returns_after_single_dispatch():
+    """achat must return after one unified dispatch, not loop forever."""
+    agent = Agent(name="test", instructions="You are helpful", llm="gpt-4o-mini")
+    agent._using_custom_llm = False
+    agent.self_reflect = False
+
+    mock_unified = AsyncMock(return_value=_fake_completion())
+
+    with patch.object(agent, "_execute_unified_achat_completion", mock_unified), patch.object(
+        agent, "_apply_guardrail_with_retry", return_value="Mock async reply"
+    ), patch.object(
+        agent, "_atrigger_after_agent_hook", new_callable=AsyncMock, return_value="Mock async reply"
+    ), patch.object(
+        agent, "_execute_callback_and_display"
+    ), patch.object(
+        agent, "_build_messages", return_value=([{"role": "user", "content": "hi"}], "hi")
+    ), patch.object(
+        agent, "_persist_message"
+    ), patch.object(
+        agent, "_format_tools_for_completion", return_value=[]
+    ):
+        result = await asyncio.wait_for(agent.achat("hi", stream=False), timeout=5)
+
+    assert result == "Mock async reply"
+    mock_unified.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_unified_achat_completion_uses_execute_tool_async():
+    """Async unified dispatch must wire execute_tool_async, not sync execute_tool."""
+    agent = Agent(name="test", instructions="You are helpful", llm="gpt-4o-mini")
+    agent._using_custom_llm = False
+
+    mock_dispatcher = MagicMock()
+    mock_dispatcher.achat_completion = AsyncMock(return_value=_fake_completion())
+    agent._unified_dispatcher = mock_dispatcher
+
+    with patch.object(agent, "_apply_guardrail_with_retry", return_value="ok"), patch.object(
+        agent, "_atrigger_after_agent_hook", new_callable=AsyncMock, return_value="ok"
+    ), patch.object(agent, "_execute_callback_and_display"), patch.object(
+        agent, "_build_messages", return_value=([{"role": "user", "content": "hi"}], "hi")
+    ), patch.object(agent, "_persist_message"), patch.object(
+        agent, "_format_tools_for_completion", return_value=[]
+    ):
+        await agent._achat_impl(
+            prompt="hi",
+            temperature=1.0,
+            tools=None,
+            output_json=None,
+            output_pydantic=None,
+            reasoning_steps=False,
+            stream=False,
+            task_name=None,
+            task_description=None,
+            task_id=None,
+            config=None,
+            force_retrieval=False,
+            skip_retrieval=True,
+            attachments=None,
+            _trace_emitter=MagicMock(),
+        )
+
+    call_kwargs = mock_dispatcher.achat_completion.call_args[1]
+    tool_fn = call_kwargs.get("execute_tool_fn")
+    assert tool_fn is not None
+    assert getattr(tool_fn, "__name__", "") == "execute_tool_async"
+
+
+@pytest.mark.asyncio
+async def test_achat_completion_resolves_basetool_without_dunder_name():
+    """BaseTool instances expose .name but no __name__; dispatch must not crash.
+
+    Regression for issue #3450 where bot ``--browser`` wired ``BrowserBaseTool``
+    (a BaseTool instance) and async dispatch raised
+    ``'BrowserBaseTool' object has no attribute '__name__'``.
+    """
+    agent = Agent(name="test", instructions="You are helpful", llm="gpt-4o-mini")
+
+    class _BrowserLikeTool:
+        name = "browserbase"
+
+        def run(self, **kwargs):
+            return "ran"
+
+    browser_tool = _BrowserLikeTool()
+    assert not hasattr(browser_tool, "__name__")
+
+    tool_call = SimpleNamespace(
+        id="legacy-tool-call-001",
+        function=SimpleNamespace(name="browserbase", arguments="{}")
+    )
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(tool_calls=[tool_call]))]
+    )
+
+    with patch.object(
+        agent, "execute_tool_async", new_callable=AsyncMock, return_value="ran"
+    ) as mock_exec:
+        results = await agent._achat_completion(response, tools=[browser_tool])
+
+    mock_exec.assert_awaited_once()
+    assert mock_exec.await_args[0][0] == "browserbase"
+    assert mock_exec.await_args.kwargs["tool_call_id"] == "legacy-tool-call-001"
+    assert results is not None
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_async_runs_real_basetool_instance():
+    """Full async path must resolve AND invoke a real BaseTool instance.
+
+    Regression for issue #3450: even after dispatch resolves a BaseTool by
+    ``.name``, the downstream ``_execute_tool_async_impl`` previously matched
+    only on ``__name__`` and then called ``func(**args)`` directly, so a
+    BrowserBaseTool-style instance returned ``Function ... not found`` /
+    never ran. This test hits the real execute_tool_async (unmocked).
+    """
+    from praisonaiagents.tools.base import BaseTool
+
+    class _BrowserTool(BaseTool):
+        name = "browserbase"
+        description = "Browser-like tool"
+
+        def run(self, **kwargs):
+            return "navigated"
+
+    agent = Agent(name="test", instructions="You are helpful", llm="gpt-4o-mini")
+    tool = _BrowserTool()
+
+    result = await agent.execute_tool_async("browserbase", {}, tools_override=[tool])
+
+    assert result == "navigated"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_async_resolves_aliased_function_name():
+    """Async dispatch must resolve a tool by its advertised .name alias.
+
+    A FunctionTool-like object may expose a ``.name`` that differs from the
+    wrapped callable's ``__name__``; the model calls the advertised ``.name``,
+    so resolution must not short-circuit on ``__name__``.
+    """
+    agent = Agent(name="test", instructions="You are helpful", llm="gpt-4o-mini")
+
+    def _impl(**kwargs):
+        return "aliased-ran"
+
+    _impl.name = "advertised_name"
+
+    result = await agent.execute_tool_async(
+        "advertised_name", {}, tools_override=[_impl]
+    )
+
+    assert result == "aliased-ran"

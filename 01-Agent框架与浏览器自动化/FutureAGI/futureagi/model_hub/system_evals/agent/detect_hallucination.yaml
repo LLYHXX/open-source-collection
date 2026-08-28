@@ -1,0 +1,84 @@
+eval_id: 89
+name: detect_hallucination
+description: Identifies if the model fabricated facts or added information that was not present in the input or reference.
+criteria: "You are evaluating whether the output contains fabricated information not present in the provided context.\n\n\
+  ## Criteria\n\n1. Factual verification: Every specific claim (names, dates, numbers, events) must exist in the context.\n\
+  \   - Pass: \"The CEO is Jane Smith\" when context confirms this.\n   - Fail: \"The CEO is Jane Smith\" when context does\
+  \ not mention any CEO.\n\n2. Invented details: Check for entities, relationships, or events that have no basis in the context.\n\
+  \   - Pass: Describes only what the context supports.\n   - Fail: Adds \"The company won an award in 2022\" with no context\
+  \ support.\n\n3. Plausible fabrication: Confidently stated facts that sound true but are not in the context are still hallucinations.\n\
+  \   - Pass: Acknowledges when information is not available in the context.\n   - Fail: Fills knowledge gaps with made-up\
+  \ but plausible-sounding facts.\n\n## Anti-bias Rules\n\n- DO NOT flag reasonable logical inferences from context facts\
+  \ as hallucinations.\n- Generic filler phrases (\"This is an important topic\") making no factual claims are NOT hallucinations.\n\
+  - A short truthful answer scores higher than a long answer padded with fabricated details.\n- If the context is empty, any\
+  \ specific factual claim in the output is a hallucination.\n\n## Scoring\n\nReturn 'Passed' if the output contains only\
+  \ information present in or directly derivable from the context. Return 'Failed' if any fact or claim is fabricated, regardless\
+  \ of its real-world accuracy.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>\n\n<context>{{context}}</context>"
+eval_tags:
+- Hallucination
+- RAG
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  - context
+  optional_keys:
+  - input
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    input: The original input/reference
+    output: The response to be evaluated for hallucinations
+    context: The context to compare against for hallucinations
+  param_modalities:
+    input: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output: *id001
+    context:
+    - TEXT
+    - AUDIO
+    - IMAGE
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    - IMAGES
+  rule_prompt: "You are evaluating whether the output contains fabricated information not present in the provided context.\n\
+    \n## Criteria\n\n1. Factual verification: Every specific claim (names, dates, numbers, events) must exist in the context.\n\
+    \   - Pass: \"The CEO is Jane Smith\" when context confirms this.\n   - Fail: \"The CEO is Jane Smith\" when context does\
+    \ not mention any CEO.\n\n2. Invented details: Check for entities, relationships, or events that have no basis in the\
+    \ context.\n   - Pass: Describes only what the context supports.\n   - Fail: Adds \"The company won an award in 2022\"\
+    \ with no context support.\n\n3. Plausible fabrication: Confidently stated facts that sound true but are not in the context\
+    \ are still hallucinations.\n   - Pass: Acknowledges when information is not available in the context.\n   - Fail: Fills\
+    \ knowledge gaps with made-up but plausible-sounding facts.\n\n## Anti-bias Rules\n\n- DO NOT flag reasonable logical\
+    \ inferences from context facts as hallucinations.\n- Generic filler phrases (\"This is an important topic\") making no\
+    \ factual claims are NOT hallucinations.\n- A short truthful answer scores higher than a long answer padded with fabricated\
+    \ details.\n- If the context is empty, any specific factual claim in the output is a hallucination.\n\n## Scoring\n\n\
+    Return 'Passed' if the output contains only information present in or directly derivable from the context. Return 'Failed'\
+    \ if any fact or claim is fabricated, regardless of its real-world accuracy.\n\n## Inputs\n\n<input>{{input}}</input>\n\
+    \n<output>{{output}}</output>\n\n<context>{{context}}</context>"

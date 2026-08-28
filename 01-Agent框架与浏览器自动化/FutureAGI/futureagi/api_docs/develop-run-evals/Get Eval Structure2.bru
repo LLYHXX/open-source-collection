@@ -1,0 +1,21 @@
+meta {
+  name: Get Eval Structure2
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/model-hub/develops/e0739ae4-b90e-4b5f-9151-43c59514cf7f/get_eval_structure/2839f630-001e-49ef-8b36-0dedbfd41cc5/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "eval_type" : "user"
+  }
+}

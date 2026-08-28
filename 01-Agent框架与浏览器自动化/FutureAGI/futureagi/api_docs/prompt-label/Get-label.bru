@@ -1,0 +1,11 @@
+meta {
+  name: Get-label
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/model-hub/prompt-labels/
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,488 @@
+meta {
+  name: Create Node
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/agent-playground/graphs/:graph_id/versions/:version_id/nodes/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  version_id: {{version_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "id": "54fbb228-5e45-49bb-a002-7f858fb57576",
+    "type": "atomic",
+    "name": "My LLM Node - 2",
+    "node_template_id": "e9d7c212-4f51-49e0-8e0f-fc9b81a631c8",
+    "position": {
+      "x": 100,
+      "y": 200
+    },
+    "source_node_id": null,
+    "prompt_template": {
+      "messages": [
+        {
+          "id": "msg-0",
+          "role": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "You are a helpful assistant."
+            }
+          ]
+        },
+        {
+          "id": "msg-1",
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Analyze {{context}} and answer {{question}}"
+            }
+          ]
+        }
+      ],
+      "response_format": "text",
+      "model": "gpt-4o",
+      "temperature": 0.7,
+      "max_tokens": 1024,
+      "variable_names": {
+        "context": [],
+        "question": []
+      },
+      "metadata": {
+        "source": "playground"
+      }
+    },
+    "ports": [
+      {
+        "id": "bda65703-6788-42d3-b103-1cd9a56f6677",
+        "key": "response",
+        "display_name": "llm_output",
+        "direction": "output",
+        "data_schema": {
+          "type": "string"
+        }
+      }
+    ]
+  }
+}
+
+vars:pre-request {
+  version_id: d9c2878c-c665-477e-8c67-dc19147c8cbc
+  graph_id: 902c81f4-dcd0-4813-8a29-8cdad4eb6a9e
+}
+
+docs {
+  # Create Node
+
+  Create a new node in a draft graph version.
+
+  ## Path Parameters
+  - `graph_id` (required): UUID of the graph
+  - `version_id` (required): UUID of the draft version
+
+  ---
+
+  ## Request Body
+
+  ### Top-level fields
+
+  | Field | Type | Required | Notes |
+  |-------|------|----------|-------|
+  | `id` | UUID | yes | FE-generated |
+  | `type` | `"atomic"` or `"subgraph"` | yes | |
+  | `name` | string | yes | No reserved chars: `.` `[` `]` `{` `}` |
+  | `node_template_id` | UUID | atomic only | NodeTemplate ID |
+  | `ref_graph_version_id` | UUID | subgraph only | Referenced active graph version |
+  | `position` | object | no | `{"x": number, "y": number}` — defaults to `{}` |
+  | `source_node_id` | UUID | no | UUID of upstream node — creates a NodeConnection |
+  | `prompt_template` | object | no | LLM prompt data (atomic LLM nodes only) |
+  | `ports` | array | no | Explicit ports with FE-generated IDs |
+  | `input_mappings` | array | no | **Subgraph nodes only**. List of mappings with `{"key": "port_name", "value": "NodeName.port_display_name"}` or `{"key": "port_name", "value": null}`. When provided, replaces auto-port-creation for inputs. See Example 6 below. |
+
+  ### `prompt_template` sub-fields (PromptTemplateDataSerializer)
+
+  | Field | Type | Required | Notes |
+  |-------|------|----------|-------|
+  | `prompt_template_id` | UUID | no | Existing prompt template to link |
+  | `prompt_version_id` | UUID | no | Existing prompt version to link |
+  | `messages` | array | no | `[{"id": "msg-0", "role": "system"\|"user"\|"assistant", "content": [{"type": "text", "text": "..."}]}]` |
+  | `response_format` | string | no | Response format - see detailed examples below |
+  | `response_schema` | object | no | Custom JSON schema (only used with `"json_schema"` format) |
+  | `model` | string | no | Model identifier, e.g. `"gpt-4o"` |
+  | `temperature` | number | no | 0.0–2.0 |
+  | `max_tokens` | integer | no | Max output tokens |
+  | `top_p` | number | no | Nucleus sampling parameter |
+  | `frequency_penalty` | number | no | Frequency penalty |
+  | `presence_penalty` | number | no | Presence penalty |
+  | `output_format` | string | no | Output format hint |
+  | `tools` | array | no | Tool definitions for function calling |
+  | `tool_choice` | string/object | no | Tool selection strategy |
+  | `model_detail` | object | no | Additional model configuration |
+  | `variable_names` | object | no | Map of variable name → metadata array. e.g. `{"context": [], "question": []}` |
+  | `metadata` | object | no | Arbitrary key-value metadata, e.g. `{"source": "playground"}` |
+
+  ### `ports[]` sub-fields (PortCreateSerializer)
+
+  | Field | Type | Required | Notes |
+  |-------|------|----------|-------|
+  | `id` | UUID | yes | FE-generated port ID |
+  | `key` | string | yes | Port key, e.g. `"custom"`, `"response"` |
+  | `display_name` | string | yes | Human-readable name (must be unique per node) |
+  | `direction` | `"input"` or `"output"` | yes | Port direction |
+  | `data_schema` | object | no | JSON schema for the port data, e.g. `{"type": "string"}` |
+  | `ref_port_id` | UUID | no | References an exposed port from an inner graph (subgraph nodes) |
+
+  ---
+
+  ## Response Format Options
+
+  The `response_format` field controls how the LLM structures its output. Four options are available:
+
+  ### 1. Plain Text Response (`"text"`)
+
+  Default format. Returns unstructured text.
+
+  ```json
+  {
+    "prompt_template": {
+      "messages": [...],
+      "response_format": "text"
+    }
+  }
+  ```
+
+  **Output**: Plain string (e.g., `"The capital of France is Paris."`)
+
+  ### 2. JSON Response (`"json"`)
+
+  Forces LLM to return valid JSON. Parser extracts the JSON object.
+
+  ```json
+  {
+    "prompt_template": {
+      "messages": [
+        {
+          "role": "user",
+          "content": [{"type": "text", "text": "Return a JSON object with city and country for Paris"}]
+        }
+      ],
+      "response_format": "json"
+    }
+  }
+  ```
+
+  **Output**: Parsed JSON object (e.g., `{"city": "Paris", "country": "France"}`)
+
+  **Important**: When using `"json"` format, you **must** include the word "json" or "JSON" in your prompt messages for OpenAI models.
+
+  ### 3. Custom JSON Schema (`"json_schema"`)
+
+  Forces LLM to return JSON matching a specific schema (structured outputs).
+
+  ```json
+  {
+    "prompt_template": {
+      "messages": [
+        {
+          "role": "user",
+          "content": [{"type": "text", "text": "Extract user information"}]
+        }
+      ],
+      "response_format": "json_schema",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "User's full name"
+          },
+          "age": {
+            "type": "integer",
+            "description": "User's age"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "User's email address"
+          }
+        },
+        "required": ["name", "email"],
+        "additionalProperties": false
+      }
+    }
+  }
+  ```
+
+  **Output**: Validated JSON object matching schema (e.g., `{"name": "John Doe", "age": 30, "email": "john@example.com"}`)
+
+  **Schema Requirements**:
+  - Must be a valid JSON Schema (Draft 7)
+  - Use `required` array to enforce mandatory fields
+  - Set `additionalProperties: false` to prevent extra fields
+  - Supported types: `string`, `integer`, `number`, `boolean`, `object`, `array`
+
+  **Model Support**:
+  - ✅ OpenAI GPT-4o, GPT-4o-mini, GPT-4-turbo (2024-08-06+)
+  - ✅ Anthropic Claude 3.5 Sonnet (with tool calling workaround)
+  - ⚠️ Not all models support structured outputs
+
+  ### 4. Saved Schema Reference (UUID string)
+
+  Reference a pre-saved UserResponseSchema by its UUID. This allows reusing schemas across multiple nodes.
+
+  ```json
+  {
+    "prompt_template": {
+      "messages": [
+        {
+          "id": "msg-0",
+          "role": "user",
+          "content": [{"type": "text", "text": "Extract user information"}]
+        }
+      ],
+      "response_format": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    }
+  }
+  ```
+
+  **Output**: Validated JSON object matching the schema stored in the referenced UserResponseSchema
+
+  **Benefits**:
+  - Reuse schemas across multiple nodes and prompts
+  - Centralized schema management
+  - Automatic validation against saved schema
+
+  **Note**: The UUID must reference an existing UserResponseSchema in the database. If the schema is not found, the response will fall back to string format.
+
+  ---
+
+  ## Port Creation Logic
+
+  Port creation depends on the node type. The `ports` array lets the FE control **output** port display names.
+
+  ### LLM prompt nodes (`prompt_template` + `node_template_id` provided)
+  - **Input ports**: Always auto-created server-side from `{{variables}}` in messages. Any ports in the `ports` array are created **in addition** to these.
+  - **Output ports**: If `ports` array is provided, those ports are created (FE controls output port names). If `ports` is empty/omitted, a default `"response"` output port is auto-created.
+
+  ### Subgraph nodes (`type: "subgraph"` + `ref_graph_version_id` provided)
+  - **Input ports**:
+    - If `input_mappings` is provided: Input ports are created from the mapping keys only (NOT from all exposed ports). Mapping values create edges (see Example 6).
+    - If `input_mappings` is not provided: Input ports are auto-created from the referenced graph's exposed input ports (backwards compatible).
+  - **Output ports**: If `ports` array is provided, those ports are created (validated: any `ref_port_id` must match an exposed port in the referenced graph). If `ports` is empty/omitted, output ports are auto-created from the referenced graph's exposed output ports.
+
+  ### Other atomic nodes (no `prompt_template`)
+  - All ports come from the `ports` array (unchanged behavior).
+
+  ---
+
+  ## Example Payloads
+
+  ### Example 1: LLM node — with FE-supplied output ports
+
+  Input ports (`context`, `question`) are auto-created from `{{variables}}`. The FE controls the output port display name via `ports`.
+
+  ```json
+  {
+    "id": "fe-generated-uuid",
+    "type": "atomic",
+    "name": "My LLM Node",
+    "node_template_id": "llm-prompt-template-uuid",
+    "position": {"x": 100, "y": 200},
+    "prompt_template": {
+      "messages": [
+        {
+          "id": "msg-0",
+          "role": "system",
+          "content": [{"type": "text", "text": "You are a helpful assistant."}]
+        },
+        {
+          "id": "msg-1",
+          "role": "user",
+          "content": [{"type": "text", "text": "Analyze {{context}} and answer {{question}}"}]
+        }
+      ],
+      "response_format": "text",
+      "model": "gpt-4o",
+      "temperature": 0.7,
+      "max_tokens": 1024,
+      "variable_names": {"context": [], "question": []},
+      "metadata": {"source": "playground"}
+    },
+    "ports": [
+      {
+        "id": "port-uuid-1",
+        "key": "response",
+        "display_name": "llm_output",
+        "direction": "output",
+        "data_schema": {"type": "string"}
+      }
+    ]
+  }
+  ```
+
+  ### Example 2: LLM node — fallback (no ports array, backwards compatible)
+
+  Input ports auto-created from `{{variables}}`. A default `"response"` output port is auto-created.
+
+  ```json
+  {
+    "id": "fe-generated-uuid",
+    "type": "atomic",
+    "name": "My LLM Node",
+    "node_template_id": "llm-prompt-template-uuid",
+    "position": {"x": 100, "y": 200},
+    "prompt_template": {
+      "messages": [
+        {
+          "id": "msg-0",
+          "role": "system",
+          "content": [{"type": "text", "text": "You are a helpful assistant."}]
+        },
+        {
+          "id": "msg-1",
+          "role": "user",
+          "content": [{"type": "text", "text": "Analyze {{context}} and answer {{question}}"}]
+        }
+      ],
+      "response_format": "text",
+      "model": "gpt-4o",
+      "temperature": 0.7,
+      "max_tokens": 1024,
+      "variable_names": {"context": [], "question": []},
+      "metadata": {"source": "playground"}
+    }
+  }
+  ```
+
+  ### Example 3: Atomic node — with explicit ports (non-LLM)
+
+  ```json
+  {
+    "id": "fe-generated-uuid",
+    "type": "atomic",
+    "name": "Code Executor",
+    "node_template_id": "code-executor-template-uuid",
+    "position": {"x": 300, "y": 200},
+    "ports": [
+      {
+        "id": "port-uuid-1",
+        "key": "custom",
+        "display_name": "code_input",
+        "direction": "input",
+        "data_schema": {"type": "string"}
+      },
+      {
+        "id": "port-uuid-2",
+        "key": "response",
+        "display_name": "response",
+        "direction": "output",
+        "data_schema": {"type": "string"}
+      }
+    ]
+  }
+  ```
+
+  ### Example 4: Subgraph node — with FE-supplied output ports
+
+  Input ports are auto-created from the referenced graph's exposed inputs. The FE controls output ports via `ports`. Each `ref_port_id` is validated against the referenced graph's exposed ports.
+
+  ```json
+  {
+    "id": "fe-generated-uuid",
+    "type": "subgraph",
+    "name": "Summarizer Pipeline",
+    "ref_graph_version_id": "active-graph-version-uuid",
+    "position": {"x": 500, "y": 200},
+    "source_node_id": "upstream-node-uuid",
+    "ports": [
+      {
+        "id": "port-uuid-1",
+        "key": "custom",
+        "display_name": "summary_output",
+        "direction": "output",
+        "data_schema": {"type": "string"},
+        "ref_port_id": "exposed-output-port-uuid-from-inner-graph"
+      }
+    ]
+  }
+  ```
+
+  ### Example 5: Subgraph node — fallback (no ports array, backwards compatible)
+
+  Both input and output ports are auto-created from the referenced graph's exposed ports.
+
+  ```json
+  {
+    "id": "fe-generated-uuid",
+    "type": "subgraph",
+    "name": "Summarizer Pipeline",
+    "ref_graph_version_id": "active-graph-version-uuid",
+    "position": {"x": 500, "y": 200}
+  }
+  ```
+
+  ### Example 6: Subgraph node — with explicit `input_mappings`
+
+  Input ports are created only from `input_mappings` keys (not from all exposed ports). Mapping values create edges automatically:
+  - `"NodeName.port_display_name"` → creates edge from that source
+  - `null` → creates globally exposed input (no edge)
+
+  ```json
+  {
+    "id": "fe-generated-uuid",
+    "type": "subgraph",
+    "name": "Summary Pipeline",
+    "ref_graph_version_id": "active-graph-version-uuid",
+    "position": {"x": 500, "y": 200},
+    "source_node_id": "upstream-node-uuid",
+    "input_mappings": [
+      {"key": "context", "value": "DataLoader.output"},
+      {"key": "question", "value": null},
+      {"key": "temperature", "value": "ConfigNode.temp_setting"}
+    ]
+  }
+  ```
+
+  **Result**:
+  - 3 input ports created: `context`, `question`, `temperature`
+  - Edge created: `DataLoader.output` → `context` port
+  - Edge created: `ConfigNode.temp_setting` → `temperature` port
+  - No edge for `question` (globally exposed input)
+  - **Output ports auto-created** from referenced graph's exposed outputs (because no `ports` array provided)
+
+  **Note**: `input_mappings` only controls input ports. To control output ports, add a `ports` array with `direction: "output"` entries (see Example 4).
+
+  **Validation**: If source node/port doesn't exist, port is created but no edge (graceful handling with warning logged).
+
+  ---
+
+  ## Response (201)
+
+  Returns the full node object with auto-created ports, prompt_template, and node_connection.
+
+  The `prompt_template` in the response includes additional read-only fields:
+  - `variable_names`: Extracted variable map
+  - `metadata`: Stored metadata object
+  - `is_draft`: Whether the prompt template version is a draft (`true`) or committed (`false`)
+  - `template_version`: Integer version number of the prompt template
+
+  ## Side Effects
+  - Dataset columns are synced (add-only) after node creation. New columns are created for any new exposed input ports. Existing columns are never deleted.
+
+  ## Errors
+  - `400`: Version is not DRAFT, invalid payload, self-reference, cycle detected, or invalid `ref_port_id` (does not match any exposed port in the referenced graph version)
+  - `404`: Graph or version not found
+}

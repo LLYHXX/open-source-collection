@@ -1,0 +1,42 @@
+meta {
+  name: Output Type Str List
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/tracer/trace/get_graph_methods/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_id": "ec5ef8f0-729a-457f-9ec2-e831bb6de0a8",
+    "property": "average",
+    "interval": "day",
+    "filters": [
+      {
+        "columnId": "created_at",
+        "filterConfig": {
+          "filterType": "datetime",
+          "filterOp": "between",
+          "filterValue": [
+            "2025-05-13T18:30:00.000Z",
+            "2025-06-19T18:30:00.000Z"
+          ]
+        }
+      }
+    ],
+    "req_data_config": {
+      "id": "593959ce-7bda-4ac4-ae3f-ed368fe94af2",
+      "output_type": "str_list",
+      "type": "EVAL",
+      "value": "yes"
+    }
+  }
+}

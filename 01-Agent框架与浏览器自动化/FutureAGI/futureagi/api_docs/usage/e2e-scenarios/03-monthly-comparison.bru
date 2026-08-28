@@ -1,0 +1,56 @@
+meta {
+  name: 03 - E2E - Monthly Usage Comparison
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/usage/usage-summary/?month=1&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 1
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## End-to-End: Monthly Usage Comparison
+
+  ### Test Scenario
+  Compare usage across multiple months to track trends:
+
+  ### Testing Steps
+  1. Query January 2024: `month=1&year=2024`
+  2. Query February 2024: `month=2&year=2024`
+  3. Query March 2024: `month=3&year=2024`
+  4. Compare the results
+
+  ### Expected Behavior
+  - Each month returns independent data
+  - Totals should be different for each month
+  - No overlap between monthly data
+  - Sum of all months = total for the year
+
+  ### Use Cases
+  - Monthly usage reports
+  - Cost tracking over time
+  - Identifying usage trends
+  - Budget forecasting
+
+  ### Test All Endpoints
+  Execute monthly comparisons for:
+  - `/usage/usage-summary/` - Organization level
+  - `/usage/workspace-usage-summary/` - Workspace level
+  - `/usage/workspace-eval-summary/` - Evaluation level
+
+  ### Notes
+  - Try consecutive months to see month-over-month growth
+  - Try same month across different years for year-over-year comparison
+  - Useful for generating monthly reports
+}

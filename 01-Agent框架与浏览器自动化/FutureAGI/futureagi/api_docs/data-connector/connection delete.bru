@@ -1,0 +1,24 @@
+meta {
+  name: connection delete
+  type: http
+  seq: 9
+}
+
+delete {
+  url: http://{{host}}:{{port}}/data-connector/connection/:uuid/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  uuid: 513aa027-1722-46b4-bda1-aa480908c254
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

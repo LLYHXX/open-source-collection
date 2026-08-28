@@ -1,0 +1,29 @@
+node_modules
+dist
+.next
+data
+public
+pnpm-lock.yaml
+package-lock.json
+
+# Astro's generated content-collection + route types (apps/docs).
+**/.astro/
+
+# Playwright run artifacts (apps/docs a11y gate, apps/dashboard e2e).
+**/test-results/
+**/playwright-report/
+
+# Generated fixtures and data files
+**/*.jsonl
+**/*.sqlite
+
+# Markdown and MDX are hand-authored; Prettier's table padding mangles spec
+# tables, and reflowing MDX frontmatter / components risks breaking the docs.
+**/*.md
+**/*.mdx
+
+# Local Claude Code settings (gitignored anyway).
+.claude/settings.local.json
+
+# No parser for git dotfiles.
+.gitattributes

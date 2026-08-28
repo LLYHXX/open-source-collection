@@ -1,0 +1,183 @@
+"""YAML frontmatter parsing for SKILL.md files."""
+
+from pathlib import Path
+from typing import Optional, Tuple
+
+from .models import (
+    ParseError,
+    ValidationError,
+    SkillProperties,
+    SkillRequirements,
+    SkillAutomation,
+)
+
+
+def find_skill_md(skill_dir: Path) -> Optional[Path]:
+    """Find the SKILL.md file in a skill directory.
+
+    Prefers SKILL.md (uppercase) but accepts skill.md (lowercase).
+
+    Args:
+        skill_dir: Path to the skill directory
+
+    Returns:
+        Path to the SKILL.md file, or None if not found
+    """
+    for name in ("SKILL.md", "skill.md"):
+        path = skill_dir / name
+        if path.exists():
+            return path
+    return None
+
+
+def parse_frontmatter(content: str) -> Tuple[dict, str]:
+    """Parse YAML frontmatter from SKILL.md content.
+
+    Args:
+        content: Raw content of SKILL.md file
+
+    Returns:
+        Tuple of (metadata dict, markdown body)
+
+    Raises:
+        ParseError: If frontmatter is missing or invalid
+    """
+    if not content.startswith("---"):
+        raise ParseError("SKILL.md must start with YAML frontmatter (---)")
+
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        raise ParseError("SKILL.md frontmatter not properly closed with ---")
+
+    frontmatter_str = parts[1]
+    body = parts[2].strip()
+
+    try:
+        metadata = _parse_yaml(frontmatter_str)
+    except Exception as e:
+        raise ParseError(f"Invalid YAML in frontmatter: {e}")
+
+    if not isinstance(metadata, dict):
+        raise ParseError("SKILL.md frontmatter must be a YAML mapping")
+
+    # Convert scalar metadata values to strings where needed, but preserve
+    # nested mappings (e.g. the namespaced ``praisonai`` bag carrying an
+    # optional automation block) so structured extensions survive parsing.
+    if "metadata" in metadata and isinstance(metadata["metadata"], dict):
+        metadata["metadata"] = {
+            str(k): v if isinstance(v, dict) else str(v)
+            for k, v in metadata["metadata"].items()
+        }
+
+    return metadata, body
+
+
+def _parse_yaml(yaml_str: str) -> dict:
+    """Parse YAML frontmatter to a dictionary.
+
+    Requires PyYAML. Raises ParseError with a clear install hint when
+    PyYAML is missing so extended frontmatter (lists, nested keys, bools)
+    parses correctly.
+    """
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:  # pragma: no cover - env-dependent
+        raise ParseError(
+            "PyYAML is required to parse SKILL.md frontmatter. "
+            "Install it with: pip install PyYAML"
+        ) from exc
+    return yaml.safe_load(yaml_str) or {}
+
+
+def read_properties(skill_dir: Path) -> SkillProperties:
+    """Read skill properties from SKILL.md frontmatter.
+
+    This function parses the frontmatter and returns properties.
+    It does NOT perform full validation. Use validate() for that.
+
+    Args:
+        skill_dir: Path to the skill directory
+
+    Returns:
+        SkillProperties with parsed metadata
+
+    Raises:
+        ParseError: If SKILL.md is missing or has invalid YAML
+        ValidationError: If required fields (name, description) are missing
+    """
+    skill_dir = Path(skill_dir)
+    skill_md = find_skill_md(skill_dir)
+
+    if skill_md is None:
+        raise ParseError(f"SKILL.md not found in {skill_dir}")
+
+    content = skill_md.read_text(encoding="utf-8")
+    metadata, _ = parse_frontmatter(content)
+
+    if "name" not in metadata:
+        raise ValidationError("Missing required field in frontmatter: name")
+    if "description" not in metadata:
+        raise ValidationError("Missing required field in frontmatter: description")
+
+    name = metadata["name"]
+    description = metadata["description"]
+
+    if not isinstance(name, str) or not name.strip():
+        raise ValidationError("Field 'name' must be a non-empty string")
+    if not isinstance(description, str) or not description.strip():
+        raise ValidationError("Field 'description' must be a non-empty string")
+
+    def _coerce_bool(v, default=False):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "yes", "1", "on")
+        return default
+
+    def _coerce_int(v, default=0):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+
+    def _coerce_str(v):
+        if v is None:
+            return None
+        return str(v)
+
+    return SkillProperties(
+        name=name.strip(),
+        description=description.strip(),
+        license=metadata.get("license"),
+        compatibility=metadata.get("compatibility"),
+        allowed_tools=metadata.get("allowed-tools"),
+        metadata=metadata.get("metadata") or {},
+        path=skill_dir,
+        # Claude Code extensions
+        when_to_use=metadata.get("when_to_use"),
+        disable_model_invocation=_coerce_bool(metadata.get("disable-model-invocation"), False),
+        user_invocable=_coerce_bool(metadata.get("user-invocable"), True),
+        argument_hint=metadata.get("argument-hint"),
+        model=metadata.get("model"),
+        effort=metadata.get("effort"),
+        context=metadata.get("context"),
+        agent=metadata.get("agent"),
+        hooks=metadata.get("hooks") if isinstance(metadata.get("hooks"), dict) else None,
+        paths=metadata.get("paths"),
+        shell=metadata.get("shell"),
+        # Parse capability requirements
+        requirements=SkillRequirements.from_frontmatter(metadata),
+        # Parse optional proactive-automation descriptor from the namespaced
+        # metadata.praisonai.automation block (None when absent/malformed).
+        automation=SkillAutomation.from_metadata(metadata.get("metadata") or {}),
+        # Provenance + usage telemetry (accept hyphen or underscore forms)
+        agent_created=_coerce_bool(
+            metadata.get("agent-created", metadata.get("agent_created")), False
+        ),
+        created_at=_coerce_str(metadata.get("created-at", metadata.get("created_at"))),
+        use_count=_coerce_int(metadata.get("use-count", metadata.get("use_count")), 0),
+        last_used=_coerce_str(metadata.get("last-used", metadata.get("last_used"))),
+        patch_count=_coerce_int(
+            metadata.get("patch-count", metadata.get("patch_count")), 0
+        ),
+    )

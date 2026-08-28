@@ -1,0 +1,22 @@
+meta {
+  name: run PROMPT Rows
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{host}}/model-hub/run-prompt-for-rows/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "run_prompt_ids" : ["435393d8-4059-4504-8f6a-b74346f4e4e7"],
+    "row_ids" : ["672b2e8c-761e-46d1-9f14-37b85620d810"]
+  }
+}

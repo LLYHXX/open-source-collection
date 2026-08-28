@@ -1,0 +1,82 @@
+eval_id: 66
+name: factual_accuracy
+description: Verifies if the provided output is factually correct or not.
+criteria: "You are evaluating whether the factual claims in the output are accurate, verified against the context and input.\n\
+  \n## Criteria\n\n1. Fact verification: Each stated fact, statistic, name, date, and causal claim must be accurate per the\
+  \ context.\n   - Pass: \"The population is 1.4 billion\" matching context data.\n   - Fail: \"The population is 2 billion\"\
+  \ when context says 1.4 billion.\n\n2. Numerical accuracy: Calculations, percentages, and comparisons must be mathematically\
+  \ correct.\n   - Pass: \"A 50% increase from 100 to 150.\"\n   - Fail: \"A 50% increase from 100 to 200.\"\n\n3. Logical\
+  \ accuracy: Cause-effect relationships and categorical claims must be valid.\n   - Pass: \"Rain causes flooding in low-lying\
+  \ areas\" (valid causal link).\n   - Fail: \"Flooding causes rain\" (reversed causality).\n\n## Anti-bias Rules\n\n- Acceptable\
+  \ rounding (e.g., \"~50%\" for 49.7%) should NOT reduce the score materially.\n- Claims true in general knowledge but unsupported\
+  \ by the provided context should be penalized in context-dependent evaluation.\n- A short accurate answer scores higher\
+  \ than a long answer with scattered inaccuracies.\n\n## Scoring\n\nScore 0.0 if the output contains multiple significant\
+  \ factual errors. Score 0.5 if mostly accurate but with some errors or imprecisions. Score 1.0 if every claim is accurate\
+  \ and verifiable from the context.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>\n\n<context>{{context}}</context>"
+eval_tags:
+- Hallucination
+- NLP Metrics
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  - context
+  optional_keys:
+  - input
+  output: score
+  eval_type_id: AgentEvaluator
+  config:
+    check_internet:
+      type: boolean
+      default: false
+  config_params_desc:
+    input: The input to be evaluated
+    output: The output to be evaluated
+    context: The context provided for the response
+  param_modalities:
+    input: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output: *id001
+    context:
+    - TEXT
+    - AUDIO
+    - IMAGE
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    - IMAGES
+  rule_prompt: "You are evaluating whether the factual claims in the output are accurate, verified against the context and\
+    \ input.\n\n## Criteria\n\n1. Fact verification: Each stated fact, statistic, name, date, and causal claim must be accurate\
+    \ per the context.\n   - Pass: \"The population is 1.4 billion\" matching context data.\n   - Fail: \"The population is\
+    \ 2 billion\" when context says 1.4 billion.\n\n2. Numerical accuracy: Calculations, percentages, and comparisons must\
+    \ be mathematically correct.\n   - Pass: \"A 50% increase from 100 to 150.\"\n   - Fail: \"A 50% increase from 100 to\
+    \ 200.\"\n\n3. Logical accuracy: Cause-effect relationships and categorical claims must be valid.\n   - Pass: \"Rain causes\
+    \ flooding in low-lying areas\" (valid causal link).\n   - Fail: \"Flooding causes rain\" (reversed causality).\n\n##\
+    \ Anti-bias Rules\n\n- Acceptable rounding (e.g., \"~50%\" for 49.7%) should NOT reduce the score materially.\n- Claims\
+    \ true in general knowledge but unsupported by the provided context should be penalized in context-dependent evaluation.\n\
+    - A short accurate answer scores higher than a long answer with scattered inaccuracies.\n\n## Scoring\n\nScore 0.0 if\
+    \ the output contains multiple significant factual errors. Score 0.5 if mostly accurate but with some errors or imprecisions.\
+    \ Score 1.0 if every claim is accurate and verifiable from the context.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>\n\
+    \n<context>{{context}}</context>"

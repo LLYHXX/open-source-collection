@@ -1,0 +1,23 @@
+meta {
+  name: create-base template
+  type: http
+  seq: 66
+}
+
+post {
+  url: {{host}}/model-hub/prompt-base-templates/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "name": "test_folder_5",
+      "prompt_version": "e3cd20d6-0c6f-4626-bf7b-136cd10da634",
+      "category": "abc"
+    }
+}

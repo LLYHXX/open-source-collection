@@ -1,0 +1,61 @@
+eval_id: 12
+name: chunk_utilization
+description: Measures how effectively context chunks are used in responses
+criteria: "You are evaluating how effectively the output uses the information provided in the context chunks.\n\n## Criteria\n\
+  \n1. Coverage breadth: The output should draw from multiple relevant sections of the context, not just one paragraph.\n\
+  \   - Pass: References facts from several parts of the context.\n   - Fail: Uses only the first sentence while ignoring\
+  \ relevant later content.\n\n2. Information synthesis: The output should integrate context information, not just extract\
+  \ isolated facts.\n   - Pass: Combines multiple context points into a coherent answer.\n   - Fail: Lists disconnected facts\
+  \ without synthesis.\n\n3. Relevance-weighted usage: Important context information should be prioritized over trivial details.\n\
+  \   - Pass: Key findings and conclusions from context are prominently featured.\n   - Fail: Minor details are included while\
+  \ major findings are ignored.\n\n## Anti-bias Rules\n\n- Not all context needs to be used; DO NOT penalize ignoring irrelevant\
+  \ portions of the context.\n- Redundant context information used once is sufficient; DO NOT require repetitive references.\n\
+  - A short answer that efficiently uses key context scores higher than a long answer that superficially touches everything.\n\
+  \n## Scoring\n\nScore 0.0 if the output ignores the context and relies on general knowledge. Score 0.5 if it uses some context\
+  \ but misses significant relevant portions. Score 1.0 if it comprehensively draws from all relevant context parts.\n\n##\
+  \ Inputs\n\n<context>{{context}}</context>\n\n<output>{{output}}</output>"
+eval_tags:
+- RAG
+- Retrieval Systems
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - context
+  - output
+  output: score
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    output: The output to be evaluated
+    context: The context provided for the response
+    input: The input to be evaluated
+  param_modalities:
+    output: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    context: *id001
+  rule_prompt: "You are evaluating how effectively the output uses the information provided in the context chunks.\n\n## Criteria\n\
+    \n1. Coverage breadth: The output should draw from multiple relevant sections of the context, not just one paragraph.\n\
+    \   - Pass: References facts from several parts of the context.\n   - Fail: Uses only the first sentence while ignoring\
+    \ relevant later content.\n\n2. Information synthesis: The output should integrate context information, not just extract\
+    \ isolated facts.\n   - Pass: Combines multiple context points into a coherent answer.\n   - Fail: Lists disconnected\
+    \ facts without synthesis.\n\n3. Relevance-weighted usage: Important context information should be prioritized over trivial\
+    \ details.\n   - Pass: Key findings and conclusions from context are prominently featured.\n   - Fail: Minor details are\
+    \ included while major findings are ignored.\n\n## Anti-bias Rules\n\n- Not all context needs to be used; DO NOT penalize\
+    \ ignoring irrelevant portions of the context.\n- Redundant context information used once is sufficient; DO NOT require\
+    \ repetitive references.\n- A short answer that efficiently uses key context scores higher than a long answer that superficially\
+    \ touches everything.\n\n## Scoring\n\nScore 0.0 if the output ignores the context and relies on general knowledge. Score\
+    \ 0.5 if it uses some context but misses significant relevant portions. Score 1.0 if it comprehensively draws from all\
+    \ relevant context parts.\n\n## Inputs\n\n<context>{{context}}</context>\n\n<output>{{output}}</output>"

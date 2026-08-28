@@ -1,0 +1,197 @@
+name: Community activity
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  relay:
+    name: Relay activity
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request_review' || (github.event.review.body != null && github.event.review.body != '') }}
+    steps:
+      - name: Send activity update
+        env:
+          ACTIVITY_WEBHOOK_URL: ${{ secrets.COMMUNITY_ACTIVITY_WEBHOOK_URL }}
+          ACTIVITY_WEBHOOK_SECRET: ${{ secrets.COMMUNITY_ACTIVITY_WEBHOOK_SECRET }}
+        run: |
+          node <<'NODE'
+          const crypto = require('crypto');
+          const fs = require('fs');
+
+          async function main() {
+            const webhookUrl = process.env.ACTIVITY_WEBHOOK_URL;
+            if (!webhookUrl) {
+              console.log('Activity webhook is not configured. Skipping.');
+              return;
+            }
+
+            const eventName = process.env.GITHUB_EVENT_NAME;
+            const eventPath = process.env.GITHUB_EVENT_PATH;
+            if (!eventPath) {
+              throw new Error('GITHUB_EVENT_PATH is not set.');
+            }
+
+            const payload = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
+            const repo = payload.repository?.full_name || process.env.GITHUB_REPOSITORY || 'repository';
+
+          const shorten = (value, max = 800) => {
+            const text = String(value || '').replace(/\s+/g, ' ').trim();
+            return text.length > max ? `${text.slice(0, max - 1)}...` : text;
+          };
+
+          const escapeMd = (value) => String(value || '')
+            .replace(/\\/g, '\\\\')
+            .replace(/\*/g, '\\*')
+            .replace(/_/g, '\\_')
+            .replace(/`/g, '\\`');
+
+          const userLogin = (user) => user?.login || 'unknown';
+
+          function activityFromPayload() {
+            if (eventName === 'issues') {
+              const issue = payload.issue;
+              return {
+                title: 'Issue created',
+                actor: userLogin(issue.user),
+                item: `#${issue.number} ${issue.title}`,
+                url: issue.html_url,
+                body: issue.body,
+              };
+            }
+
+            if (eventName === 'issue_comment') {
+              const issue = payload.issue;
+              const isPullRequest = Boolean(issue.pull_request);
+              return {
+                title: isPullRequest ? 'PR comment' : 'Issue comment',
+                actor: userLogin(payload.comment?.user),
+                item: `#${issue.number} ${issue.title}`,
+                url: payload.comment?.html_url || issue.html_url,
+                body: payload.comment?.body,
+              };
+            }
+
+            if (eventName === 'pull_request_target') {
+              const pullRequest = payload.pull_request;
+              return {
+                title: 'PR created',
+                actor: userLogin(pullRequest.user),
+                item: `#${pullRequest.number} ${pullRequest.title}`,
+                url: pullRequest.html_url,
+                body: pullRequest.body,
+              };
+            }
+
+            if (eventName === 'pull_request_review') {
+              const review = payload.review;
+              const pullRequest = payload.pull_request;
+              return {
+                title: 'PR review',
+                actor: userLogin(review.user),
+                item: `#${pullRequest.number} ${pullRequest.title}`,
+                url: review.html_url || pullRequest.html_url,
+                body: review.body,
+              };
+            }
+
+            if (eventName === 'pull_request_review_comment') {
+              const comment = payload.comment;
+              const pullRequest = payload.pull_request;
+              return {
+                title: 'PR review comment',
+                actor: userLogin(comment.user),
+                item: `#${pullRequest.number} ${pullRequest.title}`,
+                url: comment.html_url || pullRequest.html_url,
+                body: comment.body,
+              };
+            }
+
+            return null;
+          }
+
+            const activity = activityFromPayload();
+            if (!activity) {
+              console.log(`Unsupported event: ${eventName}`);
+              return;
+            }
+
+            const lines = [
+              `**Repository**: ${escapeMd(repo)}`,
+              `**Actor**: ${escapeMd(activity.actor)}`,
+              `**Target**: [${escapeMd(activity.item)}](${activity.url})`,
+            ];
+
+            const summary = shorten(activity.body);
+            if (summary) {
+              lines.push(`**Content**: ${escapeMd(summary)}`);
+            }
+
+            const message = {
+              msg_type: 'interactive',
+              card: {
+                header: {
+                  template: 'blue',
+                  title: {
+                    tag: 'plain_text',
+                    content: activity.title,
+                  },
+                },
+                elements: [
+                  {
+                    tag: 'markdown',
+                    content: lines.join('\n'),
+                  },
+                ],
+              },
+            };
+
+            const secret = process.env.ACTIVITY_WEBHOOK_SECRET;
+            if (secret) {
+              const timestamp = Math.floor(Date.now() / 1000).toString();
+              const sign = crypto
+                .createHmac('sha256', `${timestamp}\n${secret}`)
+                .update('')
+                .digest('base64');
+              message.timestamp = timestamp;
+              message.sign = sign;
+            }
+
+            const response = await fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(message),
+            });
+
+            const responseText = await response.text();
+
+            let result = {};
+            try {
+              result = JSON.parse(responseText);
+            } catch (error) {
+              // Non-JSON response body; fall back to HTTP status handling below.
+            }
+
+            // Some webhook endpoints return HTTP 200 even on failure; a non-zero `code` means it was rejected.
+            if (!response.ok || (result.code !== undefined && result.code !== 0)) {
+              throw new Error(`Activity webhook failed (HTTP ${response.status}): ${responseText}`);
+            }
+
+            console.log(`Activity webhook accepted: ${response.status}`);
+          }
+
+          main().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE

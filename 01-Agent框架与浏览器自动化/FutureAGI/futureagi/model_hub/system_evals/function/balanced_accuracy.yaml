@@ -1,0 +1,47 @@
+eval_id: 184
+name: balanced_accuracy
+description: Computes balanced accuracy (average recall per class). Handles imbalanced datasets better than standard accuracy.
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [output, expected]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {output: Predicted labels, expected: True labels}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return [str(v).strip().lower() for v in val]
+            if isinstance(val, str):
+                try:
+                    p = json.loads(val)
+                    if isinstance(p, list):
+                        return [str(v).strip().lower() for v in p]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                return [val.strip().lower()]
+            return [str(val).strip().lower()]
+        preds = _parse(kwargs.get("output", output))
+        labels = _parse(kwargs.get("expected", expected))
+        if not preds and not labels:
+            return {"score": 1.0, "reason": "Both empty"}
+        if len(preds) != len(labels):
+            return {"score": 0.0, "reason": f"Length mismatch: {len(preds)} vs {len(labels)}"}
+        classes = sorted(set(labels))
+        recalls = []
+        for c in classes:
+            tp = sum(1 for p,l in zip(preds,labels) if l==c and p==c)
+            tot = sum(1 for l in labels if l==c)
+            recalls.append(tp/tot if tot > 0 else 0.0)
+        ba = sum(recalls)/len(recalls) if recalls else 0.0
+        return {"score": float(ba), "reason": f"Balanced Accuracy: {ba:.4f} ({len(classes)} classes)"}

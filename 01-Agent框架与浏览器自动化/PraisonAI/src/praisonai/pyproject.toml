@@ -1,0 +1,349 @@
+[project]
+name = "PraisonAI"
+dynamic = ["version"]
+description = "PraisonAI is an AI Agents Framework with Self Reflection. PraisonAI application combines PraisonAI Agents, AutoGen, and CrewAI into a low-code solution for building and managing multi-agent LLM systems, focusing on simplicity, customisation, and efficient human-agent collaboration."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10,<3.15"
+authors = [
+    { name = "Mervin Praison" }
+]
+dependencies = [
+    "rich>=13.7",
+    "markdown>=3.5",
+    "pyparsing>=3.0.0",
+    "praisonaiagents>=1.7.1",
+    "praisonai-code>=0.1.1",
+    "praisonai-bot>=0.1.1",
+    "praisonai-train>=0.1.1",
+    "praisonai-browser>=0.1.1",
+    "praisonai-mcp>=0.1.3",
+    "praisonai-sandbox>=0.1.1",
+    "praisonai-deploy>=0.1.1",
+    "python-dotenv>=0.19.0",
+    "litellm>=1.83.14,<2",
+    "PyYAML>=6.0",
+    "mcp>=1.20.0",
+    "typer>=0.12.0",
+    "click>=8.4.2",
+    "textual>=0.47.0",
+    "pydantic>=2.0.0",
+    "toml>=0.10.2",
+]
+
+[project.scripts]
+praisonai = "praisonai.__main__:main"
+setup-conda-env = "praisonai.setup.setup_conda_env:main"
+praisonai-call = "praisonai.api.call:main"
+
+[project.entry-points."praisonai.framework_adapters"]
+crewai = "praisonai.framework_adapters.crewai_adapter:CrewAIAdapter"
+autogen = "praisonai.framework_adapters.autogen_adapter:AutoGenFamilyAdapter"
+autogen_v2 = "praisonai.framework_adapters.autogen_adapter:AutoGenAdapter"
+
+# Canonical group for endpoint providers. Third-party packages publish
+# `name = "your_pkg:YourProvider"` (a praisonai.endpoints.providers.base
+# .BaseProvider subclass) here. The old "praisonai.endpoints.providers"
+# spelling still works but emits a DeprecationWarning.
+[project.entry-points."praisonai.endpoint_providers"]
+recipe = "praisonai.endpoints.providers.recipe:RecipeProvider"
+agents-api = "praisonai.endpoints.providers.agents_api:AgentsAPIProvider"
+mcp = "praisonai.endpoints.providers.mcp:MCPProvider"
+tools-mcp = "praisonai.endpoints.providers.tools_mcp:ToolsMCPProvider"
+a2a = "praisonai.endpoints.providers.a2a:A2AProvider"
+a2u = "praisonai.endpoints.providers.a2u:A2UProvider"
+openai-compat = "praisonai.endpoints.providers.openai_compat:OpenAICompatProvider"
+
+[project.optional-dependencies]
+ui = [
+    "aiui>=0.3.121,<0.4",
+]
+gradio = ["gradio>=4.26.0"]
+api = [
+    "flask>=3.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "sse-starlette>=1.6.0"
+]
+os = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "PyJWT>=2.8.0",
+    "sse-starlette>=1.6.0"
+]
+gateway = [
+    "praisonai-bot[gateway]",
+]
+agentops = ["agentops>=0.3.12"]
+langfuse = ["langfuse>=3.0.0"]
+langextract = ["langextract>=1.0.0"]
+chat = [
+    "aiui>=0.3.121,<0.4",
+    "tavily-python==0.5.0",
+    "crawl4ai>=0.7.0",
+    # Playwright also ships via praisonai-browser[all]; pin here for crawl4ai without [browser]
+    "playwright>=1.47.0",
+    "rich"
+]
+code = [
+    "aiui>=0.3.121,<0.4",
+    "tavily-python==0.5.0",
+    "crawl4ai>=0.7.0",
+    # Playwright also ships via praisonai-browser[all]; pin here for crawl4ai without [browser]
+    "playwright>=1.47.0"
+]
+sandbox = [
+    "praisonai-sandbox[all]",
+]
+deploy = [
+    "praisonai-deploy[all]",
+]
+ssh = [
+    "praisonai-sandbox[ssh]",
+]
+modal = [
+    "praisonai-sandbox[modal]",
+]
+
+# Vendor SDKs for the compute path. They delegate to praisonai-sandbox, which
+# already pins each one correctly -- rather than a second, drifting grid.
+e2b = [
+    "praisonai-sandbox[e2b]",
+]
+
+docker = [
+    "praisonai-sandbox[docker]",
+]
+daytona = [
+    "praisonai-sandbox[daytona]",
+]
+tenki = [
+    "praisonai-sandbox[tenki]",
+]
+realtime = [
+    "aiui>=0.3.121,<0.4",
+    "tavily-python==0.5.0",
+    "crawl4ai>=0.7.0",
+    "playwright>=1.47.0",    # required by crawl4ai — browsers still need: playwright install chromium
+    "websockets>=12.0",
+    "plotly>=5.24.0",
+    "yfinance>=0.2.44",
+    "ddgs>=9.0.0",
+]
+call = [
+    "twilio>=7.0.0",
+    "fastapi>=0.95.0",
+    "uvicorn>=0.20.0",
+    "websockets>=12.0",
+    "flaml[automl]>=2.3.1",
+    "pyngrok>=1.4.0",
+    "rich"
+]
+# C10: training lives in praisonai-train; this extra pulls the heavy ML stack.
+train = ["praisonai-train[llm]"]
+browser = ["praisonai-browser[all]"]
+mcp = ["praisonai-mcp[all]"]
+crewai = ["crewai>=0.157.0", "praisonai-tools>=0.1.0"]  # Task 2: alias to praisonai-frameworks[crewai]
+autogen = ["pyautogen==0.2.29", "praisonai-tools>=0.1.0", "crewai"]  # Task 2: alias to praisonai-frameworks[autogen]
+ag2 = ["ag2>=0.11.0", "praisonai-tools>=0.1.0"]
+autogen-v4 = [
+    "autogen-agentchat>=0.4.0", 
+    "autogen-ext[openai]>=0.4.0", 
+    "autogen-core>=0.4.0",
+    "praisonai-tools>=0.1.0", 
+    "crewai"
+]
+langgraph = [
+    "langgraph>=0.2.0,<2",
+    "langgraph-prebuilt>=0.2.0,<2",
+    "langchain-core>=0.3.0,<2",
+    "langchain-openai>=0.2.0,<2",
+    "praisonai-tools>=0.1.0",
+]
+openai-agents = [
+    "praisonai-frameworks[openai-agents]>=0.1.3",
+    "praisonai-tools>=0.1.0",
+]
+agno = [
+    "praisonai-frameworks[agno]>=0.1.8",
+    "praisonai-tools>=0.1.0",
+]
+google-adk = [
+    "praisonai-frameworks[google-adk]>=0.1.8",
+    "praisonai-tools>=0.1.0",
+]
+pydantic-ai = [
+    "praisonai-frameworks[pydantic-ai]>=0.1.9",
+    "praisonai-tools>=0.1.0",
+]
+acp = [
+    "agent-client-protocol>=0.7.0",
+]
+flow = [
+    # Visual workflow builder powered by Langflow. Provides the
+    # `praisonai flow` CLI (start/import/export/list) with PraisonAI
+    # Agent + AgentTeam components pre-loaded. Heavy, opt-in only.
+    "langflow>=1.0.0",
+    "requests>=2.31.0",
+]
+lite = [
+    # Minimal installation without TUI, litellm - just core agent functionality
+    # Use: pip install praisonai[lite] for lightweight deployments
+]
+all = [
+    # Full installation — trimmed to what `praisonai onboard` + gateway + core
+    # agent loops actually need out of the box. Heavy UI/science/telemetry
+    # stacks live in their own extras (`[ui]`, `[gradio]`, `[realtime]`,
+    # `[observability]`) so the default install stays lean and every
+    # messaging bot the onboarding wizard offers runs without a second
+    # `pip install`.
+    # Gateway / web surface
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "sse-starlette>=1.6.0",
+    "websockets>=12.0",
+    "watchdog>=3.0.0",  # Event-driven gateway.yaml hot-reload (falls back to polling)
+    # Browser + search tools (agent defaults)
+    "tavily-python==0.5.0",
+    "crawl4ai>=0.7.0",
+    "playwright>=1.47.0",
+    "ddgs>=9.0.0",
+    "psutil>=5.9.0",  # Shell tools
+    # Messaging bot SDKs — required by `praisonai onboard` (Telegram, Discord,
+    # Slack, WhatsApp Cloud). Kept in sync with the [bot] extra below.
+    "python-telegram-bot>=20.0",
+    "discord.py>=2.0.0",
+    "slack_sdk>=3.0.0",
+    "slack-bolt>=1.18.0",
+    "brotlicffi>=1.0.0",
+    "aiohttp>=3.8.0",
+    "aiui>=0.3.121,<0.4",  # PraisonAI UI — dashboard + chat for onboarded bots
+    # Storage backends
+    "redis>=5.0.0",
+    "pymongo>=4.6.0",
+    "psycopg2-binary>=2.9.0",
+    "boto3>=1.35.0",
+    # n8n integration
+    "httpx>=0.27.0",
+]
+observability = [
+    # Telemetry stack (Langfuse + transitive OpenTelemetry instrumentations).
+    # Opt-in because it pulls 40+ packages. For back-compat the existing
+    # [langfuse] extra (declared above) remains as an alias.
+    "langfuse>=3.0.0",
+]
+bot = [
+    "praisonai-bot[bot]",
+    "aiui>=0.3.121,<0.4",
+]
+bot-whatsapp-web = [
+    "praisonai-bot[bot-whatsapp-web]",
+]
+# Storage backend dependencies
+redis = [
+    "redis>=5.0.0",
+]
+mongodb = [
+    "pymongo>=4.6.0",
+]
+postgresql = [
+    "psycopg2-binary>=2.9.0",
+]
+dynamodb = [
+    "boto3>=1.35.0",
+]
+valkey = [
+    "valkey-glide-sync>=2.3.1",
+]
+# Cloud-native serverless databases
+neon = [
+    "psycopg2-binary>=2.9.0",
+]
+turso = [
+    "libsql-experimental>=0.0.50",
+]
+cockroachdb = [
+    "psycopg2-binary>=2.9.0",
+]
+xata = [
+    "psycopg2-binary>=2.9.0",
+]
+claw = [
+    # PraisonAI 🦞 — Full dashboard + bots + memory + knowledge + gateway
+    # Install: pip install "praisonai[claw]"
+    "aiui[all]>=0.3.121,<0.4",
+    "praisonaiagents[all]>=1.5.40",
+    "praisonai-bot[gateway,bot]>=0.0.6",
+    # UI + persistence
+    "flask>=3.0.0",
+    # Search + browsing
+    "tavily-python==0.5.0",
+    "crawl4ai>=0.7.0",
+    "playwright>=1.47.0",    # required by crawl4ai — browsers still need: playwright install chromium
+    "ddgs>=9.0.0",
+    # Observability
+    "langfuse>=3.0.0",
+    # Storage backends
+    "redis>=5.0.0",
+    "pymongo>=4.6.0",
+    "psycopg2-binary>=2.9.0",
+    "boto3>=1.35.0",
+    # n8n integration
+    "httpx>=0.27.0",
+]
+n8n = [
+    "httpx>=0.27.0",
+]
+dev = [
+    "textual-dev>=1.0.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.urls]
+Homepage = "https://docs.praison.ai"
+Repository = "https://github.com/mervinpraison/PraisonAI"
+
+[tool.uv.sources]
+praisonaiagents = { path = "../praisonai-agents" }
+# praisonai-code hosts the agentic terminal CLI (extracted incrementally,
+# see issue #2512). Editable path dep during migration; runtime/ and
+# cli_backends/ moved here (C1), interactive/execution/ui/output/state
+# moved here (C2), old praisonai.* paths kept via shims.
+praisonai-code = { path = "../praisonai-code", editable = true }
+praisonai-bot = { path = "../praisonai-bot", editable = true }
+# praisonai-train hosts LLM fine-tuning + agent training (C10); old
+# praisonai.train paths kept via shims.
+praisonai-train = { path = "../praisonai-train", editable = true }
+praisonai-browser = { path = "../praisonai-browser", editable = true }
+praisonai-mcp = { path = "../praisonai-mcp", editable = true }
+praisonai-sandbox = { path = "../praisonai-sandbox", editable = true }
+praisonai-deploy = { path = "../praisonai-deploy", editable = true }
+
+[tool.uv]
+# Exclude from lock resolution — these cause cross-extra conflicts that
+# never occur at install time (nobody installs [claw]+[autogen]+[crewai] together):
+#   neonize:        conflicts with autogen-core (protobuf version)
+#   magika:         numpy>=2.1 (via markitdown) vs pyautogen numpy<2
+#   neo4j-graphrag: json-repair tight pins vs crewai transitive deps
+override-dependencies = [
+    "neonize ; sys_platform == 'never'",
+    "magika ; sys_platform == 'never'",
+    "neo4j-graphrag ; sys_platform == 'never'",
+]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "praisonai.version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["praisonai*"]
+exclude = ["praisonai_code*", "praisonai_bot*", "praisonai.persistence.tests*"]
+
+[tool.setuptools.package-data]
+"praisonai.cli.configuration" = ["*.json"]
+"praisonai.config" = ["*.json"]

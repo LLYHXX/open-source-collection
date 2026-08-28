@@ -1,0 +1,61 @@
+eval_id: 99
+name: task_completion
+description: Measures whether the model fulfilled the user's request accurately and completely.
+criteria: "You are evaluating whether the model's output successfully fulfills the user's request.\n\n## Criteria\n\n1. Instruction\
+  \ adherence: Explicit requirements (format, structure, quantity, constraints) must be met.\n   - Pass: User asks for 3 bullet\
+  \ points and receives exactly 3 relevant bullet points.\n   - Fail: User asks for 3 bullet points but receives a paragraph.\n\
+  \n2. Content completeness: All requested topics, examples, or components must be present.\n   - Pass: All parts of the request\
+  \ are addressed.\n   - Fail: One of three requested sections is missing.\n\n3. Correctness: The output must not only complete\
+  \ the task but do so accurately.\n   - Pass: Code that runs correctly and solves the stated problem.\n   - Fail: Code that\
+  \ runs but produces wrong output.\n\n## Anti-bias Rules\n\n- A short correct answer scores higher than a long incorrect\
+  \ one.\n- For creative tasks, flexible correctness applies but stated constraints must be met.\n- Partial completion of\
+  \ multi-step tasks should fail unless the completed portion is explicitly useful standalone.\n\n## Scoring\n\nReturn 'Passed'\
+  \ if the output fulfills all explicit and reasonable implicit requirements with correct content. Return 'Failed' if it misses\
+  \ instructions, omits components, or provides incorrect content.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Chatbot behaviors
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    input: The user's request
+    output: The model's response to be evaluated
+  param_modalities:
+    input: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output: *id001
+  rule_prompt: "You are evaluating whether the model's output successfully fulfills the user's request.\n\n## Criteria\n\n\
+    1. Instruction adherence: Explicit requirements (format, structure, quantity, constraints) must be met.\n   - Pass: User\
+    \ asks for 3 bullet points and receives exactly 3 relevant bullet points.\n   - Fail: User asks for 3 bullet points but\
+    \ receives a paragraph.\n\n2. Content completeness: All requested topics, examples, or components must be present.\n \
+    \  - Pass: All parts of the request are addressed.\n   - Fail: One of three requested sections is missing.\n\n3. Correctness:\
+    \ The output must not only complete the task but do so accurately.\n   - Pass: Code that runs correctly and solves the\
+    \ stated problem.\n   - Fail: Code that runs but produces wrong output.\n\n## Anti-bias Rules\n\n- A short correct answer\
+    \ scores higher than a long incorrect one.\n- For creative tasks, flexible correctness applies but stated constraints\
+    \ must be met.\n- Partial completion of multi-step tasks should fail unless the completed portion is explicitly useful\
+    \ standalone.\n\n## Scoring\n\nReturn 'Passed' if the output fulfills all explicit and reasonable implicit requirements\
+    \ with correct content. Return 'Failed' if it misses instructions, omits components, or provides incorrect content.\n\n\
+    ## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>"

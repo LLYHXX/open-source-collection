@@ -1,0 +1,21 @@
+meta {
+  name: base template categories
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}/model-hub/prompt-base-templates/get-all-categories/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "name": "test_folder_2"
+    }
+}

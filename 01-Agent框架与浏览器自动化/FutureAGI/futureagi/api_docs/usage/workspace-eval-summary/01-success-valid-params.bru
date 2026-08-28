@@ -1,0 +1,66 @@
+meta {
+  name: 01 - Success - Valid Parameters
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/usage/workspace-eval-summary/?workspace_id={{workspace_id}}&month=1&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  workspace_id: {{workspace_id}}
+  month: 1
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Workspace Evaluation Summary - Valid Request
+
+  ### Test Scenario
+  - Valid workspace_id, month, and year provided
+  - Returns evaluation usage breakdown for specific workspace
+
+  ### Expected Response
+  - Status: 200 OK
+  - Response structure:
+    ```json
+    {
+      "status": true,
+      "result": {
+        "workspace_id": "uuid",
+        "workspace_name": "string",
+        "evaluations": [
+          {
+            "eval_type": "string",
+            "eval_name": "string",
+            "totals": {
+              "creditsUsed": 0,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalCalls": 0
+            }
+          }
+        ],
+        "total": {
+          "creditsUsed": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "totalCalls": 0
+        }
+      }
+    }
+    ```
+
+  ### Notes
+  - workspace_id is required
+  - Must have access to the specified workspace
+  - Returns evaluation-level breakdown
+  - Use a valid workspace_id from your organization
+}

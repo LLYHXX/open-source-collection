@@ -1,0 +1,27 @@
+meta {
+  name: DELETE EVAL GROUP
+  type: http
+  seq: 5
+}
+
+delete {
+  url: http://localhost:8000/model-hub/eval-groups/0e8468ef-ff06-4852-93e4-60db0e20dd9c/
+  body: none
+  auth: inherit
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+}
+
+body:json {
+  {
+    "name": "test_group_testttt",
+    "description": "test_description11224"
+  }
+}
+
+settings {
+  encodeUrl: false
+}

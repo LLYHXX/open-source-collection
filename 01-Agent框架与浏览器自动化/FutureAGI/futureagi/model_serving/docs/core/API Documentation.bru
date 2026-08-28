@@ -1,0 +1,68 @@
+meta {
+  name: API Documentation
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/docs
+  body: none
+  auth: none
+}
+
+headers {
+  User-Agent: Bruno/1.0
+  Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+}
+
+docs {
+  # API Documentation (Swagger UI)
+
+  Returns the interactive Swagger UI documentation for the Model Serving API.
+  This provides a web interface to explore and test all available endpoints.
+
+  ## Response
+
+  Returns HTML content for the Swagger UI interface.
+
+  ## Status Codes
+  - `200 OK` - Documentation is available
+  - `404 Not Found` - Documentation is disabled (when ENABLE_DOCS=false)
+
+  ## Features
+  - Interactive API exploration
+  - Request/response examples
+  - Schema definitions
+  - Try-it-out functionality
+  - Authentication support
+
+  ## Use Cases
+  - API development and testing
+  - Integration reference
+  - Client SDK generation
+  - API specification sharing
+
+  ## Alternative Endpoints
+  - `/redoc` - Alternative documentation format (ReDoc)
+  - `/openapi.json` - Raw OpenAPI specification
+
+  ## Notes
+  - Can be disabled in production for security
+  - Controlled by ENABLE_DOCS environment variable
+  - Based on FastAPI's automatic OpenAPI generation
+}
+
+tests {
+  test("Status should be 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Content-Type should be HTML", function() {
+    expect(res.getHeader("content-type")).to.contain("text/html");
+  });
+
+  test("Response should contain Swagger UI", function() {
+    const body = res.getBody();
+    expect(body).to.contain("swagger");
+  });
+}

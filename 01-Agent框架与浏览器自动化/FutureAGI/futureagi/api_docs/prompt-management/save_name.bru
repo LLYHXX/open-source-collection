@@ -1,0 +1,39 @@
+meta {
+  name: save prompt template name
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/model-hub/prompt-templates/:id/save-name/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  id:
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "My New Template Name"
+  }
+}
+
+docs {
+  title: "Save/Update Prompt Template Name"
+  description: "Updates the name of an existing prompt template"
+
+  params {
+    id: "UUID of the prompt template to update"
+  }
+
+  response: {
+    success: "Returns the updated template data",
+    error: "Returns error if name already exists or is missing"
+  }
+}

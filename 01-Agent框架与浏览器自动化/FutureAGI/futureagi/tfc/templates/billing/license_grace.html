@@ -1,0 +1,27 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}Grace Period Ending — Future AGI{% endblock %}
+{% block preheader %}Grace period is ending. EE features are about to be disabled.{% endblock %}
+{% block txid %}◦ LICENSE / GRACE{% endblock %}
+{% block content %}
+<h1 class="hx" style="font-family:'Inter',sans-serif; font-size:26px; line-height:1.2; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:0 0 14px 0;">Grace period ending soon</h1>
+<p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:0 0 16px 0;">
+  Your Future AGI EE license grace period is about to end. Once it expires, your instance reverts to the open-source feature set.
+</p>
+
+<div class="log" style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:10px; padding:20px 22px; margin:22px 0; font-family:'Inter',sans-serif; color:#c7c7cc;">
+  <p class="log-hdr" style="margin:0 0 14px 0; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+    <span style="display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:10px; vertical-align:middle; background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,0.55);"></span>Will disable<span style="color:#71717a; font-weight:500; margin-left:6px;">· After grace ends</span>
+  </p>
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+    <tr><td style="padding:7px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.5; color:#c7c7cc;"><span style="color:#52525b; font-family:'JetBrains Mono',monospace; margin-right:10px;">·</span>SSO / SAML authentication</td></tr>
+    <tr><td style="padding:7px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.5; color:#c7c7cc; border-top:1px solid #1a1a1d;"><span style="color:#52525b; font-family:'JetBrains Mono',monospace; margin-right:10px;">·</span>Role-based access control (RBAC)</td></tr>
+    <tr><td style="padding:7px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.5; color:#c7c7cc; border-top:1px solid #1a1a1d;"><span style="color:#52525b; font-family:'JetBrains Mono',monospace; margin-right:10px;">·</span>Audit logs</td></tr>
+    <tr><td style="padding:7px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.5; color:#c7c7cc; border-top:1px solid #1a1a1d;"><span style="color:#52525b; font-family:'JetBrains Mono',monospace; margin-right:10px;">·</span>Extended data retention</td></tr>
+    <tr><td style="padding:7px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.5; color:#c7c7cc; border-top:1px solid #1a1a1d;"><span style="color:#52525b; font-family:'JetBrains Mono',monospace; margin-right:10px;">·</span>Priority support</td></tr>
+  </table>
+</div>
+
+<div style="margin: 8px 0 0 0;">
+  {% include "billing/_button.html" with url=base_url|add:"/dashboard/settings/ee-licenses" text="Renew license" variant="danger" %}
+</div>
+{% endblock %}

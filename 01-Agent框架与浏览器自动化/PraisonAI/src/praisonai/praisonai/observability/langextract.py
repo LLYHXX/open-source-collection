@@ -1,0 +1,308 @@
+"""
+Langextract TraceSinkProtocol Implementation for PraisonAI.
+
+Provides LangextractSink adapter that implements TraceSinkProtocol from the core SDK,
+producing self-contained interactive HTML visualizations of agent runs grounded in
+the original input text.
+
+Architecture:
+- Core SDK (praisonaiagents): Defines TraceSinkProtocol (unchanged)
+- Wrapper (praisonai): Implements LangextractSink adapter (this file)
+- Pattern: Protocol-driven design per AGENTS.md §4.1 — mirrors LangfuseSink
+"""
+
+from __future__ import annotations
+import os
+import threading
+import webbrowser
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from praisonaiagents.trace.protocol import (
+    ActionEvent,
+    ActionEventType,
+    TraceSinkProtocol,
+)
+
+
+class _ContextToActionBridge:
+    """
+    Adapter that implements ``ContextTraceSinkProtocol`` and forwards
+    ``ContextEvent``s to a ``LangextractSink`` as equivalent ``ActionEvent``s.
+
+    The base agent runtime (``chat_mixin``, ``tool_execution``,
+    ``unified_execution_mixin``) emits lifecycle events via
+    ``ContextTraceEmitter`` only.  This bridge lets the langextract sink
+    observe those events without touching the core SDK.
+    """
+
+    __slots__ = ("_sink",)
+
+    # Subset of ContextEventType values we care about (strings to avoid
+    # importing ContextEventType at module load time).
+    _CTX_AGENT_START = "agent_start"
+    _CTX_AGENT_END = "agent_end"
+    _CTX_TOOL_START = "tool_call_start"
+    _CTX_TOOL_END = "tool_call_end"
+    _CTX_LLM_RESPONSE = "llm_response"
+
+    def __init__(self, sink: "LangextractSink") -> None:
+        self._sink = sink
+
+    def emit(self, event: Any) -> None:  # ContextEvent duck-typed
+        et = getattr(event, "event_type", None)
+        et_value = et.value if hasattr(et, "value") else et
+        data = getattr(event, "data", {}) or {}
+        ts = getattr(event, "timestamp", 0.0)
+        agent = getattr(event, "agent_name", None)
+
+        if et_value == self._CTX_AGENT_START:
+            self._sink.emit(ActionEvent(
+                event_type=ActionEventType.AGENT_START.value,
+                timestamp=ts,
+                agent_name=agent,
+                metadata={"input": data.get("input") or data.get("goal") or ""},
+            ))
+        elif et_value == self._CTX_AGENT_END:
+            self._sink.emit(ActionEvent(
+                event_type=ActionEventType.AGENT_END.value,
+                timestamp=ts,
+                agent_name=agent,
+                status="ok",
+            ))
+        elif et_value == self._CTX_TOOL_START:
+            self._sink.emit(ActionEvent(
+                event_type=ActionEventType.TOOL_START.value,
+                timestamp=ts,
+                agent_name=agent,
+                tool_name=data.get("tool_name"),
+                tool_args=data.get("arguments"),
+            ))
+        elif et_value == self._CTX_TOOL_END:
+            self._sink.emit(ActionEvent(
+                event_type=ActionEventType.TOOL_END.value,
+                timestamp=ts,
+                agent_name=agent,
+                tool_name=data.get("tool_name"),
+                duration_ms=(data.get("duration_ms") or 0.0),
+                status=data.get("status") or "ok",
+                tool_result_summary=str(data.get("result"))[:500] if data.get("result") is not None else None,
+            ))
+        elif et_value == self._CTX_LLM_RESPONSE:
+            # Treat LLM response as an OUTPUT event so the final text shows
+            # up in the rendered HTML.
+            content = data.get("response_content") or data.get("content") or ""
+            self._sink.emit(ActionEvent(
+                event_type=ActionEventType.OUTPUT.value,
+                timestamp=ts,
+                agent_name=agent,
+                tool_result_summary=content,
+            ))
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        # The owning sink handles render/close — nothing to do here.
+        pass
+
+
+@dataclass
+class LangextractSinkConfig:
+    """Configuration for the langextract trace sink."""
+    output_path: str = "praisonai-trace.html"
+    jsonl_path: Optional[str] = None           # derived from output_path if None
+    document_id: str = "praisonai-run"
+    auto_open: bool = False                     # open HTML in browser on close()
+    include_llm_content: bool = True            # include response text in attributes
+    include_tool_args: bool = True
+    enabled: bool = True
+
+
+class LangextractSink:
+    """
+    Implements `TraceSinkProtocol` by accumulating ActionEvents and, on `close()`,
+    rendering them as a langextract AnnotatedDocument + interactive HTML.
+
+    Grounding strategy:
+      - We record the first AGENT_START's `metadata["input"]` as the source text.
+      - OUTPUT events produce extractions grounded against the agent's output.
+      - TOOL_* events produce ungrounded extractions (char_interval=None) whose
+        `attributes` carry the tool name, args summary, duration, status.
+      - AGENT_START/END bracket a run; we emit a single parent "agent" extraction
+        spanning the whole document for overview.
+    """
+
+    __slots__ = ("_config", "_lock", "_events", "_source_text", "_closed")
+
+    def __init__(self, config: Optional[LangextractSinkConfig] = None) -> None:
+        self._config = config or LangextractSinkConfig()
+        self._lock = threading.Lock()
+        self._events: List[ActionEvent] = []
+        self._source_text: Optional[str] = None
+        self._closed = False
+
+    # ---- Context-emitter bridge -------------------------------------------
+
+    def context_sink(self) -> "_ContextToActionBridge":
+        """
+        Return a ``ContextTraceSinkProtocol`` adapter that forwards core
+        ``ContextEvent``s into this sink as ``ActionEvent``s.  Use with
+        ``praisonaiagents.trace.context_events.set_context_emitter`` (or
+        ``trace_context``) to capture real agent runtime events.
+        """
+        return _ContextToActionBridge(self)
+
+    @staticmethod
+    def bridge_context_events(sink: "LangextractSink", session_id: str, warn_callback=None) -> None:
+        """
+        Helper method to set up context event bridging for the given sink.
+        
+        Args:
+            sink: LangextractSink instance to bridge
+            session_id: Session ID for the context emitter
+            warn_callback: Optional callback function for warnings, called with message string
+        """
+        try:
+            from praisonaiagents.trace.context_events import (
+                ContextTraceEmitter,
+                set_context_emitter,
+            )
+            context_emitter = ContextTraceEmitter(
+                sink=sink.context_sink(),
+                session_id=session_id,
+                enabled=True,
+            )
+            set_context_emitter(context_emitter)
+        except ImportError:
+            # Context emitter bridging is optional if not available
+            if warn_callback:
+                warn_callback("ContextTraceEmitter not available")
+        except Exception as e:
+            if warn_callback:
+                warn_callback(f"could not bridge context emitter: {e}")
+
+    # ---- TraceSinkProtocol -------------------------------------------------
+
+    def emit(self, event: ActionEvent) -> None:
+        if not self._config.enabled or self._closed:
+            return
+        with self._lock:
+            # Capture source text from first AGENT_START
+            if (
+                self._source_text is None
+                and event.event_type == ActionEventType.AGENT_START.value
+                and event.metadata
+            ):
+                self._source_text = event.metadata.get("input") or ""
+            self._events.append(event)
+
+    def flush(self) -> None:
+        pass  # no-op; HTML is built on close()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            self._render()
+        except Exception:
+            # Observability must never break the agent
+            import logging
+            logging.getLogger(__name__).exception("LangextractSink render failed")
+
+    # ---- Rendering ---------------------------------------------------------
+
+    def _render(self) -> None:
+        # Lazy import — langextract is optional
+        try:
+            import langextract as lx  # type: ignore
+        except ImportError as err:
+            raise ImportError(
+                "langextract is not installed. Install with: pip install 'praisonai[langextract]'"
+            ) from err
+
+        # Capture snapshot of events under lock to ensure thread safety
+        with self._lock:
+            events = self._events[:]
+            source = self._source_text or ""
+        
+        # Skip rendering if no events were recorded
+        if not events:
+            return
+
+        extractions = list(self._events_to_extractions(lx, source, events))
+        doc = lx.data.AnnotatedDocument(
+            document_id=self._config.document_id,
+            text=source,
+            extractions=extractions,
+        )
+
+        jsonl = self._config.jsonl_path or (Path(self._config.output_path).with_suffix(".jsonl").as_posix())
+        Path(jsonl).parent.mkdir(parents=True, exist_ok=True)
+        lx.io.save_annotated_documents([doc], output_name=os.path.basename(jsonl), output_dir=os.path.dirname(jsonl) or ".")
+
+        html = lx.visualize(jsonl)
+        html_text = html.data if hasattr(html, "data") else html
+        
+        # Create parent directory for output path if it doesn't exist
+        output_path = Path(self._config.output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(html_text, encoding="utf-8")
+
+        if self._config.auto_open:
+            webbrowser.open(f"file://{output_path.resolve()}")
+
+    def _events_to_extractions(self, lx, source: str, events: List[ActionEvent]):
+        """Pure mapper: ActionEvent list -> lx.data.Extraction generator."""
+        for ev in events:
+            et = ev.event_type
+            attrs: Dict[str, Any] = {
+                "agent_name": ev.agent_name,
+                "duration_ms": ev.duration_ms,
+                "status": ev.status,
+            }
+            if et == ActionEventType.AGENT_START.value:
+                yield lx.data.Extraction(
+                    extraction_class="agent_run",
+                    extraction_text=(source[:200] if source else ev.agent_name or "agent"),
+                    attributes={**attrs, "kind": "start"},
+                )
+            elif et == ActionEventType.TOOL_START.value:
+                yield lx.data.Extraction(
+                    extraction_class="tool_call",
+                    extraction_text=ev.tool_name or "tool",
+                    attributes={
+                        **attrs,
+                        "tool_name": ev.tool_name,
+                        "tool_args": ev.tool_args if self._config.include_tool_args else None,
+                    },
+                )
+            elif et == ActionEventType.TOOL_END.value:
+                yield lx.data.Extraction(
+                    extraction_class="tool_result",
+                    extraction_text=ev.tool_result_summary or "(empty)",
+                    attributes={**attrs, "tool_name": ev.tool_name},
+                )
+            elif et == ActionEventType.OUTPUT.value:
+                # Fix: OUTPUT events store text in tool_result_summary, not metadata['content']
+                output_text = (
+                    ev.tool_result_summary
+                    or (ev.metadata or {}).get("output")
+                    or (ev.metadata or {}).get("content")
+                    or ""
+                )
+                yield lx.data.Extraction(
+                    extraction_class="final_output",
+                    extraction_text=output_text[:1000],
+                    attributes=attrs,
+                )
+            elif et == ActionEventType.ERROR.value:
+                yield lx.data.Extraction(
+                    extraction_class="error",
+                    extraction_text=ev.error_message or "error",
+                    attributes=attrs,
+                )
+            # AGENT_END is summary-only — skip for now; could produce run stats extraction

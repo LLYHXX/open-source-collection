@@ -1,0 +1,441 @@
+"""
+Tests for wiring the result-aware tool-loop detector into the tool-execution path.
+
+Covers issue #3001: the result-aware detector (name + args + result-hash,
+ping-pong) must actually run in the tool loop, and the doom-loop feed must no
+longer be fed a constant success=True.
+"""
+
+import pytest
+from unittest.mock import patch
+
+from praisonaiagents import Agent
+
+
+def _make_agent():
+    return Agent(instructions="Test agent", output="silent")
+
+
+def _disable_loop_guard(agent):
+    """Turn off the separate loop-guard so a test can exercise many identical
+    calls without the guard's own no-progress HALT masking doom-loop behaviour.
+    """
+    from praisonaiagents.escalation.loop_guard import LoopGuard, LoopGuardConfig
+
+    agent._loop_guard = LoopGuard(LoopGuardConfig(enabled=False))
+
+
+def _run_tool(agent, name, arguments):
+    """Invoke the tool-execution path directly with a stubbed tool impl."""
+    return agent._execute_tool_with_context(
+        function_name=name,
+        arguments=arguments,
+        tool_call_id="tc-1",
+        state=None,
+    )
+
+
+class TestDetectorEnabledByDefault:
+    def test_detector_enabled_by_default(self):
+        agent = _make_agent()
+        history, config = agent._ensure_loop_detector()
+        assert config.enabled is True
+        assert history == []
+
+
+class TestResultAwareToolPath:
+    """The detector must key on name+args+output, not just name+args."""
+
+    def test_polling_changing_output_not_flagged(self):
+        """Same tool+args, different result each call -> no loop flagged."""
+        agent = _make_agent()
+        _, config = agent._ensure_loop_detector()
+        # Tune thresholds low so a false positive would be obvious.
+        config.warn_threshold = 3
+        config.critical_threshold = 5
+
+        counter = {"n": 0}
+
+        def _impl(function_name, arguments):
+            counter["n"] += 1
+            return f"result-{counter['n']}"  # changing output each call
+
+        with patch.object(agent, "_execute_tool_with_circuit_breaker", side_effect=_impl):
+            results = [_run_tool(agent, "poll_status", {"id": 1}) for _ in range(8)]
+
+        assert all(
+            not (isinstance(r, dict) and r.get("loop_blocked")) for r in results
+        )
+
+    def test_identical_output_repeat_flagged(self):
+        """Same tool+args+output N times -> critical block."""
+        agent = _make_agent()
+        _, config = agent._ensure_loop_detector()
+        config.warn_threshold = 3
+        config.critical_threshold = 5
+
+        with patch.object(
+            agent,
+            "_execute_tool_with_circuit_breaker",
+            return_value="constant-output",
+        ):
+            results = [_run_tool(agent, "check_status", {"id": 1}) for _ in range(8)]
+
+        assert any(
+            isinstance(r, dict) and r.get("loop_blocked") for r in results
+        ), "identical-output polling loop should be blocked"
+
+    def test_generic_repeat_identical_args_flagged(self):
+        """Non-poll tool called with identical args N times -> critical."""
+        agent = _make_agent()
+        _, config = agent._ensure_loop_detector()
+        config.warn_threshold = 3
+        config.critical_threshold = 5
+
+        with patch.object(
+            agent,
+            "_execute_tool_with_circuit_breaker",
+            return_value="ok",
+        ):
+            results = [_run_tool(agent, "write_file", {"path": "a"}) for _ in range(8)]
+
+        assert any(
+            isinstance(r, dict) and r.get("loop_blocked") for r in results
+        )
+
+    def test_two_tier_self_correction_then_stop(self):
+        """Warning queues a self-correction nudge; persistence escalates to block."""
+        agent = _make_agent()
+        _, config = agent._ensure_loop_detector()
+        config.warn_threshold = 3
+        config.critical_threshold = 6
+        agent._loop_warned_this_turn = False
+
+        blocked = None
+        with patch.object(
+            agent,
+            "_execute_tool_with_circuit_breaker",
+            return_value="ok",
+        ):
+            for _ in range(config.warn_threshold):
+                _run_tool(agent, "write_file", {"path": "a"})
+            # After hitting warn threshold, a self-correction nudge is queued.
+            assert agent._pending_self_correction is not None
+            # Continue until critical -> block.
+            for _ in range(config.critical_threshold):
+                r = _run_tool(agent, "write_file", {"path": "a"})
+                if isinstance(r, dict) and r.get("loop_blocked"):
+                    blocked = r
+                    break
+
+        assert blocked is not None
+
+
+class TestDetectorWiredIntoRealRun:
+    def test_detector_invoked_during_multi_tool_run(self):
+        """record_tool_call / record_tool_outcome / detect_tool_loop are invoked."""
+        agent = _make_agent()
+
+        called = {"call": 0, "outcome": 0, "detect": 0}
+
+        from praisonaiagents.agent import loop_detection as _ld
+        orig_call = _ld.record_tool_call
+        orig_outcome = _ld.record_tool_outcome
+        orig_detect = _ld.detect_tool_loop
+
+        def _c(*a, **k):
+            called["call"] += 1
+            return orig_call(*a, **k)
+
+        def _o(*a, **k):
+            called["outcome"] += 1
+            return orig_outcome(*a, **k)
+
+        def _d(*a, **k):
+            called["detect"] += 1
+            return orig_detect(*a, **k)
+
+        with patch.object(_ld, "record_tool_call", side_effect=_c), \
+             patch.object(_ld, "record_tool_outcome", side_effect=_o), \
+             patch.object(_ld, "detect_tool_loop", side_effect=_d), \
+             patch.object(agent, "_execute_tool_with_circuit_breaker", return_value="ok"):
+            _run_tool(agent, "my_tool", {"x": 1})
+
+        assert called["call"] >= 1
+        assert called["outcome"] >= 1
+        assert called["detect"] >= 1
+
+
+class TestBackwardCompat:
+    def test_normal_run_not_flagged(self):
+        """A normal, non-looping sequence of tool calls is unaffected."""
+        agent = _make_agent()
+        _, config = agent._ensure_loop_detector()
+        config.warn_threshold = 3
+        config.critical_threshold = 5
+
+        with patch.object(
+            agent,
+            "_execute_tool_with_circuit_breaker",
+            side_effect=lambda n, a: f"ok-{a}",
+        ):
+            results = [
+                _run_tool(agent, "write_file", {"path": f"file-{i}"})
+                for i in range(8)
+            ]
+
+        assert all(
+            not (isinstance(r, dict) and r.get("loop_blocked")) for r in results
+        )
+
+
+class TestDoomLoopApprovalGate:
+    """Critical loop verdicts route through the unified approval pipeline."""
+
+    def test_default_still_stops(self):
+        """No approval override -> critical loop still blocks (backward-compat)."""
+        agent = _make_agent()
+        _, config = agent._ensure_loop_detector()
+        config.warn_threshold = 3
+        config.critical_threshold = 5
+
+        with patch.object(
+            agent, "_execute_tool_with_circuit_breaker", return_value="constant"
+        ):
+            results = [_run_tool(agent, "check_status", {"id": 1}) for _ in range(8)]
+
+        assert any(
+            isinstance(r, dict) and r.get("loop_blocked") for r in results
+        ), "default doom_loop posture must still stop"
+
+    def test_allow_continues_past_threshold(self):
+        """An allow decision lets the agent continue past the critical threshold."""
+        from praisonaiagents.approval import (
+            get_approval_registry,
+            AutoApproveBackend,
+        )
+
+        agent = _make_agent()
+        _, config = agent._ensure_loop_detector()
+        config.warn_threshold = 3
+        config.critical_threshold = 5
+
+        registry = get_approval_registry()
+        agent_name = agent.name
+        registry.set_backend(AutoApproveBackend(), agent_name=agent_name)
+        try:
+            with patch.object(
+                agent, "_execute_tool_with_circuit_breaker", return_value="constant"
+            ):
+                results = [
+                    _run_tool(agent, "check_status", {"id": 1}) for _ in range(8)
+                ]
+        finally:
+            registry.remove_backend(agent_name=agent_name)
+            registry.clear_approved()
+
+        assert all(
+            not (isinstance(r, dict) and r.get("loop_blocked")) for r in results
+        ), "doom_loop=allow must let the agent continue"
+
+    def test_interactive_callback_is_asked(self):
+        """An interactive backend is consulted when a critical loop is detected."""
+        from praisonaiagents.approval import get_approval_registry
+        from praisonaiagents.approval.protocols import ApprovalDecision
+
+        asked = {"n": 0}
+
+        class _Backend:
+            def request_approval_sync(self, request):
+                asked["n"] += 1
+                return ApprovalDecision(approved=False, reason="human stop")
+
+            async def request_approval(self, request):
+                return self.request_approval_sync(request)
+
+        agent = _make_agent()
+        _, config = agent._ensure_loop_detector()
+        config.warn_threshold = 3
+        config.critical_threshold = 5
+
+        registry = get_approval_registry()
+        agent_name = agent.name
+        registry.set_backend(_Backend(), agent_name=agent_name)
+        try:
+            with patch.object(
+                agent, "_execute_tool_with_circuit_breaker", return_value="constant"
+            ):
+                [_run_tool(agent, "check_status", {"id": 1}) for _ in range(8)]
+        finally:
+            registry.remove_backend(agent_name=agent_name)
+            registry.clear_approved()
+
+        assert asked["n"] >= 1, "human backend must be asked on a doom loop"
+
+    def test_allow_resets_streak_no_reprompt_every_call(self):
+        """One allow must reset the streak, not re-prompt on the next call.
+
+        Regression for the ``pop()`` bug: popping only the last record left the
+        streak at ``critical - 1``, so every subsequent identical call
+        re-triggered approval. After the fix the whole matching streak is
+        purged, so a single allow buys another full ``critical_threshold``
+        window (only ~one further prompt across the next window, not one per
+        call).
+        """
+        from praisonaiagents.approval import get_approval_registry
+        from praisonaiagents.approval.protocols import ApprovalDecision
+
+        asked = {"n": 0}
+
+        class _AllowBackend:
+            def request_approval_sync(self, request):
+                asked["n"] += 1
+                return ApprovalDecision(approved=True, reason="continue")
+
+            async def request_approval(self, request):
+                return self.request_approval_sync(request)
+
+        agent = _make_agent()
+        _disable_loop_guard(agent)
+        _, config = agent._ensure_loop_detector()
+        config.warn_threshold = 3
+        config.critical_threshold = 5
+
+        registry = get_approval_registry()
+        agent_name = agent.name
+        registry.set_backend(_AllowBackend(), agent_name=agent_name)
+        try:
+            with patch.object(
+                agent, "_execute_tool_with_circuit_breaker", return_value="constant"
+            ):
+                results = [
+                    _run_tool(agent, "check_status", {"id": 1}) for _ in range(15)
+                ]
+        finally:
+            registry.remove_backend(agent_name=agent_name)
+            registry.clear_approved()
+
+        # Nothing blocked (allow always continues) …
+        assert all(
+            not (isinstance(r, dict) and r.get("loop_blocked")) for r in results
+        )
+        # … and the streak reset means we are NOT prompted on every call. With
+        # 15 identical calls at critical_threshold=5 a per-call re-prompt would
+        # be ~11 asks; the reset keeps it small (roughly one per fresh window).
+        assert asked["n"] <= 4, (
+            f"streak not reset: prompted {asked['n']} times (expected few)"
+        )
+
+    def test_interactive_scoped_per_arguments(self):
+        """Two loops with different args produce distinct scoped approvals.
+
+        An allow granted for one repeated call must not silently authorise a
+        different call, so the backend is asked separately for each distinct
+        argument fingerprint.
+        """
+        from praisonaiagents.approval import get_approval_registry
+        from praisonaiagents.approval.protocols import ApprovalDecision
+
+        seen_fingerprints = set()
+
+        class _Backend:
+            def request_approval_sync(self, request):
+                seen_fingerprints.add(
+                    request.arguments.get("args_fingerprint")
+                )
+                return ApprovalDecision(approved=True, reason="continue")
+
+            async def request_approval(self, request):
+                return self.request_approval_sync(request)
+
+        agent = _make_agent()
+        _disable_loop_guard(agent)
+        _, config = agent._ensure_loop_detector()
+        config.warn_threshold = 3
+        config.critical_threshold = 5
+
+        registry = get_approval_registry()
+        agent_name = agent.name
+        registry.set_backend(_Backend(), agent_name=agent_name)
+        try:
+            with patch.object(
+                agent, "_execute_tool_with_circuit_breaker", return_value="constant"
+            ):
+                [_run_tool(agent, "check_status", {"id": 1}) for _ in range(6)]
+                [_run_tool(agent, "check_status", {"id": 2}) for _ in range(6)]
+        finally:
+            registry.remove_backend(agent_name=agent_name)
+            registry.clear_approved()
+
+        # Distinct arguments -> distinct scoped fingerprints on the request.
+        assert len(seen_fingerprints) >= 2, (
+            "doom-loop approvals must be scoped per original call arguments"
+        )
+
+
+class TestDoomLoopTargetIsolation:
+    """The synthetic gate must not gate a real user tool or the presets."""
+
+    def test_user_tool_named_doom_loop_not_auto_blocked(self):
+        """A real tool literally named ``doom_loop`` must not require approval.
+
+        Regression: the synthetic target is namespaced (``__doom_loop__``) and
+        kept out of ``DEFAULT_DANGEROUS_TOOLS`` precisely so it cannot reserve
+        the public name and force approval onto an ordinary user tool.
+        """
+        from praisonaiagents.approval import get_approval_registry
+        from praisonaiagents.approval.registry import (
+            DEFAULT_DANGEROUS_TOOLS,
+            PERMISSION_PRESETS,
+        )
+
+        assert "doom_loop" not in DEFAULT_DANGEROUS_TOOLS
+        # The public name must not leak into the safe/read_only preset sets.
+        assert "doom_loop" not in PERMISSION_PRESETS["safe"]
+        assert "doom_loop" not in PERMISSION_PRESETS["read_only"]
+
+        registry = get_approval_registry()
+        # A fresh, un-registered public name is not required by default.
+        assert not registry.is_required("doom_loop", agent_name="some-agent")
+
+    def test_internal_target_is_registered_critical(self):
+        """The internal ``__doom_loop__`` target stays a critical gate."""
+        from praisonaiagents.approval import get_approval_registry
+        from praisonaiagents.approval.registry import DOOM_LOOP_TARGET
+
+        registry = get_approval_registry()
+        assert registry.is_required(DOOM_LOOP_TARGET)
+        assert registry.get_risk_level(DOOM_LOOP_TARGET) == "critical"
+
+
+class TestDoomLoopFeedFixed:
+    def test_response_failure_signal_used(self):
+        """_response_indicates_failure derives a real success bool (not True)."""
+        agent = _make_agent()
+        assert agent._response_indicates_failure("Traceback (most recent call last): ...")
+        assert agent._response_indicates_failure("I failed to complete the task")
+        assert not agent._response_indicates_failure("Here is the completed report.")
+        # Partial-success phrasing must NOT be treated as a failure: the agent
+        # may complete via an alternate path while noting missing optional data.
+        assert not agent._response_indicates_failure(
+            "I was unable to fetch the optional metadata, but finished the report."
+        )
+
+    def test_failure_streak_recorded_as_false(self):
+        """Failing iterations are recorded as success=False (not hard-coded True)."""
+        agent = _make_agent()
+
+        recorded = []
+
+        class _StubTracker:
+            def record(self, action_type, args, result, success):
+                recorded.append(success)
+
+        agent._doom_loop_tracker = _StubTracker()
+
+        for _ in range(5):
+            success = not agent._response_indicates_failure("An error occurred while running.")
+            agent._record_action("chat", {"response_hash": 1}, "err", success)
+
+        # Previously every entry was hard-coded True; now failures are False.
+        assert recorded == [False] * 5

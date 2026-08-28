@@ -1,0 +1,32 @@
+eval_id: 183
+name: rmse
+description: Computes Root Mean Squared Error between predicted and actual values. Returns 1/(1+RMSE) as score (higher=better).
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [output, expected]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {output: Predicted values, expected: Actual values}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _p(v):
+            if isinstance(v, list): return [float(x) for x in v]
+            if isinstance(v, str):
+                try:
+                    p = json.loads(v)
+                    if isinstance(p, list): return [float(x) for x in p]
+                except: pass
+                return [float(x.strip()) for x in v.split(",") if x.strip()]
+            return [float(v)]
+        yp, yt = _p(kwargs.get("output", output)), _p(kwargs.get("expected", expected))
+        if len(yp) != len(yt) or not yt: return {"score": 0.0, "reason": "Invalid input"}
+        rmse = (sum((a-b)**2 for a,b in zip(yt,yp))/len(yt))**0.5
+        return {"score": float(1/(1+rmse)), "reason": f"RMSE={rmse:.4f}"}

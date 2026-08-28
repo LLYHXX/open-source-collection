@@ -1,0 +1,16 @@
+meta {
+  name: DELETE Labels
+  type: http
+  seq: 14
+}
+
+delete {
+  url: http://localhost:8000/model-hub/annotations-labels/3e1221a6-ee16-48c5-9b6e-85d77183cce1/
+  body: none
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+}

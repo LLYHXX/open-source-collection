@@ -1,0 +1,44 @@
+meta {
+  name: get experiment stats v2
+  type: http
+  seq: 17
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/stats/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+docs {
+  ## Get Experiment Stats V2
+
+  Returns aggregated statistics: token usage, response time, eval scores per dataset.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+
+  ### Response
+  ```json
+  {
+    "columnConfig": [{...}],
+    "tableData": [
+      {
+        "datasetId": "uuid",
+        "experimentDatasetName": "...",
+        "averageResponseTime": 1.5,
+        "promptToken": 100,
+        "completionToken": 50,
+        "totalToken": 150,
+        "rank": 1,
+        "eval_name": 0.85
+      }
+    ],
+    "metadata": {"isWinnerChosen": false}
+  }
+  ```
+}

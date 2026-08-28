@@ -1,0 +1,115 @@
+meta {
+  name: Text Embeddings - Error Test
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{base_url}}/model/{{api_version}}/embed
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  User-Agent: Bruno/1.0
+}
+
+body:json {
+  {
+    "input_type": "text"
+  }
+}
+
+docs {
+  # Text Embeddings - Error Testing
+
+  This endpoint is configured to test error scenarios and validation.
+  It intentionally omits the required "text" field to test error handling.
+
+  ## Test Scenarios
+
+  ### Missing Required Field
+  ```json
+  {
+    "input_type": "text"
+    // Missing "text" field
+  }
+  ```
+
+  ### Empty Text
+  ```json
+  {
+    "text": "",
+    "input_type": "text"
+  }
+  ```
+
+  ### Wrong Input Type
+  ```json
+  {
+    "text": ["valid", "text", "array"],
+    "input_type": "image"  // Wrong type
+  }
+  ```
+
+  ### Invalid Data Type
+  ```json
+  {
+    "text": 12345,  // Should be string or array
+    "input_type": "text"
+  }
+  ```
+
+  ## Expected Responses
+
+  ### Validation Error (422)
+  ```json
+  {
+    "detail": [
+      {
+        "type": "missing",
+        "loc": ["body", "text"],
+        "msg": "Field required"
+      }
+    ]
+  }
+  ```
+
+  ### Bad Request (400)
+  ```json
+  {
+    "detail": "Invalid input format or missing required fields"
+  }
+  ```
+
+  ## Use Cases
+  - API validation testing
+  - Error handling verification
+  - Client error response testing
+  - Input validation boundary testing
+}
+
+tests {
+  test("Should return validation error", function() {
+    expect(res.getStatus()).to.be.oneOf([400, 422]);
+  });
+
+  test("Response should contain error details", function() {
+    const data = res.getBody();
+    expect(data.detail).to.exist;
+  });
+
+  test("Should not contain embeddings on error", function() {
+    const data = res.getBody();
+    expect(data.embeddings).to.not.exist;
+  });
+
+  test("Content-Type should be JSON even for errors", function() {
+    expect(res.getHeader("content-type")).to.contain("application/json");
+  });
+
+  test("Error response should be fast", function() {
+    expect(res.getResponseTime()).to.be.below(1000);
+  });
+}

@@ -1,0 +1,41 @@
+meta {
+  name: 04 - Error - Only Year Provided
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{host}}/usage/workspace-usage-summary/?year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Workspace Usage Summary - Year Without Month
+
+  ### Test Scenario
+  - Only year parameter provided (month missing)
+  - Tests validation that month and year must be provided together
+
+  ### Expected Response
+  - Status: 400 Bad Request
+  - Response structure:
+    ```json
+    {
+      "status": false,
+      "message": "Error message about missing month"
+    }
+    ```
+
+  ### Notes
+  - Month and year must be provided together (or both omitted)
+  - Cannot provide just one of them
+}

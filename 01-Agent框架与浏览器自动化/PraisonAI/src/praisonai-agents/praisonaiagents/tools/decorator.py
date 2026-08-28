@@ -1,0 +1,452 @@
+"""Tool decorator for converting functions into tools.
+
+This module provides the @tool decorator for easily creating tools from functions.
+
+Usage:
+    from praisonaiagents import tool
+
+    @tool
+    def search(query: str) -> list:
+        '''Search the web for information.'''
+        return [...]
+
+    # Or with explicit parameters:
+    @tool(name="web_search", description="Search the internet")
+    def search(query: str, max_results: int = 5) -> list:
+        return [...]
+    
+    # With injected state:
+    from praisonaiagents.tools import Injected
+    
+    @tool
+    def my_tool(query: str, state: Injected[dict]) -> str:
+        '''Tool with injected state.'''
+        return f"session={state.get('session_id')}"
+
+    # Requiring human approval (mirrors Agent(approval=...)):
+    @tool(approval=True)
+    def refund_order(order_id: str) -> str:
+        return "refunded"
+"""
+
+import inspect
+import functools
+import logging
+import warnings
+from typing import Any, Callable, Dict, Optional, Union, get_type_hints
+
+from .base import BaseTool
+from .schema import build_parameters_schema
+
+# Valid human-approval risk levels, mirroring approval.RiskLevel. A misspelled
+# level (e.g. "critial") must be rejected rather than silently registered, since
+# critical-only policy checks compare against the exact "critical" string.
+_VALID_RISK_LEVELS = ("critical", "high", "medium", "low")
+
+# Sentinel distinguishing "requires_approval was omitted" from an explicit
+# ``requires_approval=False``. The latter is still use of the deprecated
+# spelling and must emit the ``DeprecationWarning``, so a plain ``False``
+# default cannot tell the two apart.
+_UNSET = object()
+
+# Lazy load injected module functions to reduce import time
+_injected_module = None
+
+def _get_injected_module():
+    """Lazy load the injected module."""
+    global _injected_module
+    if _injected_module is None:
+        from . import injected as _inj
+        _injected_module = _inj
+    return _injected_module
+
+def is_injected_type(annotation):
+    return _get_injected_module().is_injected_type(annotation)
+
+def get_injected_params(func):
+    return _get_injected_module().get_injected_params(func)
+
+def inject_state_into_kwargs(kwargs, injected_params):
+    return _get_injected_module().inject_state_into_kwargs(kwargs, injected_params)
+
+
+def _resolve_approval(approval, requires_approval):
+    """Resolve the canonical ``approval`` value from either spelling.
+
+    ``approval`` mirrors ``Agent(approval=...)`` and is the canonical parameter.
+    ``requires_approval`` is the deprecated alias that shipped in PR #3530; it
+    still works but emits a ``DeprecationWarning`` whenever it is supplied
+    explicitly — including an explicit ``requires_approval=False`` — since any
+    use of the old spelling should nudge callers to migrate. When both are
+    supplied the canonical ``approval`` wins. Both funnel to the same value
+    space (``bool | risk-level str``) and the same ApprovalRegistry registration.
+    """
+    if requires_approval is not _UNSET:
+        warnings.warn(
+            "@tool(requires_approval=...) is deprecated; use "
+            "@tool(approval=...) to match Agent(approval=...).",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    if approval is not None:
+        return approval
+    if requires_approval is _UNSET:
+        return False
+    return requires_approval
+
+
+class FunctionTool(BaseTool):
+    """A BaseTool wrapper for plain functions.
+    
+    Created automatically by the @tool decorator.
+    Supports Injected[T] parameters for state injection.
+    """
+    
+    def __init__(
+        self,
+        func: Callable,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        version: str = "1.0.0",
+        availability: Optional[Callable[[], tuple[bool, str]]] = None,
+        dynamic_schema_overrides: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        retry_policy: Optional[Any] = None,
+        approval: Optional[Union[bool, str]] = None,
+        requires_approval: Union[bool, str] = _UNSET,
+        to_model_output: Optional[Callable[[Any], Any]] = None,
+        restart_safe: Optional[bool] = None
+    ):
+        self._func = func
+        # Restart-safety contract for durable resume (see BaseTool.restart_safe).
+        self.restart_safe = restart_safe
+        # Optional compact model-facing view builder: result -> compact view.
+        self._to_model_output = to_model_output
+        self.name = name or func.__name__
+        self.description = description or func.__doc__ or f"Tool: {self.name}"
+        self.version = version
+        self._availability = availability
+        self._schema_override = dynamic_schema_overrides
+        self.retry_policy = retry_policy
+        # ``approval`` is canonical (mirrors Agent(approval=...)); the older
+        # ``requires_approval`` spelling is a deprecated alias that reads through.
+        resolved = _resolve_approval(approval, requires_approval)
+        if isinstance(resolved, str):
+            if resolved not in _VALID_RISK_LEVELS:
+                raise ValueError(
+                    f"Invalid approval risk level {resolved!r} for "
+                    f"tool '{self.name}'. Expected one of {_VALID_RISK_LEVELS} or a bool."
+                )
+            self.risk_level = resolved
+        else:
+            self.risk_level = "high" if resolved else None
+        # Keep both attributes populated so existing readers of either spelling
+        # continue to work; they always agree on the resolved value.
+        self.approval = resolved
+        self.requires_approval = resolved
+        
+        # Detect injected parameters
+        self._injected_params = get_injected_params(func)
+        
+        # Generate schema from the original function, not run()
+        self.parameters = self._generate_schema_from_func(func)
+        
+        # Copy function metadata
+        functools.update_wrapper(self, func)
+        
+        # Skip parent's schema generation since we already did it
+        # Just set defaults that parent would set
+        if not self.name:
+            self.name = self.__class__.__name__.lower().replace("tool", "")
+        if not self.description:
+            self.description = self.__class__.__doc__ or f"Tool: {self.name}"
+    
+    @property
+    def injected_params(self) -> Dict[str, Any]:
+        """Get the injected parameters for this tool."""
+        return self._injected_params
+    
+    def _generate_schema_from_func(self, func: Callable) -> Dict[str, Any]:
+        """Generate JSON Schema from the wrapped function's signature.
+        
+        Injected parameters are excluded from the schema.
+        """
+        try:
+            sig = inspect.signature(func)
+            hints = get_type_hints(func) if hasattr(func, '__annotations__') else {}
+        except (ValueError, NameError, Exception) as e:
+            # Handle built-ins, forward references, and other signature/type issues
+            logging.debug(f"Could not generate schema for {func.__name__}: {e}")
+            return {"type": "object", "properties": {}, "required": []}
+        
+        # Use the new shared helper with a predicate for injected parameters
+        return build_parameters_schema(
+            sig,
+            hints,
+            skip={"self", "cls"},
+            skip_predicate=lambda name, ptype: name in self._injected_params or is_injected_type(ptype),
+            func_name=func.__name__
+        )
+    
+    def run(self, **kwargs) -> Any:
+        """Execute the wrapped function with injected state."""
+        # Inject state for any Injected parameters
+        kwargs = inject_state_into_kwargs(kwargs, self._injected_params)
+        return self._func(**kwargs)
+    
+    def to_model_output(self, result: Any) -> Optional[Any]:
+        """Build the compact model-facing view via the ``to_model_output`` fn.
+
+        Returns ``None`` when no builder was supplied so the executor falls back
+        to the full output (unchanged behaviour).
+        """
+        if self._to_model_output is None:
+            return None
+        try:
+            return self._to_model_output(result)
+        except Exception as e:
+            logging.warning(f"to_model_output failed for tool '{self.name}': {e}")
+            return None
+
+    def __call__(self, *args, **kwargs) -> Any:
+        """Allow calling with positional args like the original function.
+        
+        Injects state for Injected parameters.
+        """
+        # Inject state for any Injected parameters
+        kwargs = inject_state_into_kwargs(kwargs, self._injected_params)
+        return self._func(*args, **kwargs)
+    
+    def check_availability(self) -> tuple[bool, str]:
+        """Check if this tool is currently available to run.
+        
+        Returns:
+            tuple of (is_available, reason_if_not)
+        """
+        if self._availability:
+            try:
+                return self._availability()
+            except Exception as e:
+                logging.warning(f"Tool {self.name} availability check failed: {e}")
+                return False, f"Availability check failed: {e}"
+        # Default: always available if no check function provided
+        return True, ""
+
+
+def tool(
+    func: Optional[Callable] = None,
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    version: str = "1.0.0",
+    availability: Optional[Callable[[], tuple[bool, str]]] = None,
+    dynamic_schema_overrides: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    retry_policy: Optional[Any] = None,
+    approval: Optional[Union[bool, str]] = None,
+    requires_approval: Union[bool, str] = _UNSET,
+    to_model_output: Optional[Callable[[Any], Any]] = None,
+    restart_safe: Optional[bool] = None
+) -> Union[FunctionTool, Callable[[Callable], FunctionTool]]:
+    """Decorator to convert a function into a tool.
+    
+    Can be used with or without arguments:
+    
+        @tool
+        def my_func(x: str) -> str:
+            '''Does something.'''
+            return x
+        
+        @tool(name="custom_name", description="Custom description")
+        def my_func(x: str) -> str:
+            return x
+            
+        @tool(availability=lambda: (bool(os.getenv("API_KEY")), "API_KEY missing"))
+        def my_func(x: str) -> str:
+            return x
+            
+        @tool(retry_policy=RetryPolicy(max_attempts=5))
+        def my_func(x: str) -> str:
+            return x
+
+        @tool(approval=True)
+        def delete_account(user_id: str) -> str:
+            return "deleted"
+
+        @tool(approval="critical")
+        def deploy(env: str) -> str:
+            return "deployed"
+
+    Args:
+        func: The function to wrap (when used without parentheses)
+        name: Override the tool name (default: function name)
+        description: Override description (default: function docstring)
+        version: Tool version (default: "1.0.0")
+        availability: Function that returns (is_available, reason) tuple
+        dynamic_schema_overrides: Function to dynamically modify tool schema at runtime
+        retry_policy: RetryPolicy for tool execution with exponential backoff
+        approval: Mark this tool as requiring human approval, mirroring
+            ``Agent(approval=...)``. ``True`` uses the default "high" risk level;
+            a string ("critical", "high", "medium", "low") sets the risk level
+            explicitly. Registers the tool with the global ApprovalRegistry at
+            definition time so local, gateway, and served runs all honour it.
+            Defaults to ``None`` (no approval required).
+        requires_approval: Deprecated alias for ``approval`` (kept for the form
+            shipped in an earlier release). Emits a ``DeprecationWarning``;
+            ``approval`` wins when both are set.
+        to_model_output: Optional callable ``result -> compact_view`` producing
+            the terse, model-facing view of the tool's return value. When set,
+            the executor feeds this compact view to the LLM (context economy)
+            while the full result stays available to display, hooks, and
+            downstream consumers. Defaults to ``None`` (model sees full output).
+        restart_safe: Declare the tool's replay behaviour for durable resume.
+            ``True`` marks a read-only/idempotent tool that is safe to re-run
+            after a crash; ``False`` marks an effectful tool that must never be
+            silently re-executed on resume (an in-flight call surfaces a
+            recorded, operator-visible outcome to reconcile instead). Defaults
+            to ``None`` (undeclared): durable resume falls back to a read-only
+            name heuristic and fails closed when uncertain.
+    
+    Returns:
+        FunctionTool instance that wraps the function
+    """
+    def decorator(fn: Callable) -> FunctionTool:
+        # Resolve once here so the deprecation warning (if any) fires a single
+        # time and points at the caller's @tool site.
+        resolved_approval = _resolve_approval(approval, requires_approval)
+        tool_instance = FunctionTool(
+            func=fn,
+            name=name,
+            description=description,
+            version=version,
+            availability=availability,
+            dynamic_schema_overrides=dynamic_schema_overrides,
+            retry_policy=retry_policy,
+            approval=resolved_approval,
+            to_model_output=to_model_output,
+            restart_safe=restart_safe
+        )
+
+        # Register approval requirement with the global registry so local,
+        # gateway, and served runs all honour this tool's human sign-off.
+        # This is a security gate, so it MUST fail closed: if registration
+        # cannot be installed we refuse to hand back an executable tool that
+        # would otherwise run without its declared approval requirement.
+        if tool_instance.risk_level is not None:
+            try:
+                from praisonaiagents.approval import add_approval_requirement
+                add_approval_requirement(tool_instance.name, tool_instance.risk_level)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to register approval requirement for "
+                    f"'{tool_instance.name}'; refusing to expose an ungated tool: {e}"
+                ) from e
+
+        # Validate the tool at creation time for early error detection
+        try:
+            tool_instance.validate()
+            tool_instance.validate_schema_roundtrip()
+        except Exception as e:
+            logging.warning(f"Tool validation warning for {tool_instance.name}: {e}")
+        
+        # Register with global registry if available
+        # Note: Don't pass dynamic_schema_overrides again since FunctionTool already handles it
+        try:
+            logging.debug(f"Attempting to import registry for tool {tool_instance.name}")
+            from praisonaiagents.tools.registry import get_registry
+            logging.debug("Successfully imported get_registry")
+            registry = get_registry()
+            logging.debug(f"Got registry: {registry}, type: {type(registry)}")
+            if registry:
+                logging.debug(f"Registering tool {tool_instance.name}")
+                registry.register(tool_instance)
+                logging.debug(f"Tool {tool_instance.name} registered successfully")
+            else:
+                logging.warning(f"Registry is None for tool {tool_instance.name}")
+        except ImportError as e:
+            logging.warning(f"Import error during registration: {e}")
+        except Exception as e:
+            logging.warning(f"Failed to register tool {tool_instance.name}: {e}")
+        
+        return tool_instance
+    
+    # Handle both @tool and @tool(...) syntax
+    if func is not None:
+        # Called without parentheses: @tool
+        return decorator(func)
+    else:
+        # Called with parentheses: @tool(...) 
+        return decorator
+
+
+def is_tool(obj: Any) -> bool:
+    """Check if an object is a tool (BaseTool instance or decorated function)."""
+    if isinstance(obj, BaseTool):
+        return True
+    if isinstance(obj, FunctionTool):
+        return True
+    # Check for tools created by other frameworks
+    if hasattr(obj, 'run') and hasattr(obj, 'name'):
+        return True
+    return False
+
+
+def get_tool_schema(obj: Any) -> Optional[Dict[str, Any]]:
+    """Get OpenAI-compatible schema for any tool-like object.
+    
+    Supports:
+    - BaseTool instances
+    - FunctionTool instances  
+    - Plain functions (generates schema from signature)
+    - LangChain tools
+    - CrewAI tools
+    """
+    # BaseTool or FunctionTool
+    if isinstance(obj, BaseTool):
+        return obj.get_schema()
+    
+    # Plain callable
+    if callable(obj):
+        return _schema_from_function(obj)
+    
+    return None
+
+
+def _schema_from_function(func: Callable) -> Dict[str, Any]:
+    """Generate OpenAI function schema from a plain function."""
+    name = getattr(func, '__name__', 'unknown')
+    description = func.__doc__ or f"Function: {name}"
+    
+    try:
+        sig = inspect.signature(func)
+        hints = get_type_hints(func) if hasattr(func, '__annotations__') else {}
+    except (ValueError, NameError, Exception) as e:
+        # Handle built-ins, forward references, and other signature/type issues
+        logging.debug(f"Could not generate schema for {name}: {e}")
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description.strip(),
+                "parameters": {"type": "object", "properties": {}, "required": []}
+            }
+        }
+    
+    # Detect and skip injected parameters (same as FunctionTool)
+    injected_params = get_injected_params(func)
+    
+    # Use the new shared helper with injected parameter filtering
+    parameters = build_parameters_schema(
+        sig,
+        hints,
+        skip={"self"},
+        skip_predicate=lambda name, ptype: name in injected_params or is_injected_type(ptype),
+        func_name=name
+    )
+    
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description.strip(),
+            "parameters": parameters
+        }
+    }

@@ -1,0 +1,42 @@
+meta {
+  name: Create eval tasks
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/tracer/eval-task/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "8306c8af-b7e6-484c-8824-bf8b3c1ba80d",
+    "name": "Eval task-9",
+    "filters": {
+      "project_id": "8306c8af-b7e6-484c-8824-bf8b3c1ba80d",
+      "observation_type": "llm"
+    },
+    "sampling_rate": 100,
+    "run_type": "historical",
+    "evals": [
+      "bf149029-dbf3-4e96-96a5-05367529ad9a"
+    ],
+    "span_attributes_filters": [
+      {
+        "column_id": "var_1",
+        "filter_config": {
+          "filter_type": "text",
+          "filter_op": "contains",
+          "filter_value": "test",
+          "col_type": "SPAN_ATTRIBUTE"
+        }
+      }
+    ]
+  }
+}

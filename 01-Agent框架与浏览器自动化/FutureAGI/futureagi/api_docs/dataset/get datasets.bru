@@ -1,0 +1,22 @@
+meta {
+  name: get datasets
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/dataset/9c1b96f9-29c8-41c3-9a79-3ccc08c6b9a2/?page=1&search_query=train&version=1.1
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page: 1
+  search_query: train
+  version: 1.1
+  ~environment: 2
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

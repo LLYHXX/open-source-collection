@@ -1,0 +1,33 @@
+meta {
+  name: un-pause
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}/tracer/eval-task/unpause_eval_task/?eval_task_id=c88e68b8-8170-4d95-97ff-96532a7679d0
+  body: none
+  auth: bearer
+}
+
+params:query {
+  eval_task_id: c88e68b8-8170-4d95-97ff-96532a7679d0
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "809782af-abbb-4134-9baa-409d89c86982",
+    "eval_templates": ["44b4330b-0e99-4caa-b1ec-af0dfeb17700","5577dff4-a7e3-4df7-999d-f5ce3bef7fa0"],
+    "name": "fifth_task",
+    "filters": {
+      "project_id": "809782af-abbb-4134-9baa-409d89c86982",
+      "observation_type": "llm"
+    },
+    "sampling_rate": 70,
+    "run_type": "historical"
+  }
+}

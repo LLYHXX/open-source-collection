@@ -1,0 +1,28 @@
+meta {
+  name: update eval templates list in group
+  type: http
+  seq: 6
+}
+
+post {
+  url: http://localhost:8000/model-hub/eval-groups/edit-eval-list/
+  body: json
+  auth: inherit
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+}
+
+body:json {
+  {
+    "eval_group_id": "3e8d26b1-e2ff-4162-8eb8-09b3f4a71449",
+    "added_template_ids": ["e077674e-02da-4d2b-b2e5-ee626088c72c"],
+    "deleted_template_ids": ["a0081366-6050-406a-a52a-8675b891bae1"]
+  }
+}
+
+settings {
+  encodeUrl: false
+}

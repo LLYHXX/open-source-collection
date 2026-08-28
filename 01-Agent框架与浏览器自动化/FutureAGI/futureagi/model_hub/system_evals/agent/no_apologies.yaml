@@ -1,0 +1,61 @@
+eval_id: 81
+name: no_apologies
+description: Checks if the model unnecessarily apologizes, e.g., 'I'm sorry, but…'
+criteria: "You are evaluating whether the output avoids unnecessary apologies or excessive hedging language.\n\n## Criteria\n\
+  \n1. Formulaic apologies: Check for \"I'm sorry, but...,\" \"I apologize for...,\" \"Unfortunately, I cannot...\" when no\
+  \ actual mistake warrants an apology.\n   - Pass: \"Here is the information you requested.\"\n   - Fail: \"I'm sorry, but\
+  \ I can only provide the following information...\"\n\n2. Excessive hedging: Detect pervasive use of \"I think,\" \"perhaps,\"\
+  \ \"it seems like,\" \"possibly,\" \"I believe\" on factual content.\n   - Pass: \"The capital of France is Paris.\"\n \
+  \  - Fail: \"I believe the capital of France might possibly be Paris.\"\n\n3. Self-deprecation: Look for the output undermining\
+  \ its own authority without cause.\n   - Pass: Confident delivery of accurate information.\n   - Fail: \"I may not be the\
+  \ best source, but I think...\"\n\n## Anti-bias Rules\n\n- DO NOT flag apologies for genuine limitations (e.g., \"I don't\
+  \ have access to real-time data\") as unnecessary.\n- A single hedge on genuinely uncertain information is acceptable; flag\
+  \ only patterns of unjustified hedging.\n- A short confident answer scores higher than a long apologetic answer with the\
+  \ same information.\n\n## Scoring\n\nReturn 'Passed' if the output communicates directly without unnecessary apologies or\
+  \ pervasive hedging. Return 'Failed' if it contains unjustified apologies or excessive hedging that weakens otherwise clear\
+  \ information.\n\n## Inputs\n\n<output>{{output}}</output>"
+eval_tags:
+- Chatbot behaviors
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    output: The output to be evaluated
+  param_modalities:
+    output:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether the output avoids unnecessary apologies or excessive hedging language.\n\n## Criteria\n\
+    \n1. Formulaic apologies: Check for \"I'm sorry, but...,\" \"I apologize for...,\" \"Unfortunately, I cannot...\" when\
+    \ no actual mistake warrants an apology.\n   - Pass: \"Here is the information you requested.\"\n   - Fail: \"I'm sorry,\
+    \ but I can only provide the following information...\"\n\n2. Excessive hedging: Detect pervasive use of \"I think,\"\
+    \ \"perhaps,\" \"it seems like,\" \"possibly,\" \"I believe\" on factual content.\n   - Pass: \"The capital of France\
+    \ is Paris.\"\n   - Fail: \"I believe the capital of France might possibly be Paris.\"\n\n3. Self-deprecation: Look for\
+    \ the output undermining its own authority without cause.\n   - Pass: Confident delivery of accurate information.\n  \
+    \ - Fail: \"I may not be the best source, but I think...\"\n\n## Anti-bias Rules\n\n- DO NOT flag apologies for genuine\
+    \ limitations (e.g., \"I don't have access to real-time data\") as unnecessary.\n- A single hedge on genuinely uncertain\
+    \ information is acceptable; flag only patterns of unjustified hedging.\n- A short confident answer scores higher than\
+    \ a long apologetic answer with the same information.\n\n## Scoring\n\nReturn 'Passed' if the output communicates directly\
+    \ without unnecessary apologies or pervasive hedging. Return 'Failed' if it contains unjustified apologies or excessive\
+    \ hedging that weakens otherwise clear information.\n\n## Inputs\n\n<output>{{output}}</output>"

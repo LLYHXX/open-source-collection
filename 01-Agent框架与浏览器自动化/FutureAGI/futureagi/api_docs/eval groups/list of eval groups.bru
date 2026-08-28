@@ -1,0 +1,33 @@
+meta {
+  name: list of eval groups
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:8000/model-hub/eval-groups/?name=group
+  body: none
+  auth: inherit
+}
+
+params:query {
+  name: group
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+}
+
+body:json {
+  {
+    "name": "test_group",
+    "description": "test_description",
+    "eval_template_ids": ["e077674e-02da-4d2b-b2e5-ee626088c72c", "e560ef78-fe32-4855-91fb-0af4a1b09dcb",
+  "a0081366-6050-406a-a52a-8675b891bae1"]
+  }
+}
+
+settings {
+  encodeUrl: false
+}

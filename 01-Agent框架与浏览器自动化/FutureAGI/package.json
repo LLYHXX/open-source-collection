@@ -1,0 +1,21 @@
+{
+  "name": "future-agi",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Repo-level tooling for Future AGI (hooks + formatters). App code lives in frontend/ and futureagi/.",
+  "scripts": {
+    "prepare": "husky",
+    "setup:checks": "scripts/setup-commit-checks.sh",
+    "lint-staged": "lint-staged",
+    "check:staged-safety": "node scripts/check-staged-safety.mjs",
+    "gateway-contracts:generate": "python3 scripts/generate-agentcc-gateway-contracts.py",
+    "gateway-contracts:check": "python3 scripts/generate-agentcc-gateway-contracts.py --check",
+    "contracts:generate": "scripts/generate-openapi-schema.sh && yarn gateway-contracts:generate && yarn --cwd frontend contracts:generate",
+    "contracts:check": "scripts/generate-openapi-schema.sh && yarn gateway-contracts:check && yarn --cwd frontend contracts:check && git diff --exit-code api_contracts/openapi/swagger.json frontend/src/api/contracts/filter-contract.generated.js frontend/src/api/contracts/api-surface.generated.js frontend/src/api/contracts/openapi-contract.generated.js frontend/src/generated/api-contracts/api.ts frontend/src/generated/api-contracts/api.schemas.ts frontend/src/generated/api-contracts/api.zod.ts"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}

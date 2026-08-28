@@ -1,0 +1,15 @@
+meta {
+  name: idp login
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{host}}/saml2_auth/idp-login?provider=google
+  body: none
+  auth: none
+}
+
+params:query {
+  provider: google
+}

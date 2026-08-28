@@ -1,0 +1,20 @@
+meta {
+  name: UPDATE Labels
+  type: http
+  seq: 15
+}
+
+put {
+  url: http://localhost:8000/model-hub/annotations-labels/10a64a09-7bde-430d-b072-dc362f87d31b/
+  body: json
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+}
+
+body:json {
+  {"name":"Autasdo","type":"categorical","organization":"ce7c8a6b-eb3f-4fd6-98f8-9ebf69e645fe","settings":{"query":"Query for RaawknnkG","inputs":["d617cddc-a4e3-4439-8c01-b3e86786dc5f"],"options":[{"label":"yeas"},{"label":"No"},{"label":"yeasw"}],"fewShot":[],"strategy":"Rag","queryCol":"","rulePrompt":"is age >= 21","multiChoice":true,"autoAnnotate":false}}
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Get Metric Details
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/tracer/user-alerts/get_metric_details
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "241358a5-7558-4987-bb57-e4d033db159c",
+    "trace": "e2711d73-5d03-4ea2-b42b-7843ce17d408",
+    "project_version": "947f51e7-19c8-4a2f-a239-f1fd2ede64ee",
+    "":"8c08e00b-f34d-40dd-bad1-e7f8251b2e2"
+  }
+}

@@ -1,0 +1,42 @@
+meta {
+  name: 04 - Error - Month Below Range (0)
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{host}}/usage/usage-summary/?month=0&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 0
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Usage Summary - Month Below Valid Range
+
+  ### Test Scenario
+  - Month set to 0 (invalid - below minimum)
+  - Tests month range validation (must be >= 1)
+
+  ### Expected Response
+  - Status: 400 Bad Request
+  - Response structure:
+    ```json
+    {
+      "status": false,
+      "message": "Error message containing 'month'"
+    }
+    ```
+
+  ### Notes
+  - Month must be between 1 and 12 (inclusive)
+  - Tests lower boundary validation
+}

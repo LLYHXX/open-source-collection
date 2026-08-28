@@ -1,0 +1,58 @@
+meta {
+  name: 01 - Success - Valid Parameters
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/usage/usage-summary/?month=1&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 1
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Usage Summary - Valid Request
+
+  This endpoint returns organization-level usage summary for a specific month and year.
+
+  ### Test Scenario
+  - Valid month (1-12) and year provided
+  - Authenticated user with valid bearer token
+
+  ### Expected Response
+  - Status: 200 OK
+  - Response structure:
+    ```json
+    {
+      "status": true,
+      "result": {
+        "organization_id": "uuid",
+        "organization_name": "string",
+        "totals": {
+          "creditsUsed": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "totalCalls": 0
+        },
+        "breakdown": {
+          "byCallType": [...],
+          "byWorkspace": [...]
+        }
+      }
+    }
+    ```
+
+  ### Notes
+  - Both month and year parameters are required
+  - Month must be between 1 and 12
+  - Returns usage data only for the specified organization
+}

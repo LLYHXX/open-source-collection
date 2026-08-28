@@ -1,0 +1,11 @@
+STATUS_KEY_NAME = "status"
+ERROR_STATUS_CODE = False
+ERROR_MESSAGE = "error"
+
+ERROR_MESSAGE_KEY_NAME = "message"
+
+RESULT_KEY_NAME = "result"
+SUCCESS_STATUS_CODE = True
+SUCCESS_MESSAGE = "success"
+
+ERROR_KEY_NAME = "errors"

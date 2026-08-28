@@ -1,0 +1,131 @@
+meta {
+  name: Create Persona
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8000/simulate/api/personas/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "language": [
+      "bengali"
+    ],
+    "multilingual": false,
+    "name": "test-persona-3",
+    "description": "Hi description",
+    "gender": [
+      "male"
+    ],
+    "ageGroup": [
+      "18-25"
+    ],
+    "location": [
+      "Canada"
+    ],
+    "profession": [
+      "Student"
+    ],
+    "personality": [
+      "Professional and formal",
+      "Detail-oriented"
+    ],
+    "communicationStyle": [
+      "Detailed and elaborate"
+    ],
+    "accent": [
+      "american"
+    ],
+    "conversationSpeed": [
+      "0.75"
+    ],
+    "backgroundSound": "false",
+    "finishedSpeakingSensitivity": [
+      3
+    ],
+    "interruptSensitivity": [
+      3
+    ],
+    "customProperties": {
+      "hii": "oooo"
+    },
+    "additionalInstruction": "hiiiaii",
+    "simulation_type": "text",
+    "writing_style": "formal",
+    "punctuation": "minimal",
+    "typos_frequency": "low",
+    "slang_usage": "moderate",
+    "regional_mix": "high"
+  }
+}
+
+docs {
+  name: Create Persona
+  description: Create a new workspace-level persona
+
+  **IMPORTANT**: All persona attribute fields now accept ARRAYS to support multiple values
+
+  Request Body:
+  - name (required): Persona name
+  - description (optional): Detailed description
+  - gender (optional): Array of gender choices, e.g., ["male"], ["female"], or ["male", "female"]
+  - age_group (optional): Array of age ranges, e.g., ["25-32", "32-40"]
+  - profession (optional): Array of professions (maps to occupation field), e.g., ["Engineer", "Manager"]
+  - location (optional): Array of locations, e.g., ["San Francisco", "New York"]
+  - personality (optional): Array of personality types, e.g., ["Analytical", "Friendly"]
+  - communication_style (optional): Array of communication styles, e.g., ["Direct", "Detailed"]
+  - multilingual (optional): Boolean, default false
+  - language (optional): Array of languages (maps to languages field), e.g., ["English", "Hindi"]
+  - accent (optional): Array of accents, e.g., ["American", "British"]
+  - conversation_speed (optional): Array of speeds, e.g., ["1.0"], ["1.0", "1.25"]
+  - background_sound (optional): Boolean, e.g., true or false (supports null)
+  - finished_speaking_sensitivity (optional): Array of sensitivity strings (1-10), e.g., ["5"], ["5", "6"]
+  - interrupt_sensitivity (optional): Array of sensitivity strings (1-10), e.g., ["5"], ["5", "6"]
+  - keywords (optional): Array of keywords for search
+  - custom_properties (optional): JSON metadata (maps to metadata field)
+  - aditional_instruction (optional): Additional instructions (maps to additional_instruction field)
+
+  Response Example:
+  {
+    "status": true,
+    "result": {
+      "id": "uuid",
+      "persona_type": "workspace",
+      "persona_type_display": "Workspace",
+      "name": "Software Engineer",
+      "description": "A senior software engineer with expertise in backend development",
+      "gender": ["male"],
+      "age_group": ["30-40"],
+      "occupation": ["Software Developer"],
+      "location": ["San Francisco"],
+      "personality": ["Analytical"],
+      "communication_style": ["Direct"],
+      "multilingual": false,
+      "languages": ["English"],
+      "accent": ["American"],
+      "conversation_speed": ["1.0"],
+      "background_sound": false,
+      "finished_speaking_sensitivity": ["5"],
+      "interrupt_sensitivity": ["5"],
+      "keywords": ["engineer", "technical", "backend"],
+      "metadata": {
+        "skill_level": "senior",
+        "years_experience": 10
+      },
+      "additional_instruction": "Speak clearly and use technical terminology when appropriate",
+      "is_default": false,
+      "created_at": "2025-10-29T10:00:00Z",
+      "updated_at": "2025-10-29T10:00:00Z"
+    }
+  }
+
+  Note: organization and workspace are set automatically from the authenticated user's context and are not returned in the response.
+}

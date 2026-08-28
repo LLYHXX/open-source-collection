@@ -1,0 +1,17 @@
+meta {
+  name: create audio
+  type: http
+  seq: 4
+}
+
+post {
+  url: http://localhost:8080/model/v1/embed/image-text
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "text": "hello"
+  }
+}

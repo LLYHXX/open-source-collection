@@ -1,0 +1,95 @@
+meta {
+  name: Get All Run Test Configurations
+  type: http
+  seq: 1
+}
+
+get {
+  url: http://localhost:8000/simulate/run-tests/
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Get All Run Test Configurations
+  description: Retrieve all run test configurations with their status, scenarios, and execution history
+  response: {
+    "count": 3,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "id": "1f429671-d3bd-4c0f-9cca-36f6d47edfbc",
+        "name": "Customer Support Evaluation",
+        "description": "Comprehensive test for customer support scenarios",
+        "status": "active",
+        "organization": "org-uuid",
+        "agent_definition": {
+          "id": "agent-uuid",
+          "agent_name": "Customer Support Agent",
+          "contact_number": "+1234567890"
+        },
+        "simulator_agent": {
+          "id": "sim-uuid",
+          "name": "Customer Support Simulator",
+          "prompt": "You are a customer support agent..."
+        },
+        "scenarios_count": 3,
+        "total_runs": 47,
+        "last_run": "2025-01-29T14:30:00Z",
+        "success_rate": 92.4,
+        "created_at": "2025-01-15T10:00:00Z",
+        "updated_at": "2025-01-29T14:30:00Z"
+      },
+      {
+        "id": "2a8b4c5d-6e7f-8g9h-0i1j-2k3l4m5n6o7p",
+        "name": "Sales Call Optimization",
+        "description": "Testing sales agent effectiveness across different scenarios",
+        "status": "active",
+        "organization": "org-uuid",
+        "agent_definition": {
+          "id": "agent-uuid-2",
+          "agent_name": "Sales Agent",
+          "contact_number": "+1234567891"
+        },
+        "simulator_agent": {
+          "id": "sim-uuid-2",
+          "name": "Sales Simulator",
+          "prompt": "You are a sales agent..."
+        },
+        "scenarios_count": 2,
+        "total_runs": 23,
+        "last_run": "2025-01-28T16:20:00Z",
+        "success_rate": 87.3,
+        "created_at": "2025-01-10T09:00:00Z",
+        "updated_at": "2025-01-28T16:20:00Z"
+      },
+      {
+        "id": "3b9c5d6e-7f8g-9h0i-1j2k-3l4m5n6o7p8q",
+        "name": "Technical Support Beta",
+        "description": "Beta testing for new technical support scenarios",
+        "status": "draft",
+        "organization": "org-uuid",
+        "agent_definition": {
+          "id": "agent-uuid-3",
+          "agent_name": "Technical Support Agent",
+          "contact_number": "+1234567892"
+        },
+        "simulator_agent": {
+          "id": "sim-uuid-3",
+          "name": "Technical Support Simulator",
+          "prompt": "You are a technical support agent..."
+        },
+        "scenarios_count": 4,
+        "total_runs": 12,
+        "last_run": "2025-01-27T11:15:00Z",
+        "success_rate": 78.5,
+        "created_at": "2025-01-20T14:00:00Z",
+        "updated_at": "2025-01-27T11:15:00Z"
+      }
+    ]
+  }
+}

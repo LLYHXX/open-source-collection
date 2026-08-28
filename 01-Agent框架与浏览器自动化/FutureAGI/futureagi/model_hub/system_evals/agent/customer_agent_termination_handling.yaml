@@ -1,0 +1,64 @@
+eval_id: 115
+name: customer_agent_termination_handling
+description: Tracks occurrences of bot freezing, hanging up abruptly, crashes, or early cut-offs.
+criteria: "You are evaluating whether the conversation terminates gracefully without abnormal endings.\n\n## Criteria\n\n\
+  1. Proper closure: The conversation should end with a farewell, resolution confirmation, or next steps.\n   - Never: Every\
+  \ conversation ends with proper closing protocol.\n   - Always: Conversations consistently end mid-sentence or with errors.\n\
+  \n2. No premature endings: The agent should not end the conversation before the customer's issue is resolved.\n   - Never:\
+  \ Agent waits for customer signal before closing.\n   - Always: Agent cuts off conversations while issues are unresolved.\n\
+  \n3. System stability: No error messages, timeouts, or nonsensical responses near the end.\n   - Never: Conversation concludes\
+  \ cleanly without technical issues.\n   - Always: Technical failures or garbled output at conversation end.\n\n## Anti-bias\
+  \ Rules\n\n- If the customer terminates abruptly (hangs up), this is NOT the agent's fault; evaluate only agent-side behavior.\n\
+  - Truncated transcription logs should NOT be confused with actual termination problems.\n- A short properly-closed conversation\
+  \ scores higher than a long one that ends abnormally.\n\n## Scoring\n\nSelect 'never' for graceful termination with proper\
+  \ closing. Select 'occasionally' for minor abruptness. Select 'frequently' for multiple awkward endings. Select 'always'\
+  \ for consistently abnormal termination.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"
+eval_tags:
+- Agents
+- Conversation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- never
+- occasionally
+- frequently
+- always
+output_type_normalized: deterministic
+config:
+  required_keys:
+  - conversation
+  output: choices
+  eval_type_id: AgentEvaluator
+  param_modalities:
+    conversation:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  config_params_desc:
+    conversation: The conversation to be evaluated
+  rule_prompt: "You are evaluating whether the conversation terminates gracefully without abnormal endings.\n\n## Criteria\n\
+    \n1. Proper closure: The conversation should end with a farewell, resolution confirmation, or next steps.\n   - Never:\
+    \ Every conversation ends with proper closing protocol.\n   - Always: Conversations consistently end mid-sentence or with\
+    \ errors.\n\n2. No premature endings: The agent should not end the conversation before the customer's issue is resolved.\n\
+    \   - Never: Agent waits for customer signal before closing.\n   - Always: Agent cuts off conversations while issues are\
+    \ unresolved.\n\n3. System stability: No error messages, timeouts, or nonsensical responses near the end.\n   - Never:\
+    \ Conversation concludes cleanly without technical issues.\n   - Always: Technical failures or garbled output at conversation\
+    \ end.\n\n## Anti-bias Rules\n\n- If the customer terminates abruptly (hangs up), this is NOT the agent's fault; evaluate\
+    \ only agent-side behavior.\n- Truncated transcription logs should NOT be confused with actual termination problems.\n\
+    - A short properly-closed conversation scores higher than a long one that ends abnormally.\n\n## Scoring\n\nSelect 'never'\
+    \ for graceful termination with proper closing. Select 'occasionally' for minor abruptness. Select 'frequently' for multiple\
+    \ awkward endings. Select 'always' for consistently abnormal termination.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"
+choice_scores:
+  never: 1.0
+  occasionally: 0.66
+  frequently: 0.33
+  always: 0.0

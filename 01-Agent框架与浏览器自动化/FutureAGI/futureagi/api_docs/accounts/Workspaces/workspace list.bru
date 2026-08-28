@@ -1,0 +1,25 @@
+meta {
+  name: workspace list
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{host}}/accounts/workspace/list/
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+query {
+  page: 1
+  limit: 10
+  search: ""
+  sort: ["-created_at"]
+}

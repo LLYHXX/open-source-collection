@@ -1,0 +1,101 @@
+meta {
+  name: Get Dataset Table
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/model-hub/develops/7c7ddf39-f8b7-4f49-9bd9-2432a9ccdf5e/get-dataset-table/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+  "current_page_index": 0,
+    ,
+  }
+}
+
+docs {
+  ###############
+  Docs:
+
+  filter type : number
+  filter ops : greater_than/less_than/equals/not_equals/greater_than_or_equal/less_than_or_equal/between/not_between
+  filter value : a single number, for operations like between and not_between, it will be a list of two numbers
+
+  filter type : text
+  filter ops : contains, not_contains, equals, not_equals, starts_with, ends_with, in, not_in
+
+  filter type : boolean
+  filter ops : this parameter is not used in boolean fields
+  filter value : true/false
+
+  ####################
+
+  {
+    "page_size": 10,
+    "sort": [
+    ],
+    "filters": [
+      {
+        "column_id": "bbbd3979-6ad4-42d3-bd66-1b230dc9545b",
+        "filter_config": {
+          "filter_type": "number",
+          "filter_op": "between",
+          "filter_value": ["2", "5"]
+        }
+      },
+      {
+        "column_id": "8a1491f1-713f-4dd9-9a18-5eb31c2e49af",
+        "filter_config": {
+          "filter_type": "text",
+          "filter_op": "not_in",
+          "filter_value": ["India", "Australia"]
+        }
+      },
+      {
+        "column_id": "8a1491f1-713f-4dd9-9a18-5eb31c2e49af",
+        "filter_config": {
+          "filter_type": "text",
+          "filter_op": "not_in",
+          "filter_value": ["India", "Australia"]
+        }
+      },
+      {
+        "column_id": "65478b70-aaf9-4b1f-9b63-89cd1951ff0a",
+        "filter_config": {
+          "filter_type": "boolean",
+          "filter_op": "is",
+          "filter_value": "false"
+        }
+      }
+    ],
+    "examples": [
+      {
+        "page_size": 10,
+        "sort": [
+          {
+            "type": "ascending",
+            "column_id": "341b6d42-e665-4c1c-935a-676bac83ec4c"
+          }
+        ],
+        "filters": [
+          {
+            "column_id": "341b6d42-e665-4c1c-935a-676bac83ec4c",
+            "filter_config": {
+              "filter_type": "text",
+              "filter_op": "contains",
+              "filter_value": ""
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

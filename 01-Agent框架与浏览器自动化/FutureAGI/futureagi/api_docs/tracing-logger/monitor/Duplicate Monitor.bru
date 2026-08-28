@@ -1,0 +1,22 @@
+meta {
+  name: Duplicate Monitor
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{host}}/tracer/user-alerts/duplicate/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "id": 1,
+    "name": "new_alert"
+  }
+}

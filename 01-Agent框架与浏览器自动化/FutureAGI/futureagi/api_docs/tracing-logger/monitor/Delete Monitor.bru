@@ -1,0 +1,21 @@
+meta {
+  name: Delete Monitor
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{host}}/tracer/user-alerts/get_metric_details
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "ids": [1]
+  }
+}

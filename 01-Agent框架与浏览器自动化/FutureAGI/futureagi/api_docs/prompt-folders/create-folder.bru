@@ -1,0 +1,21 @@
+meta {
+  name: create-folder
+  type: http
+  seq: 66
+}
+
+post {
+  url: {{host}}/model-hub/prompt-folders/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "name": "test_folder_3"
+    }
+}

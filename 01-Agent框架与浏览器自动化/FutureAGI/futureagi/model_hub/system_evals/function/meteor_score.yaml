@@ -1,0 +1,31 @@
+eval_id: 140
+name: meteor_score
+description: Computes METEOR score between reference and hypothesis. Uses unigram matching with exact and stem matching, penalizing
+  fragmentation. More correlated with human judgment than BLEU for many tasks.
+criteria: Measures translation/generation quality using unigram precision and recall with stemming and fragmentation penalty.
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - reference
+  - hypothesis
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    reference: The reference/expected text
+    hypothesis: The generated/output text
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        score = kwargs.get("_meteor_precomputed_score")
+        if score is None:
+            reason = kwargs.get("_meteor_error") or "METEOR requires preprocessing. Enable preprocessing in eval config or use the Agent evaluator."
+            return {"score": 0.0, "reason": reason}
+        return {"score": float(score), "reason": f"METEOR: {float(score):.4f}"}

@@ -1,0 +1,282 @@
+"""
+LLM Module for PraisonAI Agents.
+
+This module provides language model integrations with lazy loading
+to minimize import time when LLM functionality is not immediately needed.
+"""
+import os
+
+# Ensure litellm telemetry is disabled before any imports
+os.environ["LITELLM_TELEMETRY"] = "False"
+
+import threading
+
+# Module-level cache for lazy-loaded classes
+_lazy_cache = {}
+_cache_lock = threading.Lock()
+
+
+def __getattr__(name):
+    """Lazy load LLM classes to avoid importing litellm at module load time."""
+    if name in _lazy_cache:
+        return _lazy_cache[name]
+    
+    with _cache_lock:
+        # Double-check after acquiring lock
+        if name in _lazy_cache:
+            return _lazy_cache[name]
+
+        if name == "LLM":
+            from .llm import LLM
+            _lazy_cache[name] = LLM
+            return LLM
+        elif name == "LLMContextLengthExceededException":
+            from .llm import LLMContextLengthExceededException
+            _lazy_cache[name] = LLMContextLengthExceededException
+            return LLMContextLengthExceededException
+        elif name == "LLMResponseError":
+            from .llm import LLMResponseError
+            _lazy_cache[name] = LLMResponseError
+            return LLMResponseError
+
+        elif name == "OpenAIClient":
+            from .openai_client import OpenAIClient
+            _lazy_cache[name] = OpenAIClient
+            return OpenAIClient
+        elif name == "get_openai_client":
+            from .openai_client import get_openai_client
+            _lazy_cache[name] = get_openai_client
+            return get_openai_client
+        elif name == "ChatCompletionMessage":
+            from .openai_client import ChatCompletionMessage
+            _lazy_cache[name] = ChatCompletionMessage
+            return ChatCompletionMessage
+        elif name == "Choice":
+            from .openai_client import Choice
+            _lazy_cache[name] = Choice
+            return Choice
+        elif name == "CompletionTokensDetails":
+            from .openai_client import CompletionTokensDetails
+            _lazy_cache[name] = CompletionTokensDetails
+            return CompletionTokensDetails
+        elif name == "PromptTokensDetails":
+            from .openai_client import PromptTokensDetails
+            _lazy_cache[name] = PromptTokensDetails
+            return PromptTokensDetails
+        elif name == "CompletionUsage":
+            from .openai_client import CompletionUsage
+            _lazy_cache[name] = CompletionUsage
+            return CompletionUsage
+        elif name == "ChatCompletion":
+            from .openai_client import ChatCompletion
+            _lazy_cache[name] = ChatCompletion
+            return ChatCompletion
+        elif name == "ToolCall":
+            from .openai_client import ToolCall
+            _lazy_cache[name] = ToolCall
+            return ToolCall
+        elif name == "process_stream_chunks":
+            from .openai_client import process_stream_chunks
+            _lazy_cache[name] = process_stream_chunks
+            return process_stream_chunks
+        elif name == "supports_structured_outputs":
+            from .model_capabilities import supports_structured_outputs
+            _lazy_cache[name] = supports_structured_outputs
+            return supports_structured_outputs
+        elif name == "supports_streaming_with_tools":
+            from .model_capabilities import supports_streaming_with_tools
+            _lazy_cache[name] = supports_streaming_with_tools
+            return supports_streaming_with_tools
+        elif name == "ModelRouter":
+            from .model_router import ModelRouter
+            _lazy_cache[name] = ModelRouter
+            return ModelRouter
+        elif name == "ModelProfile":
+            from .model_router import ModelProfile
+            _lazy_cache[name] = ModelProfile
+            return ModelProfile
+        elif name == "TaskComplexity":
+            from .model_router import TaskComplexity
+            _lazy_cache[name] = TaskComplexity
+            return TaskComplexity
+        elif name == "create_routing_agent":
+            from .model_router import create_routing_agent
+            _lazy_cache[name] = create_routing_agent
+            return create_routing_agent
+        elif name == "RateLimiter":
+            from .rate_limiter import RateLimiter
+            _lazy_cache[name] = RateLimiter
+            return RateLimiter
+        elif name == "QuotaCoordinatorProtocol":
+            from .quota import QuotaCoordinatorProtocol
+            _lazy_cache[name] = QuotaCoordinatorProtocol
+            return QuotaCoordinatorProtocol
+        elif name == "QuotaCoordinatorConfig":
+            from .quota import QuotaCoordinatorConfig
+            _lazy_cache[name] = QuotaCoordinatorConfig
+            return QuotaCoordinatorConfig
+        elif name == "LocalQuotaCoordinator":
+            from .quota import LocalQuotaCoordinator
+            _lazy_cache[name] = LocalQuotaCoordinator
+            return LocalQuotaCoordinator
+        elif name == "build_quota_coordinator":
+            from .quota import build_quota_coordinator
+            _lazy_cache[name] = build_quota_coordinator
+            return build_quota_coordinator
+        elif name == "TokenUsage":
+            from .llm import TokenUsage
+            _lazy_cache[name] = TokenUsage
+            return TokenUsage
+        elif name == "LLMProviderProtocol":
+            from .protocols import LLMProviderProtocol
+            _lazy_cache[name] = LLMProviderProtocol
+            return LLMProviderProtocol
+        elif name == "ModelCapabilitiesProtocol":
+            from .protocols import ModelCapabilitiesProtocol
+            _lazy_cache[name] = ModelCapabilitiesProtocol
+            return ModelCapabilitiesProtocol
+        elif name == "LLMRateLimiterProtocol":
+            from .protocols import LLMRateLimiterProtocol
+            _lazy_cache[name] = LLMRateLimiterProtocol
+            return LLMRateLimiterProtocol
+        elif name == "LLMFailoverProtocol":
+            from .protocols import LLMFailoverProtocol
+            _lazy_cache[name] = LLMFailoverProtocol
+            return LLMFailoverProtocol
+        elif name == "LLMProviderError":
+            from .protocols import LLMProviderError
+            _lazy_cache[name] = LLMProviderError
+            return LLMProviderError
+        elif name == "RateLimitError":
+            from .protocols import RateLimitError
+            _lazy_cache[name] = RateLimitError
+            return RateLimitError
+        elif name == "ModelNotAvailableError":
+            from .protocols import ModelNotAvailableError
+            _lazy_cache[name] = ModelNotAvailableError
+            return ModelNotAvailableError
+        elif name == "ContextLengthExceededError":
+            from .protocols import ContextLengthExceededError
+            _lazy_cache[name] = ContextLengthExceededError
+            return ContextLengthExceededError
+        elif name == "UnifiedLLMProtocol":
+            from .protocols import UnifiedLLMProtocol
+            _lazy_cache[name] = UnifiedLLMProtocol
+            return UnifiedLLMProtocol
+        elif name == "LiteLLMAdapter":
+            from .unified_adapters import LiteLLMAdapter
+            _lazy_cache[name] = LiteLLMAdapter
+            return LiteLLMAdapter
+        elif name == "OpenAIAdapter":
+            from .unified_adapters import OpenAIAdapter
+            _lazy_cache[name] = OpenAIAdapter
+            return OpenAIAdapter
+        elif name == "UnifiedLLMDispatcher":
+            from .unified_adapters import UnifiedLLMDispatcher
+            _lazy_cache[name] = UnifiedLLMDispatcher
+            return UnifiedLLMDispatcher
+        elif name == "create_llm_dispatcher":
+            from .unified_adapters import create_llm_dispatcher
+            _lazy_cache[name] = create_llm_dispatcher
+            return create_llm_dispatcher
+        elif name == "sanitize_messages":
+            from .sanitize import sanitize_messages
+            _lazy_cache[name] = sanitize_messages
+            return sanitize_messages
+        elif name == "strip_surrogates":
+            from .sanitize import strip_surrogates
+            _lazy_cache[name] = strip_surrogates
+            return strip_surrogates
+        elif name == "sanitize_text":
+            from .sanitize import sanitize_text
+            _lazy_cache[name] = sanitize_text
+            return sanitize_text
+        elif name == "PanelLLM":
+            from .panel import PanelLLM
+            _lazy_cache[name] = PanelLLM
+            return PanelLLM
+        elif name == "create_panel_llm":
+            from .panel import create_panel_llm
+            _lazy_cache[name] = create_panel_llm
+            return create_panel_llm
+        elif name == "register_panel_preset":
+            from .panel import register_panel_preset
+            _lazy_cache[name] = register_panel_preset
+            return register_panel_preset
+        elif name == "resolve_panel_config":
+            from .panel import resolve_panel_config
+            _lazy_cache[name] = resolve_panel_config
+            return resolve_panel_config
+        elif name == "is_panel_descriptor":
+            from .panel import is_panel_descriptor
+            _lazy_cache[name] = is_panel_descriptor
+            return is_panel_descriptor
+        elif name == "ErrorCategory":
+            from .error_classifier import ErrorCategory
+            _lazy_cache[name] = ErrorCategory
+            return ErrorCategory
+        elif name == "classify_error":
+            from .error_classifier import classify_error
+            _lazy_cache[name] = classify_error
+            return classify_error
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "LLM", 
+    "LLMContextLengthExceededException", 
+    "LLMResponseError",
+    "OpenAIClient", 
+    "get_openai_client",
+    "ChatCompletionMessage",
+    "Choice",
+    "CompletionTokensDetails",
+    "PromptTokensDetails",
+    "CompletionUsage",
+    "ChatCompletion",
+    "ToolCall",
+    "process_stream_chunks",
+    "supports_structured_outputs",
+    "supports_streaming_with_tools",
+    "ModelRouter",
+    "ModelProfile",
+    "TaskComplexity",
+    "create_routing_agent",
+    "RateLimiter",
+    "TokenUsage",
+    # Provider quota coordination (cross-replica credential cooldowns)
+    "QuotaCoordinatorProtocol",
+    "QuotaCoordinatorConfig",
+    "LocalQuotaCoordinator",
+    "build_quota_coordinator",
+    # Protocols
+    "LLMProviderProtocol",
+    "ModelCapabilitiesProtocol",
+    "LLMRateLimiterProtocol",
+    "LLMFailoverProtocol",
+    "UnifiedLLMProtocol",
+    # Adapters
+    "LiteLLMAdapter",
+    "OpenAIAdapter",
+    "UnifiedLLMDispatcher",
+    "create_llm_dispatcher",
+    # Panel (multi-model) provider
+    "PanelLLM",
+    "create_panel_llm",
+    "register_panel_preset",
+    "resolve_panel_config",
+    "is_panel_descriptor",
+    # Exceptions
+    "LLMProviderError",
+    "RateLimitError",
+    "ModelNotAvailableError",
+    "ContextLengthExceededError",
+    # Sanitization (G6)
+    "sanitize_messages",
+    "strip_surrogates", 
+    "sanitize_text",
+    # Error Classification (G5)
+    "ErrorCategory",
+    "classify_error"
+]

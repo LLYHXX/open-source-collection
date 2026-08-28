@@ -1,0 +1,21 @@
+meta {
+  name: logout
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/accounts/logout/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+  "token": "{{access_token}}"
+  }
+}

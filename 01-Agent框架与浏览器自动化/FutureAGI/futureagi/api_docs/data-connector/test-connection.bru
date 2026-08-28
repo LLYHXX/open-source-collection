@@ -1,0 +1,26 @@
+meta {
+  name: test-connection
+  type: http
+  seq: 5
+}
+
+post {
+  url: http://{{host}}:{{port}}/data-connector/test/
+  body: multipartForm
+  auth: bearer
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  file: @file(postman-cloud:///1ef52f5a-5b87-4890-9adb-b66090bd623d)
+  definitions_name: UploadFile
+  connection_id: 798c846a-bf06-4910-9e69-445d5be0053a
+}

@@ -1,0 +1,1167 @@
+"""
+Local Managed Agent Backend — provider-agnostic self-hosted managed agents.
+
+Replicates the Anthropic Managed Agents experience using any LLM provider
+(OpenAI, Gemini, Ollama, local) with local sandbox execution.
+
+Implements ``ManagedBackendProtocol`` from the Core SDK.
+
+Usage::
+
+    from praisonai.integrations.managed_local import LocalManagedAgent, LocalManagedConfig
+    from praisonaiagents import Agent
+
+    managed = LocalManagedAgent(
+        config=LocalManagedConfig(
+            model="gpt-4o",
+            system="You are a coding assistant.",
+        )
+    )
+    agent = Agent(name="coder", backend=managed)
+    result = agent.start("Create a Python script that prints hello")
+"""
+
+import asyncio
+import logging
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Dict,
+    List,
+    Optional,
+)
+
+logger = logging.getLogger(__name__)
+
+# Strict allowlist for pip requirement specifiers. Only characters that appear
+# in valid PEP 508 specifiers are permitted; leading dashes (pip options such
+# as ``--upgrade`` or ``-r``) are rejected separately at the call site.
+_PIP_SPECIFIER_RE = re.compile(r'^[A-Za-z0-9._\-\[\]<>=,~!+ ]+$')
+
+_DEFAULT_SYSTEM = "You are a helpful coding assistant."
+
+_DEFAULT_TOOLS = [
+    "execute_command",
+    "read_file",
+    "write_file",
+    "list_files",
+    "search_web",
+]
+
+from ._tool_aliases import TOOL_ALIAS_MAP
+
+
+@dataclass
+class LocalManagedConfig:
+    """Configuration for local managed agent backends.
+
+    Provider-agnostic — works with any LLM supported by litellm or
+    OpenAI-compatible API.
+
+    Example::
+
+        cfg = LocalManagedConfig(
+            model="gpt-4o",
+            system="You are a coding assistant.",
+            tools=["execute_command", "read_file", "write_file"],
+        )
+    """
+
+    # ── Agent fields ──
+    name: str = "Agent"
+    model: str = "gpt-4o"
+    system: str = _DEFAULT_SYSTEM
+    tools: List[str] = field(default_factory=lambda: list(_DEFAULT_TOOLS))
+    max_turns: int = 25
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # ── Environment fields ──
+    working_dir: str = ""
+    env: Dict[str, str] = field(default_factory=dict)
+    packages: Optional[Dict[str, List[str]]] = None
+    networking: Dict[str, Any] = field(default_factory=lambda: {"type": "unrestricted"})
+    host_packages_ok: bool = False  # Allow packages on host (security opt-out)
+
+    # ── Session fields ──
+    session_title: str = "PraisonAI local session"
+
+    # ── Callbacks ──
+    on_tool_confirmation: Optional[Callable] = field(default=None, repr=False)
+    on_custom_tool: Optional[Callable] = field(default=None, repr=False)
+
+
+def _translate_anthropic_tools(tools_config: List) -> List[str]:
+    """Translate Anthropic-format tool configs to local tool name list.
+
+    Handles:
+    - ``{"type": "agent_toolset_20260401"}`` → all defaults
+    - ``{"type": "agent_toolset_20260401", "configs": [{"name": "bash", "enabled": True}]}``
+    - ``{"type": "custom", "name": "..."}`` → kept as custom
+    """
+    if not tools_config:
+        return list(_DEFAULT_TOOLS)
+
+    # If it's already a simple list of strings, return as-is
+    if tools_config and isinstance(tools_config[0], str):
+        return tools_config
+
+    enabled = set()
+    disabled = set()
+    custom_tools: List[Dict[str, Any]] = []
+    has_agent_toolset = False
+
+    for entry in tools_config:
+        if not isinstance(entry, dict):
+            continue
+        t = entry.get("type", "")
+
+        if t.startswith("agent_toolset"):
+            has_agent_toolset = True
+            default_enabled = entry.get("default_config", {}).get("enabled", True)
+            for cfg in entry.get("configs", []):
+                name = cfg.get("name", "")
+                alias = TOOL_ALIAS_MAP.get(name, name)
+                if cfg.get("enabled", default_enabled):
+                    enabled.add(alias)
+                else:
+                    disabled.add(alias)
+
+        elif t == "custom":
+            custom_tools.append(entry)
+
+        elif t.startswith("mcp_toolset"):
+            pass  # MCP handled separately
+
+    if has_agent_toolset:
+        if enabled:
+            result = list(enabled - disabled)
+        else:
+            result = [t for t in _DEFAULT_TOOLS if t not in disabled]
+    else:
+        result = list(_DEFAULT_TOOLS)
+
+    return result
+
+
+# ── Custom tool builder with typed signature from JSON Schema ──
+
+_JSON_TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
+
+
+def _build_custom_tool_fn(
+    tool_name: str,
+    tool_desc: str,
+    input_schema: Dict[str, Any],
+    callback: Callable,
+) -> Callable:
+    """Build a callable with proper type annotations from a JSON-schema ``input_schema``.
+
+    The Agent's tool-calling layer inspects function signatures to generate
+    OpenAI-compatible function schemas.  A bare ``**kwargs`` function doesn't
+    expose any parameters to the LLM, so we dynamically create a function
+    whose signature mirrors the ``input_schema.properties``.
+    """
+    import inspect
+
+    props = input_schema.get("properties", {})
+    required = set(input_schema.get("required", []))
+
+    # Build inspect.Parameter list
+    params = []
+    annotations: Dict[str, Any] = {}
+    for pname, pdef in props.items():
+        ptype = _JSON_TYPE_MAP.get(pdef.get("type", "string"), str)
+        annotations[pname] = ptype
+        default = inspect.Parameter.empty if pname in required else None
+        params.append(
+            inspect.Parameter(pname, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default, annotation=ptype)
+        )
+
+    # Build the function
+    def _custom_fn(**kwargs):
+        return callback(tool_name, kwargs)
+
+    _custom_fn.__name__ = tool_name
+    _custom_fn.__qualname__ = tool_name
+    _custom_fn.__doc__ = tool_desc
+    _custom_fn.__signature__ = inspect.Signature(params, return_annotation=str)
+    _custom_fn.__annotations__ = {**annotations, "return": str}
+    return _custom_fn
+
+
+class LocalManagedAgent:
+    """Provider-agnostic local managed agent backend.
+
+    Satisfies ``ManagedBackendProtocol`` (Core SDK).  Uses PraisonAI's own
+    ``Agent.chat()`` loop internally to provide the full managed agent
+    experience — tool calling, multi-turn, streaming — on any LLM.
+
+    The agent loop runs locally (subprocess sandbox for tool execution).
+    No external managed infrastructure required.
+    """
+
+    def __init__(
+        self,
+        provider: str = "local",
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+        config: Optional[Any] = None,
+        timeout: int = 300,
+        instructions: str = _DEFAULT_SYSTEM,
+        on_tool_confirmation: Optional[Callable[[Dict[str, Any]], bool]] = None,
+        on_custom_tool: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+        compute: Optional[Any] = None,
+        tools_run_on: Optional[Any] = None,
+        session_store: Optional[Any] = None,
+        db: Optional[Any] = None,
+    ):
+        self.provider = provider
+        self.api_key = api_key
+        self.api_base = api_base
+        self.timeout = timeout
+        self.instructions = instructions
+        self.on_tool_confirmation = on_tool_confirmation
+        self.on_custom_tool = on_custom_tool
+
+        if config is not None and not isinstance(config, dict):
+            from dataclasses import asdict
+            self._cfg = asdict(config)
+        else:
+            self._cfg: Dict[str, Any] = config or {}
+
+        # Override callbacks from config if provided
+        if self._cfg.get("on_tool_confirmation"):
+            self.on_tool_confirmation = self._cfg.pop("on_tool_confirmation")
+        if self._cfg.get("on_custom_tool"):
+            self.on_custom_tool = self._cfg.pop("on_custom_tool")
+
+        # IDs (local UUIDs, not Anthropic-assigned)
+        self.agent_id: Optional[str] = None
+        self.agent_version: Optional[int] = 1
+        self.environment_id: Optional[str] = None
+        self._session_id: Optional[str] = None
+
+        # Usage tracking
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
+
+        # Internal agent (lazy)
+        self._inner_agent: Any = None
+
+        # Session store: explicit > db-adapter > lazy default
+        self._session_store: Any = None
+        self._db: Any = db
+        if session_store is not None:
+            self._session_store = session_store
+        elif db is not None:
+            try:
+                from praisonai.integrations.db_session_adapter import DbSessionAdapter
+                self._session_store = DbSessionAdapter(db)
+            except ImportError:
+                logger.debug("[local_managed] DbSessionAdapter not available, will use file store")
+        self._session_history: List[Dict[str, Any]] = []
+
+        # Custom tool definitions from Anthropic-format config
+        self._custom_tool_defs: List[Dict[str, Any]] = []
+
+        # Where this agent's tools run. `tools_run_on=` is the spelling the
+        # rest of the library uses; `compute=` is the older name for the same
+        # thing and still works. LocalAgent (the subclass) warns on compute=;
+        # this base class is reached directly by older code, so it accepts both
+        # quietly rather than adding a second warning to the same call.
+        if compute is not None and tools_run_on is not None:
+            raise TypeError(
+                f"compute={compute!r} and tools_run_on={tools_run_on!r} name the "
+                f"same thing -- where this agent's tools run. Pass tools_run_on= only."
+            )
+        # Compute provider (optional — for remote tool execution)
+        self._compute = self._resolve_compute(
+            tools_run_on if compute is None else compute
+        )
+        self._compute_instance_id: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # Model resolution
+    # ------------------------------------------------------------------
+    def _resolve_model(self) -> str:
+        """Resolve the model string from config, provider, or env."""
+        model = self._cfg.get("model", "gpt-4o")
+
+        # Provider-specific prefixes for litellm routing
+        if self.provider == "ollama" and "/" not in model:
+            model = f"ollama/{model}"
+        elif self.provider == "gemini" and not model.startswith("gemini"):
+            model = f"gemini/{model}"
+
+        return model
+
+    # ------------------------------------------------------------------
+    # Tool resolution
+    # ------------------------------------------------------------------
+    def _resolve_tools(self) -> List:
+        """Resolve tool names to actual PraisonAI tool functions.
+        
+        When a compute provider is attached, shell-based tools (execute_command,
+        read_file, write_file, list_files) are bridged to run in the compute
+        environment instead of on the host.
+        """
+        raw_tools = self._cfg.get("tools", list(_DEFAULT_TOOLS))
+        tool_names = _translate_anthropic_tools(raw_tools)
+
+        # Normalize aliases
+        resolved_names = []
+        for name in tool_names:
+            resolved_names.append(TOOL_ALIAS_MAP.get(name, name))
+
+        # Import tools lazily
+        tools = []
+        compute_bridged_tools = {"execute_command", "read_file", "write_file", "list_files"}
+        resolver = self._get_tool_resolver()
+
+        for name in resolved_names:
+            try:
+                # Route through the canonical ToolResolver chain
+                # (local -> core -> praisonai-tools -> plugins) so tools that
+                # resolve elsewhere in the wrapper resolve here too. Fall back
+                # to the historical praisonaiagents.tools getattr lookup when
+                # the resolver is unavailable so behaviour never narrows.
+                func = None
+                if resolver is not None:
+                    try:
+                        func = resolver.resolve(name)
+                    except Exception as e:
+                        logger.debug("[local_managed] resolver failed for %s: %s", name, e)
+                if func is None:
+                    from praisonaiagents import tools as tool_module
+                    func = getattr(tool_module, name, None)
+                if func is not None:
+                    # Bridge shell-based tools to compute when available
+                    if self._compute and name in compute_bridged_tools:
+                        tools.append(self._create_compute_bridge_tool(name, func))
+                    else:
+                        tools.append(func)
+                else:
+                    logger.warning("[local_managed] tool not found: %s", name)
+            except Exception as e:
+                logger.warning("[local_managed] failed to load tool %s: %s", name, e)
+
+        # Extract and wire custom tool definitions
+        if isinstance(raw_tools, list):
+            for entry in raw_tools:
+                if isinstance(entry, dict) and entry.get("type") == "custom":
+                    self._custom_tool_defs.append(entry)
+                    if self.on_custom_tool:
+                        tool_name = entry.get("name", "custom_tool")
+                        tool_desc = entry.get("description", "")
+                        input_schema = entry.get("input_schema", {})
+                        callback = self.on_custom_tool
+
+                        tools.append(
+                            _build_custom_tool_fn(tool_name, tool_desc, input_schema, callback)
+                        )
+
+        return tools
+
+    def _get_tool_resolver(self):
+        """Return a cached canonical ToolResolver, or None if unavailable.
+
+        The resolver (owned by ``praisonai-code``) walks the full resolution
+        chain (local tools.py -> praisonaiagents.tools -> praisonai-tools ->
+        entry-point plugins), matching how tool names resolve in the YAML /
+        Python / other CLI paths. It is imported lazily and cached; if the
+        optional ``praisonai-code`` package is not installed, callers fall
+        back to the historical ``praisonaiagents.tools`` getattr lookup.
+        """
+        resolver = getattr(self, "_tool_resolver", None)
+        if resolver is not None:
+            return resolver
+        if getattr(self, "_tool_resolver_unavailable", False):
+            return None
+        try:
+            from praisonai_code.tool_resolver import ToolResolver
+            resolver = ToolResolver()
+        except Exception as e:  # praisonai-code optional / import failure
+            logger.debug("[local_managed] ToolResolver unavailable: %s", e)
+            self._tool_resolver_unavailable = True
+            return None
+        self._tool_resolver = resolver
+        return resolver
+
+    def _create_compute_bridge_tool(self, tool_name: str, original_func: Callable) -> Callable:
+        """Create a compute-bridged version of a tool.
+        
+        Wraps the original tool function to execute commands in the compute
+        environment instead of on the host.
+        """
+        import inspect
+        import asyncio
+        
+        def compute_bridged_tool(*args, **kwargs):
+            """Compute-bridged tool wrapper."""
+            # Auto-provision compute if needed
+            if self._compute_instance_id is None:
+                from .._async_bridge import run_sync
+                run_sync(self.provision_compute())
+            
+            if tool_name == "execute_command":
+                # For execute_command, directly route to compute
+                command = args[0] if args else kwargs.get("command", "")
+                if not command:
+                    return "Error: No command specified"
+                
+                try:
+                    from .._async_bridge import run_sync
+                    result = run_sync(
+                        self._compute.execute(self._compute_instance_id, command)
+                    )
+                    
+                    # Format result similar to local execute_command
+                    if result.get("exit_code", 0) == 0:
+                        return result.get("stdout", "")
+                    else:
+                        return f"Command failed (exit {result.get('exit_code', 1)}): {result.get('stderr', '')}"
+                        
+                except Exception as e:
+                    return f"Compute execution error: {e}"
+                    
+            elif tool_name in {"read_file", "write_file", "list_files"}:
+                # For file operations, convert to shell commands in compute
+                return self._bridge_file_tool(tool_name, *args, **kwargs)
+            
+            else:
+                # Fallback to original tool (shouldn't happen for bridged tools)
+                return original_func(*args, **kwargs)
+        
+        # Copy function metadata
+        compute_bridged_tool.__name__ = tool_name
+        compute_bridged_tool.__doc__ = original_func.__doc__ or f"Compute-bridged {tool_name}"
+        
+        # Copy signature if available
+        try:
+            compute_bridged_tool.__signature__ = inspect.signature(original_func)
+            compute_bridged_tool.__annotations__ = getattr(original_func, "__annotations__", {})
+        except (ValueError, TypeError):
+            pass
+            
+        return compute_bridged_tool
+
+    def _bridge_file_tool(self, tool_name: str, *args, **kwargs) -> str:
+        """Bridge file operations to compute environment."""
+        import asyncio
+        
+        if tool_name == "read_file":
+            filepath = args[0] if args else kwargs.get("filepath", "")
+            if not filepath:
+                return "Error: No filepath specified"
+            import shlex
+            command = f"cat {shlex.quote(filepath)}"
+            
+        elif tool_name == "write_file":
+            filepath = args[0] if args else kwargs.get("filepath", "")
+            content = args[1] if len(args) > 1 else kwargs.get("content", "")
+            if not filepath:
+                return "Error: No filepath specified"
+            import base64
+            import shlex
+            if not isinstance(content, (str, bytes)):
+                content = str(content)
+            payload = content.encode() if isinstance(content, str) else content
+            b64 = base64.b64encode(payload).decode("ascii")
+            command = (
+                f"printf '%s' {shlex.quote(b64)} | base64 -d > {shlex.quote(filepath)}"
+            )
+            
+        elif tool_name == "list_files":
+            directory = args[0] if args else kwargs.get("directory", ".")
+            import shlex
+            command = f"ls -la {shlex.quote(directory)}"
+            
+        else:
+            return f"Error: Unsupported bridged tool: {tool_name}"
+        
+        try:
+            from .._async_bridge import run_sync
+            result = run_sync(
+                self._compute.execute(self._compute_instance_id, command)
+            )
+            
+            if result.get("exit_code", 0) == 0:
+                return result.get("stdout", "")
+            else:
+                return f"Command failed (exit {result.get('exit_code', 1)}): {result.get('stderr', '')}"
+                
+        except Exception as e:
+            return f"Compute execution error: {e}"
+
+    # ------------------------------------------------------------------
+    # Inner agent (lazy)
+    # ------------------------------------------------------------------
+    def _get_session_store(self):
+        """Get or create the session store."""
+        if self._session_store is None:
+            try:
+                from praisonaiagents.session.store import get_default_session_store
+                self._session_store = get_default_session_store()
+            except ImportError:
+                logger.debug("[local_managed] session store not available")
+        return self._session_store
+
+    # ------------------------------------------------------------------
+    # State persistence — write all mutable state to session store
+    # ------------------------------------------------------------------
+    def _persist_state(self) -> None:
+        """Persist all mutable agent state to the session store.
+
+        Writes agent metadata (IDs, version), usage tokens, session history,
+        and compute instance references into the session's metadata dict.
+        """
+        store = self._get_session_store()
+        if not store or not self._session_id:
+            return
+
+        state = {
+            "agent_id": self.agent_id,
+            "agent_version": self.agent_version,
+            "environment_id": self.environment_id,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "compute_instance_id": self._compute_instance_id,
+            "compute_provider": self._compute.provider_name if self._compute and hasattr(self._compute, "provider_name") else None,
+            "session_history": self._session_history,
+            "config": {
+                "model": self._cfg.get("model"),
+                "system": self._cfg.get("system", self.instructions),
+                "name": self._cfg.get("name", "Agent"),
+                "provider": self.provider,
+            },
+        }
+
+        # DbSessionAdapter path — has set_metadata/get_metadata
+        if hasattr(store, "set_metadata"):
+            store.set_metadata(self._session_id, state)
+            return
+
+        # DefaultSessionStore path — merge metadata under file lock (preserves messages)
+        try:
+            if hasattr(store, "update_session_metadata"):
+                store.update_session_metadata(self._session_id, **state)
+            else:
+                session = store.get_session(self._session_id)
+                if session is None:
+                    from praisonaiagents.session.store import SessionData
+
+                    store._save_session(SessionData(session_id=self._session_id, metadata=state))
+                else:
+                    if not isinstance(session.metadata, dict):
+                        session.metadata = {}
+                    session.metadata.update(state)
+                    store._save_session(session)
+        except Exception as e:
+            logger.debug("[local_managed] _persist_state failed: %s", e)
+
+    def _restore_state(self) -> None:
+        """Restore all mutable state from the session store.
+
+        Called during ``resume_session()`` to recover agent metadata,
+        usage tokens, compute refs, and session history.
+        """
+        store = self._get_session_store()
+        if not store or not self._session_id:
+            return
+
+        meta: Dict[str, Any] = {}
+
+        # DbSessionAdapter path
+        if hasattr(store, "get_metadata"):
+            meta = store.get_metadata(self._session_id) or {}
+        else:
+            # DefaultSessionStore path
+            try:
+                session = store.get_session(self._session_id)
+                if session and isinstance(session.metadata, dict):
+                    meta = session.metadata
+            except Exception:
+                pass
+
+        if not meta:
+            return
+
+        # Restore IDs (only if not already set by restore_ids())
+        if meta.get("agent_id") and not self.agent_id:
+            self.agent_id = meta["agent_id"]
+        if meta.get("agent_version") is not None and self.agent_version in (None, 1):
+            self.agent_version = meta["agent_version"]
+        if meta.get("environment_id") and not self.environment_id:
+            self.environment_id = meta["environment_id"]
+
+        # Restore usage
+        self.total_input_tokens = meta.get("total_input_tokens", self.total_input_tokens)
+        self.total_output_tokens = meta.get("total_output_tokens", self.total_output_tokens)
+
+        # Restore compute ref
+        if meta.get("compute_instance_id"):
+            self._compute_instance_id = meta["compute_instance_id"]
+
+        # Restore session history
+        if meta.get("session_history"):
+            self._session_history = meta["session_history"]
+
+        # Restore config (so resume doesn't need config re-specified)
+        saved_cfg = meta.get("config", {})
+        if saved_cfg:
+            if saved_cfg.get("model") and not self._cfg.get("model"):
+                self._cfg["model"] = saved_cfg["model"]
+            if saved_cfg.get("system") and not self._cfg.get("system"):
+                self._cfg["system"] = saved_cfg["system"]
+                self.instructions = saved_cfg["system"]
+            if saved_cfg.get("name") and not self._cfg.get("name"):
+                self._cfg["name"] = saved_cfg["name"]
+            if saved_cfg.get("provider"):
+                self.provider = saved_cfg["provider"]
+
+    def _install_packages(self) -> None:
+        """Install packages specified in config before agent starts.
+        
+        Security behavior:
+        - If compute provider is attached: installs in sandbox via compute.execute()
+        - If no compute and host_packages_ok=True: installs on host (developer mode)
+        - If no compute and host_packages_ok=False: raises ManagedSandboxRequired
+        """
+        packages = self._cfg.get("packages")
+        if not packages:
+            return
+
+        pip_pkgs = packages.get("pip", []) if isinstance(packages, dict) else []
+        if not pip_pkgs:
+            return
+
+        # Security check: require compute provider OR explicit opt-out
+        if self._compute is None:
+            host_packages_ok = self._cfg.get("host_packages_ok", False)
+            if not host_packages_ok:
+                from .managed_agents import ManagedSandboxRequired
+                raise ManagedSandboxRequired(
+                    f"Package installation requested ({pip_pkgs}) but no compute provider specified. "
+                    f"This would install packages on the host system, creating a security risk. "
+                    f"Either specify a compute provider (compute='docker') or explicitly allow "
+                    f"host packages with LocalManagedConfig(host_packages_ok=True)."
+                )
+            
+            # Host installation (explicit opt-out)
+            cmd = [sys.executable, "-m", "pip", "install", "-q"] + pip_pkgs
+            logger.warning("[local_managed] installing pip packages on HOST system: %s", pip_pkgs)
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+                logger.info("[local_managed] host pip install completed")
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(
+                    f"pip install failed for {pip_pkgs}: {e.stderr.decode(errors='replace')}"
+                ) from e
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"pip install timed out after 120s for {pip_pkgs}") from e
+        else:
+            # Sandbox installation via compute provider
+            self._install_packages_in_compute(pip_pkgs)
+
+    def _install_packages_in_compute(self, pip_pkgs: List[str]) -> None:
+        """Install pip packages in the compute environment."""
+        if not self._compute:
+            raise RuntimeError("No compute provider available")
+        
+        # Auto-provision compute if not done yet
+        if self._compute_instance_id is None:
+            from .._async_bridge import run_sync
+            run_sync(self.provision_compute())
+        
+        # Validate package names against a strict allowlist (valid pip
+        # requirement specifiers) so malformed/malicious names fail fast, then
+        # shell-quote each token to prevent shell injection inside the sandbox.
+        # Reject pip options (leading dash) so values like ``--upgrade`` or
+        # ``-r requirements.txt`` cannot be smuggled in as package specifiers.
+        for pkg in pip_pkgs:
+            if (
+                not isinstance(pkg, str)
+                or pkg.lstrip().startswith("-")
+                or not _PIP_SPECIFIER_RE.fullmatch(pkg)
+            ):
+                raise ValueError(
+                    f"Invalid pip package specifier: {pkg!r}. Only pip "
+                    "requirement specifiers are allowed."
+                )
+        pip_cmd = "python -m pip install -q " + " ".join(shlex.quote(pkg) for pkg in pip_pkgs)
+        logger.info("[local_managed] installing pip packages in compute: %s", pip_pkgs)
+        
+        try:
+            # Run installation synchronously in compute
+            from .._async_bridge import run_sync
+            result = run_sync(
+                self._compute.execute(self._compute_instance_id, pip_cmd, timeout=120)
+            )
+            
+            if result.get("exit_code", 0) == 0:
+                logger.info("[local_managed] compute pip install completed")
+            else:
+                raise RuntimeError(
+                    f"pip install failed in compute for {pip_pkgs}: {result.get('stderr', '')}"
+                )
+                
+        except Exception as e:
+            if "pip install failed in compute" in str(e):
+                raise  # Re-raise RuntimeError from above
+            raise RuntimeError(f"pip install error in compute for {pip_pkgs}: {e}") from e
+
+    def _ensure_agent(self) -> Any:
+        """Create or return the inner PraisonAI Agent."""
+        if self._inner_agent is not None:
+            return self._inner_agent
+
+        self._install_packages()
+
+        from praisonaiagents import Agent
+
+        model = self._resolve_model()
+        tools = self._resolve_tools()
+        system = self._cfg.get("system", self.instructions)
+        name = self._cfg.get("name", "Agent")
+
+        agent_kwargs: Dict[str, Any] = {
+            "name": name,
+            "instructions": system,
+            "llm": model,
+            "tools": tools,
+        }
+
+        # Pass API key and base directly to the inner agent instead of mutating
+        # the process-global environment. os.environ.setdefault() would let the
+        # first agent's credentials win for the whole process and leak into every
+        # subprocess spawned thereafter, cross-contaminating other tenants.
+        if self.api_key:
+            agent_kwargs["api_key"] = self.api_key
+        if self.api_base:
+            agent_kwargs["base_url"] = self.api_base
+
+        self._inner_agent = Agent(**agent_kwargs)
+        self.agent_id = self.agent_id or f"agent_{uuid.uuid4().hex[:12]}"
+        self.environment_id = self.environment_id or f"env_{uuid.uuid4().hex[:12]}"
+        logger.info("[local_managed] agent created: %s model=%s", self.agent_id, model)
+        return self._inner_agent
+
+    def _ensure_session(self) -> str:
+        """Create a session ID if not set."""
+        if self._session_id:
+            return self._session_id
+        self._session_id = f"session_{uuid.uuid4().hex[:12]}"
+        self._session_history.append({
+            "id": self._session_id,
+            "status": "idle",
+            "title": self._cfg.get("session_title", "PraisonAI local session"),
+            "created_at": time.time(),
+        })
+        self._persist_state()
+        logger.info("[local_managed] session created: %s", self._session_id)
+        return self._session_id
+
+    # ------------------------------------------------------------------
+    # execute() — ManagedBackendProtocol
+    # ------------------------------------------------------------------
+    async def execute(self, prompt: str, **kwargs) -> str:
+        """Execute prompt locally and return full response."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._execute_sync, prompt)
+
+    def _sync_usage(self) -> None:
+        """Sync token usage from inner agent to managed backend counters."""
+        if self._inner_agent and hasattr(self._inner_agent, '_total_tokens_in'):
+            self.total_input_tokens = self._inner_agent._total_tokens_in
+            self.total_output_tokens = self._inner_agent._total_tokens_out
+
+    def _persist_message(self, role: str, content: str) -> None:
+        """Persist a message to the session store if available."""
+        store = self._get_session_store()
+        if store and self._session_id:
+            store.add_message(self._session_id, role, content)
+
+    def _execute_sync(self, prompt: str, stream_live: bool = False) -> str:
+        """Synchronous execution using PraisonAI Agent.chat()."""
+        # Get context emitter (zero-overhead when no emitter is installed)
+        try:
+            from praisonaiagents.trace.context_events import get_context_emitter
+            emitter = get_context_emitter()
+        except ImportError:
+            emitter = None
+
+        agent = self._ensure_agent()
+        self._ensure_session()
+        self._persist_message("user", prompt)
+        agent_name = self._cfg.get("name", "Agent")
+
+        # Emit agent_start event
+        if emitter:
+            emitter.agent_start(agent_name, {
+                "input": prompt,
+                "goal": self._cfg.get("system", self.instructions)
+            })
+
+        try:
+            if stream_live:
+                result_parts = []
+                gen = agent.chat(prompt, stream=True)
+                if hasattr(gen, '__iter__'):
+                    for chunk in gen:
+                        if chunk:
+                            sys.stdout.write(str(chunk))
+                            sys.stdout.flush()
+                            result_parts.append(str(chunk))
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    full = "".join(result_parts)
+                else:
+                    full = str(gen) if gen else ""
+                    sys.stdout.write(full + "\n")
+                    sys.stdout.flush()
+            else:
+                result = agent.chat(prompt)
+                full = str(result) if result else ""
+
+            # Emit llm_response event for the response
+            if emitter and full:
+                emitter.llm_response(
+                    agent_name,
+                    response_content=full,
+                    prompt_tokens=self.total_input_tokens,
+                    completion_tokens=self.total_output_tokens
+                )
+
+            self._persist_message("assistant", full)
+            self._sync_usage()
+            self._persist_state()
+            return full
+
+        finally:
+            # Emit agent_end event
+            if emitter:
+                emitter.agent_end(agent_name)
+
+    # ------------------------------------------------------------------
+    # stream() — ManagedBackendProtocol
+    # ------------------------------------------------------------------
+    async def stream(self, prompt: str, **kwargs) -> AsyncIterator[str]:
+        """Yield text chunks as the agent produces them."""
+        import queue
+        import threading
+
+        loop = asyncio.get_running_loop()
+        q: queue.Queue[Optional[str]] = queue.Queue()
+
+        def _producer():
+            full = ""
+            try:
+                agent = self._ensure_agent()
+                self._ensure_session()
+                self._persist_message("user", prompt)
+                gen = agent.chat(prompt, stream=True)
+                if hasattr(gen, '__iter__'):
+                    for chunk in gen:
+                        if chunk:
+                            text = str(chunk)
+                            q.put(text)
+                            full += text
+                else:
+                    if gen:
+                        text = str(gen)
+                        q.put(text)
+                        full = text
+            except Exception as e:
+                logger.error("[local_managed] stream error: %s", e)
+            finally:
+                if full:
+                    self._persist_message("assistant", full)
+                self._sync_usage()
+                self._persist_state()
+                q.put(None)
+
+        thread = threading.Thread(target=_producer, daemon=True)
+        thread.start()
+
+        while True:
+            chunk = await loop.run_in_executor(None, q.get)
+            if chunk is None:
+                break
+            yield chunk
+
+    # ------------------------------------------------------------------
+    # Session management — ManagedBackendProtocol
+    # ------------------------------------------------------------------
+    def reset_session(self) -> None:
+        """Discard cached session; next execute() creates a fresh one."""
+        self._session_id = None
+        if self._inner_agent and hasattr(self._inner_agent, 'chat_history'):
+            self._inner_agent.chat_history = []
+
+    def reset_all(self) -> None:
+        """Discard all cached state."""
+        self.agent_id = None
+        self.agent_version = 1
+        self.environment_id = None
+        self._session_id = None
+        self._inner_agent = None
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self._session_history = []
+
+    # ------------------------------------------------------------------
+    # update_agent — ManagedBackendProtocol
+    # ------------------------------------------------------------------
+    def update_agent(self, **kwargs) -> None:
+        """Update agent configuration."""
+        for key, value in kwargs.items():
+            if key == "system":
+                self._cfg["system"] = value
+                if self._inner_agent:
+                    self._inner_agent.instructions = value
+            elif key == "model":
+                self._cfg["model"] = value
+            elif key == "tools":
+                self._cfg["tools"] = value
+            elif key == "name":
+                self._cfg["name"] = value
+            else:
+                self._cfg[key] = value
+
+        if self.agent_version is not None:
+            self.agent_version += 1
+
+        # Recreate inner agent on next call (keep session for continuity)
+        self._inner_agent = None
+        self._persist_state()
+        logger.info("[local_managed] agent updated (v%s)", self.agent_version)
+
+    # ------------------------------------------------------------------
+    # interrupt — ManagedBackendProtocol
+    # ------------------------------------------------------------------
+    def interrupt(self) -> None:
+        """Interrupt the current execution (best-effort)."""
+        logger.info("[local_managed] interrupt requested")
+
+    # ------------------------------------------------------------------
+    # retrieve_session / list_sessions — ManagedBackendProtocol
+    # ------------------------------------------------------------------
+    def retrieve_session(self) -> Dict[str, Any]:
+        """Retrieve current session metadata.
+        
+        Returns unified SessionInfo schema with all fields always present:
+        - id: Session ID
+        - status: Session status (idle, running, error, etc.)
+        - title: Session title/name  
+        - usage: Token usage with input_tokens and output_tokens
+        """
+        from ._session_info import SessionInfo
+        
+        self._sync_usage()
+        
+        session_info = SessionInfo(
+            id=self._session_id or "",
+            status="idle" if self._session_id else "unknown",
+            title="",  # Local agent doesn't track titles
+            usage={
+                "input_tokens": self.total_input_tokens,
+                "output_tokens": self.total_output_tokens,
+            }
+        )
+        return session_info.to_dict()
+
+    def list_sessions(self, **kwargs) -> List[Dict[str, Any]]:
+        """List all sessions created in this backend instance."""
+        limit = kwargs.get("limit")
+        result = list(self._session_history)
+        if limit:
+            result = result[:limit]
+        return result
+
+    # ------------------------------------------------------------------
+    # Session resume / ID persistence
+    # ------------------------------------------------------------------
+    def resume_session(self, session_id: str) -> None:
+        """Resume an existing session by ID.
+
+        Restores chat history and all persisted state (agent metadata,
+        usage tokens, compute refs, session history) from the session store.
+        """
+        self._session_id = session_id
+
+        # Restore all persisted state (IDs, usage, compute refs, session history)
+        self._restore_state()
+
+        store = self._get_session_store()
+        if store:
+            history = store.get_chat_history(session_id)
+            if history:
+                agent = self._ensure_agent()
+                if hasattr(agent, 'chat_history'):
+                    agent.chat_history = list(history)
+                logger.info("[local_managed] restored %d messages from session %s", len(history), session_id)
+
+        logger.info("[local_managed] resuming session: %s", session_id)
+
+    def save_ids(self) -> Dict[str, Any]:
+        """Return all current IDs for persistence."""
+        return {
+            "agent_id": self.agent_id,
+            "agent_version": self.agent_version,
+            "environment_id": self.environment_id,
+            "session_id": self._session_id,
+        }
+
+    def restore_ids(self, ids: Dict[str, Any]) -> None:
+        """Restore previously saved IDs."""
+        self.agent_id = ids.get("agent_id")
+        self.agent_version = ids.get("agent_version")
+        self.environment_id = ids.get("environment_id")
+        self._session_id = ids.get("session_id")
+        logger.info(
+            "[local_managed] IDs restored — agent: %s  env: %s  session: %s",
+            self.agent_id, self.environment_id, self._session_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+    @property
+    def session_id(self) -> Optional[str]:
+        """The current session ID."""
+        return self._session_id
+
+    @property
+    def managed_session_id(self) -> Optional[str]:
+        """Backward-compatible alias for ``session_id``."""
+        return self._session_id
+
+    # ------------------------------------------------------------------
+    # Compute provider integration
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _resolve_compute(compute: Optional[Any]) -> Optional[Any]:
+        """Resolve a place from a name or an instance.
+
+        Delegates to the core SDK's merged resolver so this class accepts
+        exactly what ``Agent(tools_run_on=...)`` accepts. It used to carry its
+        own hardcoded if/elif chain over seven names, which is why
+        ``LocalAgent(tools_run_on="sandlock")`` raised "Unknown compute
+        provider" for a place the rest of the library resolves happily -- the
+        same word with a smaller vocabulary, which is the drift this whole
+        change exists to remove.
+        """
+        if compute is None:
+            return None
+
+        from praisonaiagents.managed._compute_bridge import resolve_compute
+
+        return resolve_compute(compute)
+
+    @property
+    def compute_provider(self) -> Optional[Any]:
+        """The attached compute provider (if any)."""
+        return self._compute
+
+    async def provision_compute(self, **kwargs) -> Any:
+        """Provision compute infrastructure for remote tool execution.
+
+        Returns the ``InstanceInfo`` from the compute provider.
+        """
+        if self._compute is None:
+            raise RuntimeError("No compute provider attached.")
+
+        from praisonaiagents.managed.protocols import (
+            ComputeConfig,
+            load_environment_definition,
+        )
+
+        # Opt-in: a repo-committed ``.praisonai/environment.yaml`` supplies the
+        # baseline (image / packages / setup / env / resources). Explicit
+        # kwargs and instance config still win over the file, so callers who
+        # pass nothing and have no file keep today's defaults unchanged.
+        env_cfg = load_environment_definition()
+
+        def _default(key: str, fallback: Any) -> Any:
+            if env_cfg is not None:
+                return getattr(env_cfg, key, fallback)
+            return fallback
+
+        config = ComputeConfig(
+            image=kwargs.get("image", _default("image", "python:3.12-slim")),
+            cpu=kwargs.get("cpu", _default("cpu", 1)),
+            memory_mb=kwargs.get("memory_mb", _default("memory_mb", 512)),
+            env=kwargs.get("env", self._cfg.get("env") or _default("env", {})),
+            packages=kwargs.get(
+                "packages", self._cfg.get("packages") or _default("packages", None)
+            ),
+            setup=kwargs.get("setup", _default("setup", [])),
+            working_dir=kwargs.get(
+                "working_dir",
+                self._cfg.get("working_dir") or _default("working_dir", "/workspace"),
+            ),
+            # Forward the networking policy and provider metadata so providers
+            # that honour them (e.g. Tenki's allow_outbound / tenki_image) see
+            # the caller's request instead of always getting the defaults. Copy
+            # metadata — it's mutated below with env_cfg.metadata.
+            networking=kwargs.get(
+                "networking",
+                self._cfg.get("networking") or _default("networking", {"type": "unrestricted"}),
+            ),
+            metadata=kwargs.get("metadata", dict(self._cfg.get("metadata") or {})),
+            auto_shutdown=kwargs.get("auto_shutdown", True),
+            idle_timeout_s=kwargs.get("idle_timeout_s", 300),
+        )
+
+        # Carry capture-related metadata (refresh commands, capture opt-in) from
+        # the definition so the backend's capture path can act on it.
+        if env_cfg is not None and getattr(env_cfg, "metadata", None):
+            config.metadata.update(env_cfg.metadata)
+
+        info = await self._compute.provision(config)
+        self._compute_instance_id = info.instance_id
+        logger.info(
+            "[local_managed] compute provisioned: %s via %s",
+            info.instance_id, self._compute.provider_name,
+        )
+        return info
+
+    async def execute_in_compute(
+        self, command: str, timeout: int = 300,
+    ) -> Dict[str, Any]:
+        """Execute a command in the remote compute environment."""
+        if self._compute is None or self._compute_instance_id is None:
+            raise RuntimeError(
+                "No compute provisioned. Call provision_compute() first."
+            )
+        return await self._compute.execute(
+            self._compute_instance_id, command, timeout=timeout,
+        )
+
+    async def shutdown_compute(self) -> None:
+        """Shutdown the remote compute environment."""
+        if self._compute and self._compute_instance_id:
+            await self._compute.shutdown(self._compute_instance_id)
+            logger.info(
+                "[local_managed] compute shutdown: %s",
+                self._compute_instance_id,
+            )
+            self._compute_instance_id = None
+
+
+# ── Backward compatibility aliases ──
+# Silent aliases for the old names to maintain 100% backward compatibility
+# These refer to the same classes but communicate the intent more clearly
+
+# The new honest names
+SandboxedAgent = LocalManagedAgent
+SandboxedAgentConfig = LocalManagedConfig

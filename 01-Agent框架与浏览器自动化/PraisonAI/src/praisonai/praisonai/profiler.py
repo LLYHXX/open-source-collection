@@ -1,0 +1,1346 @@
+"""
+PraisonAI Profiler Module
+
+Standardized profiling for performance monitoring across praisonai and praisonai-agents.
+
+Features:
+- Import timing
+- Function execution timing
+- Flow tracking
+- File/module usage tracking
+- Memory usage (tracemalloc)
+- API call profiling (wall-clock time)
+- Streaming profiling (TTFT, total time)
+- Statistics (p50, p95, p99)
+- cProfile integration
+- Flamegraph generation
+- Line-level profiling
+- JSON/HTML export
+
+Usage:
+    from praisonai.profiler import Profiler, profile, profile_imports
+    
+    # Profile a function
+    @profile
+    def my_function():
+        pass
+    
+    # Profile a block
+    with Profiler.block("my_operation"):
+        do_something()
+    
+    # Profile API calls
+    with Profiler.api_call("https://api.example.com") as call:
+        response = requests.get(...)
+    
+    # Profile streaming
+    with Profiler.streaming("chat") as tracker:
+        tracker.first_token()
+        for chunk in stream:
+            tracker.chunk()
+    
+    # Profile imports
+    with profile_imports():
+        import heavy_module
+    
+    # Get report with statistics
+    Profiler.report()
+    stats = Profiler.get_statistics()
+    
+    # Export
+    Profiler.export_json()
+    Profiler.export_html()
+"""
+
+import time
+import functools
+import threading
+import sys
+import os
+import json
+import tracemalloc
+import cProfile
+import pstats
+import io
+import statistics
+from pathlib import Path
+from collections import OrderedDict
+from collections import deque
+from contextvars import ContextVar
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Callable, Any
+from contextlib import contextmanager, asynccontextmanager
+
+# Reuse the shared profiling primitives owned by the core SDK
+# (praisonaiagents.profiling) so there is a single source of truth for
+# TimingRecord / StreamingRecord / StreamingTracker. The wrapper extends them
+# below with its superset fields/behaviour instead of re-declaring them.
+from praisonaiagents.profiling import (
+    TimingRecord as _CoreTimingRecord,
+    StreamingRecord as _CoreStreamingRecord,
+    StreamingTracker as _CoreStreamingTracker,
+)
+
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+# Maximum number of records per profiler buffer
+def _get_profiler_max() -> int:
+    raw = os.environ.get("PRAISONAI_PROFILE_MAX", "10000")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 10000
+
+
+_PROFILER_MAX = _get_profiler_max()
+
+
+# tracemalloc is a process-wide singleton, so concurrent memory() scopes must
+# coordinate: reference-count how many scopes we started so only the *last*
+# one calls tracemalloc.stop(). Locking is required because is_tracing()+start()
+# is not atomic. Without this, one scope's stop() zeroes another's reading.
+_TRACEMALLOC_LOCK = threading.Lock()
+_TRACEMALLOC_STARTERS = 0
+
+
+def _tracemalloc_acquire() -> bool:
+    """Start tracing if needed and register this scope. Returns whether this
+    scope is responsible for eventually stopping tracing (i.e. we started it)."""
+    global _TRACEMALLOC_STARTERS
+    with _TRACEMALLOC_LOCK:
+        started_here = not tracemalloc.is_tracing()
+        if started_here:
+            tracemalloc.start()
+        # Only track scopes we own; if something *else* started tracing we must
+        # not stop it, so we leave the counter alone and return False.
+        if started_here or _TRACEMALLOC_STARTERS:
+            _TRACEMALLOC_STARTERS += 1
+            return True
+        return False
+
+
+def _tracemalloc_release(owned: bool) -> None:
+    """Deregister a scope; stop tracing only when the last owned scope exits."""
+    global _TRACEMALLOC_STARTERS
+    if not owned:
+        return
+    with _TRACEMALLOC_LOCK:
+        if _TRACEMALLOC_STARTERS > 0:
+            _TRACEMALLOC_STARTERS -= 1
+            if _TRACEMALLOC_STARTERS == 0:
+                tracemalloc.stop()
+
+
+# ============================================================================
+# Data Classes
+# ============================================================================
+
+@dataclass
+class TimingRecord(_CoreTimingRecord):
+    """Record of a single timing measurement.
+
+    Extends the core SDK's ``TimingRecord`` (single owner in
+    ``praisonaiagents.profiling``) with the wrapper-only ``file``/``line``
+    fields and a ``function`` default category. Defaults keep both existing
+    test suites and consumers green.
+    """
+    category: str = "function"
+    file: str = ""
+    line: int = 0
+
+
+@dataclass
+class APICallRecord:
+    """Record of an API/HTTP call."""
+    endpoint: str
+    method: str
+    duration_ms: float
+    status_code: int = 0
+    request_size: int = 0
+    response_size: int = 0
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class StreamingRecord(_CoreStreamingRecord):
+    """Record of streaming operation (LLM responses).
+
+    Extends the core SDK's ``StreamingRecord`` with the wrapper-only
+    ``total_tokens`` field; the shared TTFT schema lives in
+    ``praisonaiagents.profiling``.
+    """
+    total_tokens: int = 0
+
+
+@dataclass
+class MemoryRecord:
+    """Record of memory usage."""
+    name: str
+    current_kb: float
+    peak_kb: float
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class ImportRecord:
+    """Record of a module import."""
+    module: str
+    duration_ms: float
+    parent: str = ""
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class FlowRecord:
+    """Record of execution flow."""
+    step: int
+    name: str
+    file: str
+    line: int
+    duration_ms: float
+    timestamp: float = field(default_factory=time.time)
+
+
+# ============================================================================
+# Streaming Tracker
+# ============================================================================
+
+class StreamingTracker(_CoreStreamingTracker):
+    """
+    Track streaming operations (LLM responses).
+
+    Extends the core SDK's ``StreamingTracker`` (single owner of the TTFT
+    start/first_token/chunk/end logic) with wrapper-only ``total_tokens``
+    support and records to the wrapper's context-aware ``Profiler``.
+
+    Usage:
+        tracker = StreamingTracker("chat")
+        tracker.start()
+        tracker.first_token()  # Mark TTFT
+        for chunk in stream:
+            tracker.chunk()
+        tracker.end(total_tokens=100)
+    """
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self._total_tokens: int = 0
+        self._recorded: bool = False
+
+    def end(self, total_tokens: int = 0) -> None:
+        """End tracking and record to the wrapper Profiler.
+
+        Idempotent: safe to call explicitly inside a
+        ``with Profiler.streaming(...)`` block (whose ``finally`` also calls
+        ``end()``); only the first invocation records a StreamingRecord.
+        """
+        if self._recorded:
+            return
+        self._recorded = True
+        self._end_time = time.perf_counter()
+        self._total_tokens = total_tokens
+
+        if self._start_time is not None:
+            ttft_ms = 0.0
+            if self._first_token_time is not None:
+                ttft_ms = (self._first_token_time - self._start_time) * 1000
+
+            total_ms = (self._end_time - self._start_time) * 1000
+
+            Profiler.record_streaming(
+                name=self.name,
+                ttft_ms=ttft_ms,
+                total_ms=total_ms,
+                chunk_count=self._chunk_count,
+                total_tokens=self._total_tokens
+            )
+
+
+# ============================================================================
+# Profiler Class
+# ============================================================================
+
+class _ProfilerImpl:
+    """
+    Performance monitoring with bounded buffers.
+    
+    Per-instance profiler for isolated multi-agent use.
+    
+    Features:
+    - Function/block timing
+    - API call profiling (wall-clock)
+    - Streaming profiling (TTFT)
+    - Memory profiling
+    - Import timing
+    - Statistics (p50, p95, p99)
+    - cProfile integration
+    - Export (JSON, HTML)
+    - Bounded per-instance buffers (default 10k records each)
+    """
+    
+    def __init__(self, *, max_records: int = None):
+        """Initialize profiler with per-instance storage.
+        
+        Args:
+            max_records: Maximum records per buffer (defaults to _PROFILER_MAX)
+        """
+        max_records = max_records or _PROFILER_MAX
+        
+        # Instance-level storage with bounded deque buffers
+        self._timings = deque(maxlen=max_records)
+        self._imports = deque(maxlen=max_records) 
+        self._flow = deque(maxlen=max_records)
+        self._api_calls = deque(maxlen=max_records)
+        self._streaming = deque(maxlen=max_records)
+        self._memory = deque(maxlen=max_records)
+        self._enabled: bool = False
+        self._flow_step: int = 0
+        self._files_accessed: "OrderedDict[str, int]" = OrderedDict()
+        self._files_accessed_max = max_records   # reuse the existing bound
+        self._line_profile_data: Dict[str, Any] = {}
+        self._cprofile_stats = deque(maxlen=max_records)
+        self._lock = threading.Lock()
+    
+    def enable(self) -> None:
+        """Enable profiling."""
+        self._enabled = True
+    
+    def disable(self) -> None:
+        """Disable profiling."""
+        self._enabled = False
+    
+    def is_enabled(self) -> bool:
+        """Check if profiling is enabled."""
+        return self._enabled or os.environ.get('PRAISONAI_PROFILE', '').lower() in ('1', 'true', 'yes')
+    
+    def clear(self) -> None:
+        """Clear all profiling data."""
+        with self._lock:
+            self._timings.clear()
+            self._imports.clear()
+            self._flow.clear()
+            self._api_calls.clear()
+            self._streaming.clear()
+            self._memory.clear()
+            self._flow_step = 0
+            self._files_accessed.clear()
+            self._line_profile_data.clear()
+            self._cprofile_stats.clear()
+    
+    def record_timing(self, name: str, duration_ms: float, category: str = "function", 
+                      file: str = "", line: int = 0) -> None:
+        """Record a timing measurement."""
+        if not self.is_enabled():
+            return
+        
+        with self._lock:
+            self._timings.append(TimingRecord(
+                name=name,
+                duration_ms=duration_ms,
+                category=category,
+                file=file,
+                line=line
+            ))
+            
+            # Track file access with LRU eviction
+            if file:
+                if file in self._files_accessed:
+                    self._files_accessed[file] += 1
+                    self._files_accessed.move_to_end(file)
+                else:
+                    self._files_accessed[file] = 1
+                    if len(self._files_accessed) > self._files_accessed_max:
+                        self._files_accessed.popitem(last=False)
+    
+    def record_import(self, module: str, duration_ms: float, parent: str = "") -> None:
+        """Record an import timing."""
+        if not self.is_enabled():
+            return
+        
+        with self._lock:
+            self._imports.append(ImportRecord(
+                module=module,
+                duration_ms=duration_ms,
+                parent=parent
+            ))
+    
+    def record_flow(self, name: str, duration_ms: float, file: str = "", line: int = 0) -> None:
+        """Record a flow step."""
+        if not self.is_enabled():
+            return
+        
+        with self._lock:
+            self._flow_step += 1
+            self._flow.append(FlowRecord(
+                step=self._flow_step,
+                name=name,
+                file=file,
+                line=line,
+                duration_ms=duration_ms
+            ))
+    
+    def record_api_call(self, endpoint: str, method: str, duration_ms: float,
+                        status_code: int = 0, request_size: int = 0,
+                        response_size: int = 0) -> None:
+        """Record an API/HTTP call timing."""
+        if not self.is_enabled():
+            return
+        
+        with self._lock:
+            self._api_calls.append(APICallRecord(
+                endpoint=endpoint,
+                method=method,
+                duration_ms=duration_ms,
+                status_code=status_code,
+                request_size=request_size,
+                response_size=response_size
+            ))
+    
+    @contextmanager
+    def block(self, name: str, category: str = "block"):
+        """Context manager for profiling a block of code."""
+        start = time.time()
+        frame = sys._getframe(2) if hasattr(sys, '_getframe') else None
+        file = frame.f_code.co_filename if frame else ""
+        line = frame.f_lineno if frame else 0
+        
+        try:
+            yield
+        finally:
+            duration_ms = (time.time() - start) * 1000
+            self.record_timing(name, duration_ms, category, file, line)
+            self.record_flow(name, duration_ms, file, line)
+    
+    @contextmanager
+    def api_call(self, endpoint: str, method: str = "GET"):
+        """Context manager for profiling API calls."""
+        start = time.perf_counter()
+        call_info = {'status_code': 0, 'request_size': 0, 'response_size': 0}
+        
+        try:
+            yield call_info
+        finally:
+            duration_ms = (time.perf_counter() - start) * 1000
+            self.record_api_call(
+                endpoint=endpoint,
+                method=method,
+                duration_ms=duration_ms,
+                status_code=call_info.get('status_code', 0),
+                request_size=call_info.get('request_size', 0),
+                response_size=call_info.get('response_size', 0)
+            )
+    
+    @contextmanager
+    def streaming(self, name: str):
+        """Context manager for profiling streaming operations."""
+        tracker = StreamingTracker(name)
+        tracker.start()
+        try:
+            yield tracker
+        finally:
+            tracker.end()
+    
+    def get_timings(self, category: Optional[str] = None) -> List[TimingRecord]:
+        """Get timing records, optionally filtered by category."""
+        with self._lock:
+            if category:
+                return [t for t in self._timings if t.category == category]
+            return list(self._timings)
+    
+    def get_imports(self, min_duration_ms: float = 0) -> List[ImportRecord]:
+        """Get import records, optionally filtered by minimum duration."""
+        with self._lock:
+            if min_duration_ms > 0:
+                return [i for i in self._imports if i.duration_ms >= min_duration_ms]
+            return list(self._imports)
+    
+    def get_flow(self) -> List[FlowRecord]:
+        """Get flow records."""
+        with self._lock:
+            return list(self._flow)
+
+    def get_api_calls(self) -> List[APICallRecord]:
+        """Get API call records."""
+        with self._lock:
+            return list(self._api_calls)
+
+    @asynccontextmanager
+    async def streaming_async(self, name: str):
+        """Async context manager for profiling streaming operations."""
+        tracker = StreamingTracker(name)
+        tracker.start()
+        try:
+            yield tracker
+        finally:
+            tracker.end()
+
+    def get_streaming_records(self) -> List[StreamingRecord]:
+        """Get streaming records."""
+        with self._lock:
+            return list(self._streaming)
+
+    def get_memory_records(self) -> List[MemoryRecord]:
+        """Get memory records."""
+        with self._lock:
+            return list(self._memory)
+
+    def get_line_profile_data(self) -> Dict[str, Any]:
+        """Get line-level profiling data."""
+        with self._lock:
+            return dict(self._line_profile_data)
+
+    def set_line_profile_data(self, name: str, data: Any) -> None:
+        """Store line-level profiling output for a function."""
+        with self._lock:
+            self._line_profile_data[name] = data
+
+    def record_streaming(
+        self,
+        name: str,
+        ttft_ms: float,
+        total_ms: float,
+        chunk_count: int = 0,
+        total_tokens: int = 0,
+    ) -> None:
+        """Record a streaming operation."""
+        if not self.is_enabled():
+            return
+        with self._lock:
+            self._streaming.append(
+                StreamingRecord(
+                    name=name,
+                    ttft_ms=ttft_ms,
+                    total_ms=total_ms,
+                    chunk_count=chunk_count,
+                    total_tokens=total_tokens,
+                )
+            )
+
+    def record_memory(self, name: str, current_kb: float, peak_kb: float) -> None:
+        """Record memory usage snapshot."""
+        if not self.is_enabled():
+            return
+        with self._lock:
+            self._memory.append(
+                MemoryRecord(name=name, current_kb=current_kb, peak_kb=peak_kb)
+            )
+
+    def get_statistics(self, category: Optional[str] = None) -> Dict[str, float]:
+        """Return percentile statistics for timing records."""
+        import statistics
+
+        timings = self.get_timings(category=category)
+        values = [t.duration_ms for t in timings]
+        if not values:
+            return {
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0,
+                "mean": 0.0,
+                "std_dev": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+            }
+        values.sort()
+        n = len(values)
+
+        def _pct(p: float) -> float:
+            idx = min(n - 1, max(0, int(round((p / 100.0) * (n - 1)))))
+            return float(values[idx])
+
+        return {
+            "p50": _pct(50),
+            "p95": _pct(95),
+            "p99": _pct(99),
+            "mean": float(statistics.mean(values)),
+            "std_dev": float(statistics.pstdev(values)) if n > 1 else 0.0,
+            "min": float(values[0]),
+            "max": float(values[-1]),
+        }
+
+    def get_flamegraph_data(self) -> List[Dict[str, Any]]:
+        """Return simplified flamegraph nodes from flow records."""
+        with self._lock:
+            return [
+                {
+                    "name": record.name,
+                    "value": record.duration_ms,
+                    "file": record.file,
+                    "line": record.line,
+                }
+                for record in self._flow
+            ]
+
+    @contextmanager
+    def cprofile(self, name: str):
+        """Profile a block with cProfile when available."""
+        import cProfile
+        import pstats
+
+        profiler = cProfile.Profile()
+        profiler.enable()
+        try:
+            yield profiler
+        finally:
+            profiler.disable()
+            stats = pstats.Stats(profiler)
+            with self._lock:
+                self._cprofile_stats.append((name, stats))
+
+    def record_cprofile(self, name: str, stats_text: str) -> None:
+        """Store rendered cProfile output for decorator-based profiling."""
+        with self._lock:
+            self._cprofile_stats.append({
+                "name": name,
+                "stats": stats_text,
+                "timestamp": time.time(),
+            })
+
+    @contextmanager
+    def memory(self, name: str):
+        """Profile memory usage for a block when tracemalloc is available."""
+        owned = _tracemalloc_acquire()
+        try:
+            yield
+        finally:
+            current, peak = tracemalloc.get_traced_memory()
+            _tracemalloc_release(owned)
+            self.record_memory(
+                name=name,
+                current_kb=current / 1024.0,
+                peak_kb=peak / 1024.0,
+            )
+
+    def memory_snapshot(self) -> Dict[str, float]:
+        """Return current process memory snapshot in KB."""
+        owned = _tracemalloc_acquire()
+        try:
+            current, peak = tracemalloc.get_traced_memory()
+        finally:
+            _tracemalloc_release(owned)
+        return {"current_kb": current / 1024.0, "peak_kb": peak / 1024.0}
+
+    def export_json(self) -> str:
+        """Export profiling summary as JSON."""
+        import json
+
+        return json.dumps({"summary": self.get_summary()}, default=str)
+
+    def export_html(self) -> str:
+        """Export a minimal HTML profiling report."""
+        summary = self.get_summary()
+        rows = "".join(
+            f"<tr><td>{name}</td><td>{duration:.2f}</td></tr>"
+            for name, duration in summary.get("slowest_operations", [])
+        )
+        return (
+            "<html><body><h1>PraisonAI Profiler</h1>"
+            f"<p>Total time: {summary.get('total_time_ms', 0):.2f}ms</p>"
+            f"<table>{rows}</table></body></html>"
+        )
+
+    def export_to_file(self, filepath: str, format: str = "json") -> None:
+        """Export report to a file."""
+        content = self.export_json() if format == "json" else self.export_html()
+        Path(filepath).write_text(content, encoding="utf-8")
+
+    def export_flamegraph(self, filepath: str) -> None:
+        """Export a minimal SVG flamegraph placeholder from flow data."""
+        data = self.get_flamegraph_data()
+        svg = (
+            '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg">'
+            f'<text x="10" y="20">nodes={len(data)}</text></svg>'
+        )
+        Path(filepath).write_text(svg, encoding="utf-8")
+
+    def get_files_accessed(self) -> Dict[str, int]:
+        """Get files accessed with counts."""
+        with self._lock:
+            return self._files_accessed.copy()
+    
+    def get_summary(self) -> Dict[str, Any]:
+        """Get profiling summary."""
+        with self._lock:
+            total_time = sum(t.duration_ms for t in self._timings)
+            import_time = sum(i.duration_ms for i in self._imports)
+            
+            # Group by category
+            by_category: Dict[str, float] = {}
+            for t in self._timings:
+                by_category[t.category] = by_category.get(t.category, 0) + t.duration_ms
+            
+            # Top slowest
+            slowest = sorted(self._timings, key=lambda x: x.duration_ms, reverse=True)[:10]
+            slowest_imports = sorted(self._imports, key=lambda x: x.duration_ms, reverse=True)[:10]
+            
+            return {
+                'total_time_ms': total_time,
+                'import_time_ms': import_time,
+                'timing_count': len(self._timings),
+                'import_count': len(self._imports),
+                'flow_steps': len(self._flow),
+                'files_accessed': len(self._files_accessed),
+                'by_category': by_category,
+                'slowest_operations': [(s.name, s.duration_ms) for s in slowest],
+                'slowest_imports': [(s.module, s.duration_ms) for s in slowest_imports],
+            }
+    
+    def report(self, output: str = "console") -> str:
+        """Generate and output profiling report."""
+        summary = self.get_summary()
+        
+        lines = [
+            "=" * 60,
+            "PraisonAI Profiling Report",
+            "=" * 60,
+            "",
+            f"Total Time: {summary['total_time_ms']:.2f}ms",
+            f"Import Time: {summary['import_time_ms']:.2f}ms",
+            f"Timing Records: {summary['timing_count']}",
+            f"Import Records: {summary['import_count']}",
+            f"Flow Steps: {summary['flow_steps']}",
+            f"Files Accessed: {summary['files_accessed']}",
+            "",
+            "By Category:",
+        ]
+        
+        for cat, time_ms in summary['by_category'].items():
+            lines.append(f"  {cat}: {time_ms:.2f}ms")
+        
+        lines.extend([
+            "",
+            "Slowest Operations:",
+        ])
+        for name, time_ms in summary['slowest_operations']:
+            lines.append(f"  {name}: {time_ms:.2f}ms")
+        
+        lines.extend([
+            "",
+            "Slowest Imports:",
+        ])
+        for module, time_ms in summary['slowest_imports']:
+            lines.append(f"  {module}: {time_ms:.2f}ms")
+        
+        lines.append("=" * 60)
+        
+        report_text = "\n".join(lines)
+        
+        if output == "console":
+            print(report_text)
+        
+        return report_text
+
+# ============================================================================
+# Streaming Tracker
+# ============================================================================
+
+# (Note: StreamingTracker class is already defined above)
+
+# ============================================================================
+
+
+# ============================================================================
+# Context-Aware Default Profiler
+# ============================================================================
+
+# Context variable for current profiler (enables per-agent isolation)
+_current_profiler: ContextVar[Optional[_ProfilerImpl]] = ContextVar("current_profiler", default=None)
+
+# Module-level default for CLI and backward compatibility
+_default_profiler = None
+_default_lock = threading.Lock()
+
+def get_profiler() -> _ProfilerImpl:
+    """Get the current profiler (context-aware or default)."""
+    # Check context variable first (for per-agent use)
+    profiler = _current_profiler.get()
+    if profiler is not None:
+        return profiler
+    
+    # Fall back to module-level default
+    global _default_profiler
+    if _default_profiler is None:
+        with _default_lock:
+            if _default_profiler is None:
+                _default_profiler = _ProfilerImpl()
+    return _default_profiler
+
+def set_profiler(profiler: _ProfilerImpl) -> None:
+    """Set the current profiler in context."""
+    _current_profiler.set(profiler)
+
+class ProfilerCompat:
+    """
+    Compatibility wrapper for old classmethod-based Profiler usage.
+    
+    Delegates all calls to the current profiler instance via get_profiler().
+    This maintains backward compatibility while enabling per-agent isolation.
+    """
+    _instance: Optional["ProfilerCompat"] = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    @staticmethod
+    def enable() -> None:
+        """Enable profiling."""
+        get_profiler().enable()
+    
+    @staticmethod
+    def disable() -> None:
+        """Disable profiling."""
+        get_profiler().disable()
+    
+    @staticmethod
+    def is_enabled() -> bool:
+        """Check if profiling is enabled."""
+        return get_profiler().is_enabled()
+    
+    @staticmethod
+    def clear() -> None:
+        """Clear all profiling data."""
+        get_profiler().clear()
+    
+    @staticmethod
+    def record_timing(name: str, duration_ms: float, category: str = "function", 
+                      file: str = "", line: int = 0) -> None:
+        """Record a timing measurement."""
+        get_profiler().record_timing(name, duration_ms, category, file, line)
+    
+    @staticmethod
+    def record_import(module: str, duration_ms: float, parent: str = "") -> None:
+        """Record an import timing."""
+        get_profiler().record_import(module, duration_ms, parent)
+    
+    @staticmethod
+    def record_flow(name: str, duration_ms: float, file: str = "", line: int = 0) -> None:
+        """Record a flow step."""
+        get_profiler().record_flow(name, duration_ms, file, line)
+    
+    @staticmethod
+    def block(name: str, category: str = "block"):
+        """Context manager for profiling a block of code."""
+        return get_profiler().block(name, category)
+    
+    @staticmethod
+    def get_timings(category: Optional[str] = None):
+        """Get timing records."""
+        return get_profiler().get_timings(category)
+    
+    @staticmethod
+    def get_imports(min_duration_ms: float = 0):
+        """Get import records."""
+        return get_profiler().get_imports(min_duration_ms)
+    
+    @staticmethod
+    def get_flow():
+        """Get flow records."""
+        return get_profiler().get_flow()
+    
+    @staticmethod
+    def get_files_accessed():
+        """Get files accessed."""
+        return get_profiler().get_files_accessed()
+    
+    @staticmethod
+    def get_summary():
+        """Get profiling summary."""
+        return get_profiler().get_summary()
+    
+    @staticmethod
+    def report(output: str = "console") -> str:
+        """Generate and output profiling report."""
+        return get_profiler().report(output)
+    
+    @staticmethod
+    def record_api_call(endpoint: str, method: str, duration_ms: float,
+                        status_code: int = 0, request_size: int = 0,
+                        response_size: int = 0) -> None:
+        """Record an API/HTTP call timing."""
+        get_profiler().record_api_call(endpoint, method, duration_ms, 
+                                       status_code, request_size, response_size)
+    
+    @staticmethod
+    def streaming(name: str):
+        """Context manager for profiling streaming operations."""
+        return get_profiler().streaming(name)
+
+    @staticmethod
+    def streaming_async(name: str):
+        """Async context manager for profiling streaming operations."""
+        return get_profiler().streaming_async(name)
+    
+    @staticmethod
+    def api_call(endpoint: str, method: str = "GET"):
+        """Context manager for profiling API calls."""
+        return get_profiler().api_call(endpoint, method)
+
+    @staticmethod
+    def get_api_calls():
+        """Get API call records."""
+        return get_profiler().get_api_calls()
+
+    @staticmethod
+    def get_streaming_records():
+        """Get streaming records."""
+        return get_profiler().get_streaming_records()
+
+    @staticmethod
+    def get_memory_records():
+        """Get memory records."""
+        return get_profiler().get_memory_records()
+
+    @staticmethod
+    def get_statistics(category: Optional[str] = None):
+        """Get timing statistics."""
+        return get_profiler().get_statistics(category=category)
+
+    @staticmethod
+    def get_flamegraph_data():
+        """Get flamegraph-compatible data."""
+        return get_profiler().get_flamegraph_data()
+
+    @staticmethod
+    def get_line_profile_data():
+        """Get line-level profiling data."""
+        return get_profiler().get_line_profile_data()
+
+    @staticmethod
+    def set_line_profile_data(name: str, data: Any) -> None:
+        """Store line-level profiling output."""
+        get_profiler().set_line_profile_data(name, data)
+
+    @staticmethod
+    def record_streaming(
+        name: str,
+        ttft_ms: float,
+        total_ms: float,
+        chunk_count: int = 0,
+        total_tokens: int = 0,
+    ) -> None:
+        """Record a streaming operation."""
+        get_profiler().record_streaming(
+            name, ttft_ms, total_ms, chunk_count=chunk_count, total_tokens=total_tokens
+        )
+
+    @staticmethod
+    def record_memory(name: str, current_kb: float, peak_kb: float) -> None:
+        """Record memory usage."""
+        get_profiler().record_memory(name, current_kb, peak_kb)
+
+    @staticmethod
+    def cprofile(name: str):
+        """Context manager for cProfile."""
+        return get_profiler().cprofile(name)
+
+    @staticmethod
+    def record_cprofile(name: str, stats_text: str) -> None:
+        """Store detailed cProfile output on the active profiler."""
+        get_profiler().record_cprofile(name, stats_text)
+
+    @staticmethod
+    def memory(name: str):
+        """Context manager for memory profiling."""
+        return get_profiler().memory(name)
+
+    @staticmethod
+    def memory_snapshot():
+        """Return current memory snapshot."""
+        return get_profiler().memory_snapshot()
+
+    @staticmethod
+    def export_json() -> str:
+        return get_profiler().export_json()
+
+    @staticmethod
+    def export_html() -> str:
+        return get_profiler().export_html()
+
+    @staticmethod
+    def export_to_file(filepath: str, format: str = "json") -> None:
+        get_profiler().export_to_file(filepath, format=format)
+
+    @staticmethod
+    def export_flamegraph(filepath: str) -> None:
+        get_profiler().export_flamegraph(filepath)
+
+# Create compatibility instance that acts like old singleton
+# This allows existing code to work: Profiler.enable(), etc.
+# But it actually delegates to the context-aware profiler
+ProfilerSingleton = ProfilerCompat()
+
+# Replace the class-based Profiler with the compatibility wrapper
+# This ensures all existing code continues to work
+Profiler = ProfilerCompat
+
+
+# ============================================================================
+# Decorators
+# ============================================================================
+
+def profile(func: Optional[Callable] = None, *, category: str = "function"):
+    """
+    Decorator to profile a function.
+    
+    Usage:
+        @profile
+        def my_function():
+            pass
+        
+        @profile(category="api")
+        def api_call():
+            pass
+    """
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not Profiler.is_enabled():
+                return fn(*args, **kwargs)
+            
+            start = time.time()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                duration_ms = (time.time() - start) * 1000
+                file = fn.__code__.co_filename if hasattr(fn, '__code__') else ""
+                line = fn.__code__.co_firstlineno if hasattr(fn, '__code__') else 0
+                Profiler.record_timing(fn.__name__, duration_ms, category, file, line)
+                Profiler.record_flow(fn.__name__, duration_ms, file, line)
+        
+        return wrapper
+    
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
+def profile_async(func: Optional[Callable] = None, *, category: str = "async"):
+    """
+    Decorator to profile an async function.
+    """
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            if not Profiler.is_enabled():
+                return await fn(*args, **kwargs)
+            
+            start = time.time()
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                duration_ms = (time.time() - start) * 1000
+                file = fn.__code__.co_filename if hasattr(fn, '__code__') else ""
+                line = fn.__code__.co_firstlineno if hasattr(fn, '__code__') else 0
+                Profiler.record_timing(fn.__name__, duration_ms, category, file, line)
+                Profiler.record_flow(fn.__name__, duration_ms, file, line)
+        
+        return wrapper
+    
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
+# ============================================================================
+# Import Profiling
+# ============================================================================
+
+_IMPORT_HOOK_LOCK = threading.Lock()
+_IMPORT_HOOK_CONTEXTS: List["ImportProfiler"] = []
+_IMPORT_HOOK_ORIGINAL = None
+
+
+def _profiled_import(name, globals=None, locals=None, fromlist=(), level=0):
+    """Single process-wide dispatcher shared by active import profilers."""
+    with _IMPORT_HOOK_LOCK:
+        original = _IMPORT_HOOK_ORIGINAL
+        profilers = tuple(_IMPORT_HOOK_CONTEXTS)
+
+    if original is None:  # Defensive: the dispatcher is never installed alone.
+        raise RuntimeError("Import profiler dispatcher has no original import hook")
+
+    start = time.time()
+    try:
+        return original(name, globals, locals, fromlist, level)
+    finally:
+        duration_ms = (time.time() - start) * 1000
+        if duration_ms > 1:
+            records = [
+                ImportRecord(module=name, duration_ms=duration_ms) for _ in profilers
+            ]
+            with _IMPORT_HOOK_LOCK:
+                for profiler, record in zip(profilers, records):
+                    profiler._imports.append(record)
+            if profilers:
+                Profiler.record_import(name, duration_ms)
+
+class ImportProfiler:
+    """
+    Context manager to profile imports.
+    
+    Usage:
+        with profile_imports() as profiler:
+            import heavy_module
+        
+        print(profiler.get_imports())
+    """
+    
+    def __init__(self):
+        self._imports: List[ImportRecord] = []
+        self._active = False
+    
+    def __enter__(self):
+        import builtins
+        global _IMPORT_HOOK_ORIGINAL
+
+        with _IMPORT_HOOK_LOCK:
+            if self._active:
+                return self
+            if not _IMPORT_HOOK_CONTEXTS:
+                _IMPORT_HOOK_ORIGINAL = builtins.__import__
+                builtins.__import__ = _profiled_import
+            _IMPORT_HOOK_CONTEXTS.append(self)
+            self._active = True
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        import builtins
+        global _IMPORT_HOOK_ORIGINAL
+
+        with _IMPORT_HOOK_LOCK:
+            if self in _IMPORT_HOOK_CONTEXTS:
+                _IMPORT_HOOK_CONTEXTS.remove(self)
+            self._active = False
+            if not _IMPORT_HOOK_CONTEXTS:
+                if builtins.__import__ is _profiled_import and _IMPORT_HOOK_ORIGINAL is not None:
+                    builtins.__import__ = _IMPORT_HOOK_ORIGINAL
+                _IMPORT_HOOK_ORIGINAL = None
+        return False
+    
+    def get_imports(self, min_duration_ms: float = 0) -> List[ImportRecord]:
+        """Get recorded imports."""
+        if min_duration_ms > 0:
+            return [i for i in self._imports if i.duration_ms >= min_duration_ms]
+        return self._imports.copy()
+    
+    def get_slowest(self, n: int = 10) -> List[ImportRecord]:
+        """Get N slowest imports."""
+        return sorted(self._imports, key=lambda x: x.duration_ms, reverse=True)[:n]
+
+
+def profile_imports():
+    """Create an import profiler context manager."""
+    return ImportProfiler()
+
+
+# ============================================================================
+# API Profiling Decorators
+# ============================================================================
+
+def profile_api(func: Optional[Callable] = None, *, endpoint: str = ""):
+    """
+    Decorator to profile a function as an API call.
+    
+    Usage:
+        @profile_api(endpoint="openai/chat")
+        def call_openai():
+            pass
+    """
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not Profiler.is_enabled():
+                return fn(*args, **kwargs)
+            
+            ep = endpoint or fn.__name__
+            start = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                duration_ms = (time.perf_counter() - start) * 1000
+                Profiler.record_api_call(ep, "CALL", duration_ms)
+        
+        return wrapper
+    
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
+def profile_api_async(func: Optional[Callable] = None, *, endpoint: str = ""):
+    """
+    Decorator to profile an async function as an API call.
+    """
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            if not Profiler.is_enabled():
+                return await fn(*args, **kwargs)
+            
+            ep = endpoint or fn.__name__
+            start = time.perf_counter()
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                duration_ms = (time.perf_counter() - start) * 1000
+                Profiler.record_api_call(ep, "CALL", duration_ms)
+        
+        return wrapper
+    
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
+# ============================================================================
+# cProfile Decorator
+# ============================================================================
+
+def profile_detailed(func: Optional[Callable] = None):
+    """
+    Decorator for detailed cProfile profiling.
+    
+    Usage:
+        @profile_detailed
+        def heavy_computation():
+            pass
+    """
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not Profiler.is_enabled():
+                return fn(*args, **kwargs)
+            
+            pr = cProfile.Profile()
+            pr.enable()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                pr.disable()
+                s = io.StringIO()
+                ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+                ps.print_stats(20)
+                Profiler.record_cprofile(fn.__name__, s.getvalue())
+        
+        return wrapper
+    
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
+# ============================================================================
+# Line-Level Profiling Decorator
+# ============================================================================
+
+def profile_lines(func: Optional[Callable] = None):
+    """
+    Decorator for line-level profiling.
+    
+    Note: Requires line_profiler package for full functionality.
+    Falls back to basic timing if not available.
+    
+    Usage:
+        @profile_lines
+        def my_function():
+            pass
+    """
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not Profiler.is_enabled():
+                return fn(*args, **kwargs)
+            
+            # Try to use line_profiler if available
+            try:
+                from line_profiler import LineProfiler
+                lp = LineProfiler()
+                lp.add_function(fn)
+                lp.enable()
+                try:
+                    result = fn(*args, **kwargs)
+                finally:
+                    lp.disable()
+                    s = io.StringIO()
+                    lp.print_stats(stream=s)
+                    Profiler.set_line_profile_data(fn.__name__, s.getvalue())
+                return result
+            except ImportError:
+                # Fallback to basic timing
+                start = time.perf_counter()
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    duration_ms = (time.perf_counter() - start) * 1000
+                    Profiler.set_line_profile_data(fn.__name__, {
+                        'note': 'line_profiler not installed',
+                        'total_ms': duration_ms
+                    })
+        
+        return wrapper
+    
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
+# ============================================================================
+# Quick Profiling Functions
+# ============================================================================
+
+def time_import(module_name: str) -> float:
+    """
+    Time how long it takes to import a module.
+    
+    Returns duration in milliseconds.
+    """
+    start = time.time()
+    __import__(module_name)
+    return (time.time() - start) * 1000
+
+
+def check_module_available(module_name: str) -> bool:
+    """
+    Check if a module is available without importing it.
+    
+    Uses importlib.util.find_spec which is fast.
+    """
+    import importlib.util
+    return importlib.util.find_spec(module_name) is not None
+
+
+
+# ============================================================================
+# Exports
+# ============================================================================
+
+__all__ = [
+    # Core
+    'Profiler',
+    'StreamingTracker',
+    # Decorators
+    'profile',
+    'profile_async',
+    'profile_api',
+    'profile_api_async',
+    'profile_detailed',
+    'profile_lines',
+    # Import profiling
+    'profile_imports',
+    'ImportProfiler',
+    # Utilities
+    'time_import',
+    'check_module_available',
+    # Data classes
+    'TimingRecord',
+    'ImportRecord',
+    'FlowRecord',
+    'APICallRecord',
+    'StreamingRecord',
+    'MemoryRecord',
+]

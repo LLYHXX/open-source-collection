@@ -1,0 +1,31 @@
+meta {
+  name: annotion- create
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{host}}/tracer/project-version/add_annotations/
+  body: json
+  auth: bearer
+}
+
+params:query {
+  ~search_name: eval_project_final_testing_version_2
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "Testing Multiple Annotaters - 1",
+    "labels": [
+      "b8b79c16-38e9-4d28-aef4-c7748e9db2b2",
+      "a6fadb18-a5f6-4c5e-89c0-9653b08fdbfa",
+      "eedb66f2-1c1c-4d94-b6f0-cf3d000d17f4"
+    ],
+    "project_version_id": "0f6ce387-9bfe-44ab-8eee-d72a9a6e6c56"
+  }
+}

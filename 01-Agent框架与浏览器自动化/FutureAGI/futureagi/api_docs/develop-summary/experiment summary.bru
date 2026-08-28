@@ -1,0 +1,15 @@
+meta {
+  name: experiment summary
+  type: http
+  seq: 3
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/68b54870-d00b-4005-a35d-77992f494117/stats/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

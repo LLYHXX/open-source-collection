@@ -1,0 +1,33 @@
+# Use the official Python 3.11 image from the Docker Hub as the base image
+FROM python:3.11-slim
+
+
+# Set environment variables to prevent Python from writing pyc files to disc
+# and to ensure output is sent straight to the terminal (useful for logs)
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Set the working directory in the container
+WORKDIR /app/embedding
+
+# Install build dependencies for packages like hdbscan
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    python3-dev \
+    libffi-dev \
+    libpq-dev \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN pip install uv
+
+# Copy pyproject.toml
+COPY pyproject.toml ./
+
+# Install dependencies using uv from pyproject.toml with increased timeout
+ENV UV_HTTP_TIMEOUT=120
+RUN uv pip install --system .

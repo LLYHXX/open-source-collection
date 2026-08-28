@@ -1,0 +1,53 @@
+eval_id: 129
+name: hit_rate
+description: 'Hit Rate: Percentage of queries where at least one relevant chunk is retrieved.'
+criteria: Hit Rate shows how often retrieval surfaces any relevant context.
+eval_tags:
+- RAG
+- Retrieval Systems
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - hypothesis
+  - reference
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    hypothesis: Retrieved chunks in ranked order (array/JSON string).
+    reference: Ground-truth relevant chunks (array/JSON string).
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        import ast
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return val
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                try:
+                    return ast.literal_eval(val)
+                except (ValueError, SyntaxError):
+                    pass
+                return [val]
+            return list(val)
+        reference = _parse(kwargs.get("reference", expected))
+        hypothesis = _parse(kwargs.get("hypothesis", output))
+        if not reference:
+            return {"score": 0.0, "reason": "Hit rate requires at least one ground-truth item"}
+        ground_truth_set = set(str(x) for x in reference)
+        retrieved_set = set(str(x) for x in hypothesis)
+        hit = 1.0 if ground_truth_set.intersection(retrieved_set) else 0.0
+        if hit > 0:
+            return {"score": 1.0, "reason": "Hit rate: 1.0 (at least one relevant item was retrieved)"}
+        return {"score": 0.0, "reason": "Hit rate: 0.0 (no relevant items found in retrieved list)"}

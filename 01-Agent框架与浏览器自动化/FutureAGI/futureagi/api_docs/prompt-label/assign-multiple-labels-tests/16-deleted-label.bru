@@ -1,0 +1,48 @@
+meta {
+  name: 16 - Deleted Label (Error)
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v1_id}}",
+    "label_ids": ["{{deleted_label_id}}"]
+  }
+}
+
+docs {
+  # Deleted Label - Error Case
+
+  ## Test Scenario
+  Attempt to assign a label that has been soft-deleted.
+
+  ## Prerequisites
+  - Label exists but has deleted=True
+
+  ## Expected Behavior
+  - Status: 400 Bad Request
+  - Deleted labels should not be assignable
+
+  ## Expected Response
+  ```json
+  {
+    "status": false,
+    "result": "Error assigning multiple labels: Some labels not found or are not allowed to be assigned"
+  }
+  ```
+
+  ## Test Coverage
+  - Soft delete respect
+  - Deleted entity handling
+}

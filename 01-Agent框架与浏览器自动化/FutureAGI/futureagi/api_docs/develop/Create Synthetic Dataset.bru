@@ -1,0 +1,51 @@
+meta {
+  name: Create Synthetic Dataset
+  type: http
+  seq: 33
+}
+
+post {
+  url: {{host}}/model-hub/develops/create-synthetic-dataset/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "num_rows": 10,
+    "dataset": {
+      "name": "synthetic-creation",
+      "description": "This is a test description",
+      "objective": "Test Objective",
+      "patterns": "Test Patterns for Dataset"
+    },
+    "columns": [{
+      "name": "Column1",
+      "data_type": "text",
+      "description": "Sample Text for dataset",
+      "property": {
+        "values": "dynamic",
+        "min_length": "10 words",
+        "max_length": "50 words"
+        }
+      },
+      {
+      "name": "Column2",
+      "data_type": "text",
+      "description": "Test Values A B C or D",
+      "property": {
+        "values": ["A", "B", "C", "D"]
+      }
+     }]
+  }
+}
+
+body:multipart-form {
+  model_type: GenerativeLLM
+  file: @file()
+  new_dataset_name: ds_0321
+}

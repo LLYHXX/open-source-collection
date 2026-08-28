@@ -1,0 +1,30 @@
+meta {
+  name: get project version ids
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{host}}/tracer/project-version/get_project_version_ids/?project_id=f7b8dff3-170c-41bd-a2f6-cb76983cc3ef&search_name=eval_project_final_testing_version_2
+  body: none
+  auth: bearer
+}
+
+params:query {
+  project_id: f7b8dff3-170c-41bd-a2f6-cb76983cc3ef
+  search_name: eval_project_final_testing_version_2
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_version_id": "fea271ba-9e1f-4dc2-ad2b-ccb298f0a901",
+    "visibility": {
+      "input": false,
+      "output": false
+    }
+  }
+}

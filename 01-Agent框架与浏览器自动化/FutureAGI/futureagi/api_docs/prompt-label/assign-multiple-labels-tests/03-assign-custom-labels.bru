@@ -1,0 +1,54 @@
+meta {
+  name: 03 - Assign Custom Labels (Success)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v2_id}}",
+    "label_ids": [
+      "{{custom_label_1_id}}",
+      "{{custom_label_2_id}}"
+    ]
+  }
+}
+
+docs {
+  # Assign Custom Labels - Success Case
+
+  ## Test Scenario
+  Assigns custom organization labels (not system labels) to a version.
+
+  ## Prerequisites
+  - Custom labels exist in the organization
+  - `version_v1` has these custom labels
+  - `version_v2` exists and is the target
+
+  ## Expected Behavior
+  - Status: 200 OK
+  - Custom labels are added to version_v2
+  - Custom labels are removed from version_v1
+
+  ## Expected Response
+  ```json
+  {
+    "status": true,
+    "result": "Labels assigned successfully"
+  }
+  ```
+
+  ## Test Coverage
+  - Custom (non-system) label assignment
+  - Organization-specific labels
+}

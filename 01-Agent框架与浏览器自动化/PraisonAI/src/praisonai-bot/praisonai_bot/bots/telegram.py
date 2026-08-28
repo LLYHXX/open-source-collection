@@ -1,0 +1,2499 @@
+"""
+Telegram Bot implementation for PraisonAI.
+
+Provides a full Telegram bot runtime with webhook/polling support,
+command handling, and agent integration.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import tempfile
+import time
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING, Union
+
+if TYPE_CHECKING:
+    from praisonaiagents import Agent
+    from praisonaiagents.bots.presentation import (
+        MessagePresentation,
+        PresentationLimits,
+    )
+
+from praisonai_bot.bots._protocol_mixin import ChatCommandMixin, MessageHookMixin
+from praisonaiagents.bots import (
+    BotConfig,
+    BotMessage,
+    BotUser,
+    BotChannel,
+    MessageType,
+    PlatformCapabilities,
+)
+
+from .media import split_media_from_output, is_audio_file
+from ._failure import failure_reply_text
+from ._commands import (
+    format_status, 
+    format_help, 
+    handle_stop_command,
+    handle_model_command,
+    handle_usage_command,
+    handle_compress_command,
+    handle_recap_command,
+    handle_queue_command,
+    handle_learn_command,
+    handle_undo_command,
+    handle_sessions_command,
+    handle_resume_command,
+    handle_reasoning_command,
+    handle_tasks_command,
+    get_last_user_message,
+    build_command_access_policy,
+    get_command_registry,
+    build_custom_command_resolver,
+)
+from . import _automations
+from ._session import BotSessionManager
+from ._debounce import InboundDebouncer
+from ._album import (
+    AlbumCoalescer,
+    resolve_album_window_ms,
+    resolve_album_max_items,
+)
+from ._ack import AckReactor
+from ._unknown_user import UnknownUserHandler, BotContext
+from ._pairing_ui import PairingUIBuilder, PairingCallbackHandler
+from ._streaming import StreamingConfig, StreamingMode, DraftStreamer
+from ._rate_limit import RateLimiter
+from ._resilience import deliver_with_retry, BackoffPolicy, TELEGRAM_BACKOFF
+from ._dlq import OutboundDLQ
+from ..gateway.unicode_utils import safe_log_message
+from ..gateway.pairing import PairingStore
+
+logger = logging.getLogger(__name__)
+
+
+class TelegramBot(ChatCommandMixin, MessageHookMixin):
+    """Telegram bot runtime for PraisonAI agents.
+    
+    Connects an agent to Telegram, handling messages, commands,
+    and providing full bot functionality.
+    
+    Example:
+        from praisonai_bot.bots import TelegramBot
+        from praisonaiagents import Agent
+        
+        agent = Agent(name="assistant")
+        bot = TelegramBot(token="YOUR_BOT_TOKEN", agent=agent)
+        
+        @bot.on_command("help")
+        async def help_command(message):
+            await bot.send_message(message.channel.channel_id, "Help text...")
+        
+        await bot.start()
+    
+    Requires: pip install python-telegram-bot
+    """
+
+    #: Telegram manages its own inbound reconnect loop internally
+    #: (ConnectionMonitor-based polling in ``start``), so the single-``Bot``
+    #: supervision wrapper opts out here to avoid double reconnect layers.
+    supervised_inbound: bool = False
+
+    def __init__(
+        self,
+        token: str,
+        agent: Optional["Agent"] = None,
+        config: Optional[BotConfig] = None,
+        **kwargs,
+    ):
+        """Initialize the Telegram bot.
+        
+        Args:
+            token: Telegram bot token from @BotFather
+            agent: Optional agent to handle messages
+            config: Optional bot configuration
+            **kwargs: Additional arguments for forward compatibility
+        """
+        # B9: Store extra kwargs for forward compatibility
+        self._extra_kwargs = kwargs
+        self._token = token
+        self._agent = agent
+        self.config = config or BotConfig(token=token)
+        
+        # Initialize allow_silence from config
+        self._allow_silence = getattr(self.config, 'allow_silence', False)
+        
+        # Initialize command access policy
+        self._init_command_access_policy()
+        
+        # Initialize streaming config based on BotConfig
+        if self.config.streaming:
+            self._streaming_config = StreamingConfig(
+                mode=StreamingMode.DRAFT,
+                min_interval=self.config.stream_edit_interval_ms / 1000.0,  # Convert ms to seconds
+                min_delta=50,  # Reasonable default for character delta
+            )
+        else:
+            self._streaming_config = None
+        self._rate_limiter = RateLimiter.for_platform("telegram")
+        
+        self._is_running = False
+        self._bot_user: Optional[BotUser] = None
+        self._application = None
+        
+        self._message_handlers: List[Callable] = []
+        self._command_handlers: Dict[str, Callable] = {}
+        self._started_at: Optional[float] = None
+        
+        # Create run control if busy mode is configured
+        run_control = None
+        if hasattr(self.config, 'busy_mode') and self.config.busy_mode != "queue":
+            try:
+                from ._run_control import SessionRunControl
+                run_control = SessionRunControl(
+                    busy_mode=self.config.busy_mode,
+                    busy_ack_template=getattr(self.config, 'busy_ack', "⏳ {action} — will be considered next")
+                )
+            except ImportError:
+                logger.warning("Run control not available, falling back to basic session management")
+        
+        # Use helper to build session manager
+        from ._session import build_session_manager
+        self._session: BotSessionManager = build_session_manager(
+            self.config, 
+            platform="telegram",
+            run_control=run_control
+        )
+        self._debouncer: InboundDebouncer = InboundDebouncer(
+            debounce_ms=self.config.debounce_ms,
+        )
+        # Coalesce inbound media albums (Issue #3298): a burst of updates
+        # sharing one ``media_group_id`` is merged into a single multimodal
+        # turn. Disabled by default (window 0) so behaviour is unchanged
+        # unless the operator opts in via config metadata.
+        self._album: AlbumCoalescer = AlbumCoalescer(
+            window_ms=resolve_album_window_ms(self.config),
+            max_items=resolve_album_max_items(self.config),
+            on_orphan=self._remove_inbound_media,
+        )
+        self._ack: AckReactor = AckReactor(
+            ack_emoji=self.config.ack_emoji,
+            done_emoji=self.config.done_emoji,
+            scope=getattr(self.config, "ack_scope", "group-mentions"),
+        )
+        
+        # Pairing system
+        self._pairing_store = PairingStore()
+        self._pairing_callback_handler = PairingCallbackHandler(self._pairing_store)
+
+        # Durable tool-approval-over-chat backend (wired via
+        # register_approval_backend); None until a PresentationApprovalBackend
+        # is attached so /approve taps resolve against the durable store.
+        self._approval_backend = None
+        
+        # Create adapter-specific registry and register handlers.
+        # A single in-memory callback-payload store is shared between the render
+        # side (render_presentation) and the inbound registry so a reply/select
+        # value too long for Telegram's 64-byte inline-callback cap is persisted
+        # under a short ``@<ref>`` on send and resolved back to the exact value
+        # on click, instead of being replaced by an unrecoverable hash.
+        from praisonaiagents.bots import create_registry, InMemoryCallbackPayloadStore
+        self._callback_store = InMemoryCallbackPayloadStore()
+        self._interactive_registry = create_registry(store=self._callback_store)
+        self._register_interactive_handlers()
+        self._bot_context: Optional[BotContext] = None
+        
+        # Audio capabilities (set by BotCapabilities)
+        self._stt_enabled: bool = False
+        self._auto_tts: bool = False
+        
+        # Resilience
+        self._monitor = None  # Lazy: ConnectionMonitor
+        self._stop_event: Optional[asyncio.Event] = None
+        
+        # Outbound resilience configuration
+        outbound_resilience = getattr(self.config, 'outbound_resilience', None)
+        if outbound_resilience and getattr(outbound_resilience, 'enabled', True):
+            # Use configured values
+            self._outbound_backoff: BackoffPolicy = BackoffPolicy(
+                initial_ms=getattr(outbound_resilience, 'initial_ms', 1000),
+                max_ms=getattr(outbound_resilience, 'max_ms', 10000),
+                factor=getattr(outbound_resilience, 'factor', 1.5),
+                max_attempts=getattr(outbound_resilience, 'max_attempts', 3),
+                jitter=getattr(outbound_resilience, 'jitter', 0.25)
+            )
+            # Initialize outbound DLQ if path is configured
+            outbound_dlq_path = getattr(outbound_resilience, 'dlq_path', None)
+            self._outbound_dlq: Optional[OutboundDLQ] = None
+            if outbound_dlq_path:
+                try:
+                    self._outbound_dlq = OutboundDLQ(path=outbound_dlq_path)
+                    logger.info(f"Outbound DLQ initialized at {outbound_dlq_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize outbound DLQ: {e}")
+        else:
+            # Default resilience settings
+            self._outbound_backoff = BackoffPolicy(initial_ms=1000, max_ms=10000, factor=1.5, max_attempts=3)
+            self._outbound_dlq = None
+    
+    
+    def configure_streaming(self, config: StreamingConfig) -> None:
+        """Configure streaming reply mode.
+        
+        Args:
+            config: Streaming configuration. Set mode=StreamingMode.OFF to disable.
+        """
+        self._streaming_config = config
+        logger.debug("TelegramBot: streaming configured, mode=%s", config.mode)
+    
+    def enable_stt(self, enabled: bool = True) -> None:
+        """Enable STT for voice message transcription."""
+        self._stt_enabled = enabled
+    
+    def enable_auto_tts(self, enabled: bool = True) -> None:
+        """Enable auto-TTS for responses."""
+        self._auto_tts = enabled
+    
+    def _init_command_access_policy(self):
+        """Initialize command access policy from config.
+
+        Uses the shared :func:`build_command_access_policy` builder so every
+        adapter (Telegram, Slack, Discord) parses ``admin_users`` /
+        ``user_allowed_commands`` identically and can't silently diverge.
+        """
+        self._command_policy = build_command_access_policy(self.config)
+
+        # Get the global command registry
+        self._command_registry = get_command_registry()
+
+        # File-based custom slash commands bridged into chat (Issue #3729).
+        # Consumed by the shared ChatCommandMixin for /help + dispatch; safe
+        # defaults (shell off, project-scope only) unless the ``commands``
+        # config block opts in.
+        self._custom_command_resolver = build_custom_command_resolver(self.config)
+    
+    def _register_interactive_handlers(self):
+        """Register handlers for interactive callbacks."""
+        registry = self._interactive_registry
+        
+        # Register handler for command callbacks
+        async def handle_command_callback(ctx):
+            """Handle command callbacks from buttons."""
+            payload = ctx.platform_data.get("decoded_payload", {})
+            command = payload.get("command", "")
+            
+            # Get the Telegram query object
+            query = ctx.platform_data.get("query")
+            if not query:
+                return None
+            
+            # Parse the command (remove leading slash if present)
+            if command.startswith("/"):
+                command = command[1:]
+            
+            # Split command and args
+            parts = command.split(maxsplit=1)
+            cmd_name = parts[0] if parts else ""
+            cmd_args = parts[1] if len(parts) > 1 else ""
+
+            # Durable tool-approval-over-chat: a `cmd:/approve <id> <decision>`
+            # button tap resolves against the durable, actor-authorised backend
+            # (see register_approval_backend). Actor authorisation is enforced by
+            # the backend's allowed_actors set, not the generic command policy.
+            if cmd_name == "approve" and self._approval_backend is not None:
+                handled = await self._handle_approve_callback(ctx, cmd_args, query)
+                return handled
+            
+            # Check permissions
+            if not self._command_policy.can_run(ctx.user_id, cmd_name):
+                await query.edit_message_text(
+                    text=f"{query.message.text}\n\n⛔ You are not permitted to run /{cmd_name}",
+                    parse_mode="Markdown"
+                )
+                return "Permission denied"
+            
+            # Check if command exists in handlers
+            if cmd_name in self._command_handlers:
+                handler = self._command_handlers[cmd_name]
+                try:
+                    # Create a minimal message object for the handler
+                    from praisonaiagents.bots import BotMessage, BotUser, BotChannel
+                    message = BotMessage(
+                        message_id=ctx.message_id or "",
+                        content=f"/{command}",
+                        sender=BotUser(user_id=ctx.user_id),
+                        channel=BotChannel(channel_id=ctx.chat_id or ""),
+                        metadata={
+                            "command": cmd_name,
+                            "command_args": cmd_args
+                        }
+                    )
+                    
+                    if asyncio.iscoroutinefunction(handler):
+                        await handler(message)
+                    else:
+                        handler(message)
+                    
+                    # Update the message to show command was executed
+                    await query.edit_message_text(
+                        text=f"{query.message.text}\n\n✅ Command executed: /{cmd_name}",
+                        parse_mode="Markdown"
+                    )
+                    return f"Command {cmd_name} executed"
+                except Exception as e:
+                    logger.error(f"Command handler error: {e}")
+                    await query.edit_message_text(
+                        text=f"{query.message.text}\n\n❌ Error executing command",
+                        parse_mode="Markdown"
+                    )
+                    return f"Error: {e}"
+            
+            logger.debug(f"Unknown command from button: {cmd_name}")
+            return None
+        
+        # Register the command handler
+        registry.register("command", handle_command_callback)
+        
+        # Register handler for pairing callbacks using the new system
+        async def handle_pairing_callback(ctx):
+            """Handle pairing callbacks through the new registry."""
+            # The pairing handler already exists, we just wrap it
+            result = await self._pairing_callback_handler.handle_approval_callback(
+                callback_data=ctx.callback_data,
+                owner_user_id=ctx.user_id,
+                bot_adapter=self
+            )
+            
+            # Update the message with result
+            query = ctx.platform_data.get("query")
+            if query and query.message:
+                await query.edit_message_text(
+                    text=f"{query.message.text}\n\n{result.message}",
+                    parse_mode="Markdown"
+                )
+            
+            return f"Pairing {result.action}"
+        
+        # Register the pairing handler
+        registry.register("pair", handle_pairing_callback)
+
+        # Register handler for automation-suggestion Accept/Dismiss taps.
+        # Callback shape: ``sug:accept:<id>`` / ``sug:dismiss:<id>`` — the
+        # registry strips the ``sug`` namespace and hands us ``accept:<id>``.
+        async def handle_suggestion_callback(ctx):
+            """Resolve a suggestion Accept/Dismiss inline-button tap."""
+            payload = ctx.platform_data.get("decoded_payload", {})
+            value = payload.get("value", "")
+            action, sug_id = _automations.parse_callback(value)
+            query = ctx.platform_data.get("query")
+            if action is None or not sug_id:
+                return None
+
+            if not self._command_policy.can_run(ctx.user_id, "automations"):
+                if query:
+                    await query.edit_message_text(
+                        text=f"{query.message.text}\n\n⛔ You are not permitted to manage automations"
+                    )
+                return "Permission denied"
+
+            if action == "accept":
+                result = _automations.accept_suggestion(sug_id)
+            else:
+                result = _automations.dismiss_suggestion(sug_id)
+
+            if query and query.message:
+                await query.edit_message_text(text=f"{query.message.text}\n\n{result}")
+            return f"Suggestion {action}"
+
+        registry.register("sug", handle_suggestion_callback)
+
+    async def _handle_approve_callback(self, ctx, cmd_args: str, query) -> Optional[str]:
+        """Resolve a `/approve <approval_id> <decision>` button tap.
+
+        Routes the tap into the durable, actor-authorised
+        :class:`PresentationApprovalBackend` so the decision binds to a specific
+        ``approval_id`` (not a message id), is single-use, actor-authorised, and
+        survives a restart. Returns a non-empty string when handled so the
+        interactive registry treats it as resolved.
+        """
+        approve_parts = cmd_args.split()
+        if len(approve_parts) < 2:
+            logger.warning("Malformed /approve callback args: %r", cmd_args)
+            return None
+
+        approval_id, decision = approve_parts[0], approve_parts[1]
+        # Fail closed on an unexpected decision rather than letting the backend
+        # silently treat it as a deny: the durable store maps only
+        # allow/deny/always, so anything else is a malformed payload.
+        if decision not in ("allow", "deny", "always"):
+            logger.warning(
+                "Unknown approval decision %r in /approve callback", decision
+            )
+            return None
+        try:
+            handled = await self._approval_backend.handle_callback(
+                approval_id, decision, actor=ctx.user_id
+            )
+        except Exception as e:  # noqa: BLE001 — never crash the callback loop
+            logger.error("Approval callback error: %s", e)
+            handled = False
+
+        try:
+            if handled:
+                verdict = "✅ Approved" if decision in ("allow", "always") else "❌ Denied"
+                await query.edit_message_text(
+                    text=f"{query.message.text}\n\n{verdict}",
+                    parse_mode="Markdown",
+                )
+            else:
+                await query.edit_message_text(
+                    text=(
+                        f"{query.message.text}\n\n"
+                        "⚠️ Approval could not be processed "
+                        "(expired, already resolved, or not authorised)."
+                    ),
+                    parse_mode="Markdown",
+                )
+        except Exception as e:  # noqa: BLE001 — message edit is best-effort
+            logger.debug("Failed to update approval message: %s", e)
+
+        return f"Approval {approval_id} {'resolved' if handled else 'unresolved'}"
+
+    def register_approval_backend(self, backend, target: Optional[str] = None) -> None:
+        """Wire a durable :class:`PresentationApprovalBackend` to this channel.
+
+        Connects the otherwise-orphaned durable approval stack to the live
+        callback path:
+
+        * gives the backend a ``channel_send_func`` (:meth:`render_presentation`)
+          and default ``target`` so it can render Allow/Deny buttons onto the
+          chat; and
+        * enables the ``/approve`` interactive route so inbound taps resolve
+          against the backend's SQLite-persisted, actor-authorised store.
+
+        Call :meth:`start` (or :meth:`rehydrate_approvals`) afterwards to restore
+        any approvals left pending across a restart.
+
+        Args:
+            backend: A ``PresentationApprovalBackend`` instance.
+            target: Default chat/channel id used to render approval buttons when
+                the request does not carry its own ``target``.
+        """
+        # Keep the sender and target coupled so the backend never renders
+        # through one transport while addressing another. Only claim a backend
+        # that has no sender yet (a bare durable backend); if it already carries
+        # its own channel_send_func it belongs to a different transport and we
+        # leave both attributes untouched rather than redirecting only _target.
+        if getattr(backend, "_channel_send_func", None) is None:
+            try:
+                backend._channel_send_func = self.render_presentation
+                if target is not None:
+                    backend._target = str(target)
+            except Exception:  # noqa: BLE001
+                pass
+        elif target is not None:
+            # Backend already has its own sender: only override the default
+            # target when it has none, so we never split the transport.
+            try:
+                if getattr(backend, "_target", None) is None:
+                    backend._target = str(target)
+            except Exception:  # noqa: BLE001
+                pass
+        self._approval_backend = backend
+
+    async def rehydrate_approvals(self) -> int:
+        """Restore approvals left pending across a restart, if a backend is wired.
+
+        Returns the number of pending approvals re-hydrated (``0`` when no
+        durable backend is registered or none were outstanding).
+        """
+        if self._approval_backend is None:
+            return 0
+        try:
+            return await self._approval_backend.rehydrate()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to rehydrate pending approvals: %s", e)
+            return 0
+
+    def _autowire_agent_approval_backend(self) -> None:
+        """Auto-register a durable approval backend found on the agent.
+
+        A ``PresentationApprovalBackend`` selected via ``--approval presentation``
+        is attached to the agent (``Agent(approval=...)``), not the channel, so
+        without this it would never receive a channel sender or inbound tap.
+        Detect it here (duck-typed on ``handle_callback`` + ``rehydrate``) and
+        wire it to this channel so the durable path becomes reachable.
+        """
+        if self._approval_backend is not None:
+            return
+        agent = getattr(self, "_agent", None)
+        if agent is None:
+            return
+        backend = getattr(agent, "_approval_backend", None)
+        if backend is None:
+            return
+        if not (
+            hasattr(backend, "handle_callback") and hasattr(backend, "rehydrate")
+        ):
+            return
+        target = getattr(backend, "_target", None) or getattr(
+            self.config, "target", None
+        )
+        try:
+            self.register_approval_backend(backend, target=target)
+            logger.debug("Auto-wired durable approval backend to Telegram channel")
+        except Exception as e:  # noqa: BLE001 — best-effort auto-wiring
+            logger.debug("Failed to auto-wire approval backend: %s", e)
+    
+    @property
+    def is_running(self) -> bool:
+        return self._is_running
+    
+    @property
+    def platform(self) -> str:
+        return "telegram"
+    
+    @property
+    def bot_user(self) -> Optional[BotUser]:
+        return self._bot_user
+    
+    @property
+    def capabilities(self) -> Dict[str, Any]:
+        """Telegram supports all features."""
+        return {
+            "live_edit": True,
+            "reactions": True,
+            "typing": True,
+            "text_limit": 4096,
+            "edit_rate_limit": 1.0,
+            "reaction_rate_limit": 0.5,
+        }
+    
+    @property
+    def platform_capabilities(self) -> PlatformCapabilities:
+        """Return Telegram platform capabilities."""
+        return self.default_capabilities()
+    
+    @classmethod
+    def default_capabilities(cls) -> PlatformCapabilities:
+        """Default Telegram platform capabilities."""
+        return PlatformCapabilities(
+            max_message_length=4096,
+            length_unit="utf16",  # Telegram uses UTF-16 for length calculation
+            supports_edit=True,  # Telegram supports message editing
+            supports_typing=True,
+            markdown_dialect="telegram_markdown_v2",
+            needs_rate_limit=True,
+            edit_interval_ms=1000,  # Telegram rate limits edits
+            max_files_per_message=1,
+            max_file_size_mb=50,  # Telegram supports up to 50MB for bots
+            supported_file_types=["image/*", "audio/*", "video/*", "application/*"],
+        )
+    
+    async def start(self) -> None:
+        """Start the Telegram bot."""
+        if self._is_running:
+            logger.warning("Bot already running")
+            return
+        
+        try:
+            from telegram import Update, InlineKeyboardMarkup
+            from telegram.ext import (
+                Application,
+                CommandHandler,
+                MessageHandler,
+                CallbackQueryHandler,
+                filters,
+                ContextTypes,
+            )
+        except ImportError:
+            raise ImportError(
+                "TelegramBot requires python-telegram-bot. "
+                "Install with: pip install python-telegram-bot"
+            )
+        
+        self._application = Application.builder().token(self._token).build()
+        self._started_at = time.time()
+        
+        # Initialize bot context for pairing system
+        self._bot_context = BotContext(
+            config=self.config,
+            pairing_store=self._pairing_store,
+            adapter=self
+        )
+        
+        bot_info = await self._application.bot.get_me()
+        self._bot_user = BotUser(
+            user_id=str(bot_info.id),
+            username=bot_info.username,
+            display_name=bot_info.first_name,
+            is_bot=True,
+        )
+        
+        async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            # Use shared security pipeline for consistent enforcement
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return  # Message was dropped by security checks
+            
+            for handler in self._message_handlers:
+                try:
+                    if asyncio.iscoroutinefunction(handler):
+                        await handler(message)
+                    else:
+                        handler(message)
+                except Exception as e:
+                    logger.error(f"Message handler error: {e}")
+            
+            if self._agent and not message.is_command:
+                # Ack reaction (scope-gated: quiet on ambient group chatter)
+                ack_ctx = None
+                if self._ack.enabled and self._ack.should_ack_message(message):
+                    async def _tg_react(emoji, **kw):
+                        try:
+                            from telegram import ReactionTypeEmoji
+                            await self._application.bot.set_message_reaction(
+                                chat_id=update.message.chat_id,
+                                message_id=update.message.message_id,
+                                reaction=[ReactionTypeEmoji(emoji=emoji)],
+                            )
+                        except Exception:
+                            pass  # Reactions may not be supported in all chats
+                    async def _tg_unreact(emoji, **kw):
+                        try:
+                            await self._application.bot.set_message_reaction(
+                                chat_id=update.message.chat_id,
+                                message_id=update.message.message_id,
+                                reaction=[],
+                            )
+                        except Exception:
+                            pass
+                    ack_ctx = await self._ack.ack(react_fn=_tg_react)
+                
+                user_id = str(update.message.from_user.id) if update.message.from_user else "unknown"
+                user_name = (
+                    update.message.from_user.username or update.message.from_user.first_name or ""
+                ) if update.message.from_user else ""
+                # Download/validate any inbound photo or document so the agent's
+                # vision capability can act on it (Issue #2350).
+                attachments = await self._cache_inbound_telegram_media(update)
+
+                # Coalesce media albums (Issue #3298): several photos/files sent
+                # together arrive as N updates sharing one ``media_group_id``.
+                # Buffer their parts and merge into one multimodal turn so the
+                # agent reasons over the whole set. Sibling updates return None
+                # here (their media folds into the owning update's turn).
+                media_group_id = getattr(update.message, "media_group_id", None)
+                if media_group_id:
+                    merged = await self._album.collect(
+                        str(media_group_id), attachments, message.content
+                    )
+                    if merged is None:
+                        # This update's media was buffered into a sibling's
+                        # turn; nothing more to do (and nothing to clean up —
+                        # the owning turn owns those temp files).
+                        return
+                    attachments = merged.attachments
+                    if merged.caption:
+                        message.content = merged.caption
+
+                try:
+                    message_text = await self._debouncer.debounce(user_id, message.content)
+                    
+                    # Check if streaming is enabled and configured
+                    streaming_enabled = (
+                        self._streaming_config and 
+                        self._streaming_config.mode != StreamingMode.OFF
+                    )
+                    
+                    if streaming_enabled:
+                        # Streaming path
+                        streamer = DraftStreamer(
+                            adapter=self,
+                            channel_id=str(update.message.chat_id),
+                            config=self._streaming_config,
+                            rate_limiter=self._rate_limiter,
+                            platform="telegram",
+                        )
+                        
+                        # Start streaming (send placeholder)
+                        placeholder_message_id = await streamer.start()
+                        
+                        try:
+                            # Get response with streaming callback - include message_id and account for durability
+                            response = await self._session.chat(
+                                self._agent, user_id, message_text,
+                                chat_id=str(update.message.chat_id) if update.message.chat_id else "",
+                                user_name=user_name,
+                                message_id=str(update.message.message_id),
+                                account=getattr(self.config, "account", "default"),
+                                stream_callback=streamer.on_event,
+                                attachments=attachments or None,
+                            )
+
+                            # Consume the agent-attached portable presentation
+                            # now (the session-contract clearing step for this
+                            # turn) so a later cancel/return doesn't leave stale
+                            # buttons for the next turn. Rendered after the text.
+                            presentation = self._session.pop_last_presentation(user_id)
+
+                            # Apply message hooks to final response (same as non-streaming path)
+                            send_result = self.fire_message_sending(
+                                str(update.message.chat_id), str(response),
+                                reply_to=str(update.message.message_id),
+                            )
+                            if send_result["cancel"]:
+                                # Cancel: delete the placeholder message
+                                try:
+                                    await self.delete_message(
+                                        str(update.message.chat_id), placeholder_message_id
+                                    )
+                                except Exception:
+                                    pass  # Ignore deletion errors
+                                return
+                            
+                            # Handle media content before finalizing (extract MEDIA: markers)
+                            from .media import split_media_from_output
+                            parsed = split_media_from_output(send_result["content"])
+                            text_content = parsed["text"]
+                            media_urls = parsed.get("media_urls", [])
+                            
+                            # Finalize with text content (after hook processing and media extraction)
+                            await streamer.finalize(text_content if text_content else send_result["content"])
+
+                            # Issue #3623: the streamed reply is delivered as text
+                            # by the streamer, so the outbound voice-reply policy
+                            # must be applied here too (the non-streaming path does
+                            # this inside _send_response_with_media). Otherwise
+                            # ``voice.mode: always``/``match_inbound`` would be a
+                            # no-op whenever streaming is enabled. Best-effort.
+                            await self._maybe_send_voice_reply(
+                                update.message.chat_id,
+                                text_content if text_content else send_result["content"],
+                                inbound_was_voice=bool(
+                                    update.message.voice or update.message.audio
+                                ),
+                            )
+                            
+                            # Send media files separately (same as non-streaming path)
+                            if media_urls:
+                                for media_path in media_urls:
+                                    if os.path.exists(media_path):
+                                        try:
+                                            from .media import is_audio_file
+                                            if is_audio_file(media_path):
+                                                with open(media_path, "rb") as f:
+                                                    if parsed.get("audio_as_voice", False):
+                                                        await self._application.bot.send_voice(
+                                                            chat_id=update.message.chat_id, voice=f
+                                                        )
+                                                    else:
+                                                        await self._application.bot.send_audio(
+                                                            chat_id=update.message.chat_id, audio=f
+                                                        )
+                                        except Exception as e:
+                                            logger.error(f"Failed to send media: {e}")
+                            
+                            # Render the agent-attached portable presentation
+                            # (buttons/menus) natively after the streamed text.
+                            # ``presentation`` was popped right after chat() above.
+                            try:
+                                if presentation is not None:
+                                    await self.render_presentation(
+                                        str(update.message.chat_id), presentation
+                                    )
+                            except Exception as e:  # pragma: no cover — defensive
+                                logger.debug("presentation render skipped: %s", e)
+
+                            # Fire sent hooks
+                            self.fire_message_sent(
+                                str(update.message.chat_id), send_result["content"],
+                            )
+                            
+                        except Exception as agent_error:
+                            # Agent failed: clean up placeholder message
+                            try:
+                                await self.delete_message(
+                                    str(update.message.chat_id), placeholder_message_id
+                                )
+                            except Exception:
+                                pass  # Ignore deletion errors
+                            # Re-raise the original error to be handled below
+                            raise agent_error
+                        
+                    else:
+                        # Legacy non-streaming path
+                        # Show typing indicator with renewal during long operation
+                        if self.config.typing_indicator:
+                            from ._typing_indicator import with_typing_renewal
+                            
+                            async def _typing_action():
+                                await update.message.chat.send_action("typing")
+                            
+                            response = await with_typing_renewal(
+                                typing_func=_typing_action,
+                                operation_coro=self._session.chat(
+                                    self._agent, user_id, message_text,
+                                    chat_id=str(update.message.chat_id) if update.message.chat_id else "",
+                                    user_name=user_name,
+                                    message_id=str(update.message.message_id),
+                                    account=getattr(self.config, "account", "default"),
+                                    attachments=attachments or None,
+                                )
+                            )
+                        else:
+                            response = await self._session.chat(
+                                self._agent, user_id, message_text,
+                                chat_id=str(update.message.chat_id) if update.message.chat_id else "",
+                                user_name=user_name,
+                                message_id=str(update.message.message_id),
+                                account=getattr(self.config, "account", "default"),
+                                attachments=attachments or None,
+                            )
+
+                        # Consume the agent-attached portable presentation now
+                        # (session-contract clearing step) so a cancel/return
+                        # below doesn't leave stale buttons for the next turn.
+                        presentation = self._session.pop_last_presentation(user_id)
+
+                        # Normal send flow for non-streaming
+                        send_result = self.fire_message_sending(
+                            str(update.message.chat_id), str(response),
+                            reply_to=str(update.message.message_id),
+                        )
+                        if send_result["cancel"]:
+                            return
+                        await self._send_response_with_media(
+                            update.message.chat_id,
+                            send_result["content"],
+                            reply_to=update.message.message_id,
+                            inbound_was_voice=bool(
+                                update.message.voice or update.message.audio
+                            ),
+                        )
+                        # If the agent attached a portable presentation
+                        # (buttons/menus), render it natively as an inline
+                        # keyboard. The text reply above already serves as the
+                        # plain-text fallback, so a render failure degrades
+                        # gracefully rather than dropping the reply.
+                        # ``presentation`` was popped right after chat() above.
+                        try:
+                            if presentation is not None:
+                                await self.render_presentation(
+                                    str(update.message.chat_id), presentation
+                                )
+                        except Exception as e:  # pragma: no cover — defensive
+                            logger.debug("presentation render skipped: %s", e)
+                        self.fire_message_sent(
+                            str(update.message.chat_id), send_result["content"],
+                        )
+                    # Done reaction
+                    if ack_ctx:
+                        await self._ack.done(ack_ctx, react_fn=_tg_react, unreact_fn=_tg_unreact)
+                except Exception as e:
+                    logger.error(f"Agent error: {safe_log_message(e)}")
+                    await update.message.reply_text(failure_reply_text(e))
+                finally:
+                    # Inbound media is cached to temp files for this turn only;
+                    # remove them so media-heavy bots don't fill the temp volume.
+                    self._remove_inbound_media(attachments)
+        
+        async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            """Handle voice messages."""
+            await handle_message(update, context)
+        
+        async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message or not update.message.text:
+                return
+
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+
+            command = message.command
+            user_id = message.sender.user_id if message.sender else "unknown"
+            
+            if command:
+                # Check command permissions
+                if not self._command_policy.can_run(user_id, command):
+                    await update.message.reply_text(f"⛔ You are not permitted to run /{command}")
+                    return
+                
+                # Handle custom registered commands
+                if command in self._command_handlers:
+                    handler = self._command_handlers[command]
+                    try:
+                        if asyncio.iscoroutinefunction(handler):
+                            await handler(message)
+                        else:
+                            handler(message)
+                    except Exception as e:
+                        logger.error(f"Command handler error: {e}")
+                    return
+
+                # File-based custom slash commands (Issue #3729): resolve
+                # ``.praisonai/commands/{command}.md`` and submit the rendered
+                # body as a normal chat turn. On a miss (no such custom command)
+                # the raw command text is dispatched to the agent so an unknown
+                # or misspelled slash command is never a silent no-op — matching
+                # the Slack reference adapter's fall-through (Issue #4318).
+                text = update.message.text or ""
+                parts = text.split(maxsplit=1)
+                arguments = parts[1] if len(parts) > 1 else ""
+                rendered = self.render_custom_command(command, arguments)
+                prompt = rendered if rendered is not None else text
+                if prompt is not None:
+                    user_name = (
+                        update.message.from_user.username
+                        or update.message.from_user.first_name
+                        or ""
+                    ) if update.message.from_user else ""
+                    try:
+                        response = await self._session.chat(
+                            self._agent, user_id, prompt,
+                            chat_id=str(update.message.chat_id) if update.message.chat_id else "",
+                            user_name=user_name,
+                            message_id=str(update.message.message_id),
+                            account=getattr(self.config, "account", "default"),
+                        )
+                        # Route through the same delivery pipeline as a normal
+                        # chat turn so presentation cleanup, outbound hooks and
+                        # media/long-response handling all apply (not a bare
+                        # reply_text). Pop any agent-attached presentation first.
+                        presentation = self._session.pop_last_presentation(user_id)
+                        send_result = self.fire_message_sending(
+                            str(update.message.chat_id), str(response),
+                            reply_to=str(update.message.message_id),
+                        )
+                        if send_result["cancel"]:
+                            return
+                        await self._send_response_with_media(
+                            update.message.chat_id,
+                            send_result["content"],
+                            reply_to=update.message.message_id,
+                        )
+                        try:
+                            if presentation is not None:
+                                await self.render_presentation(
+                                    str(update.message.chat_id), presentation
+                                )
+                        except Exception as e:  # pragma: no cover — defensive
+                            logger.debug("presentation render skipped: %s", e)
+                        self.fire_message_sent(
+                            str(update.message.chat_id), send_result["content"],
+                        )
+                    except Exception as e:  # noqa: BLE001 - surface a friendly message
+                        logger.warning(
+                            "custom command /%s failed: %s",
+                            command,
+                            safe_log_message(e),
+                        )
+                        await update.message.reply_text(failure_reply_text(e))
+        
+        async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            # Check command permissions
+            if not self._command_policy.can_run(user_id, "status"):
+                await update.message.reply_text("⛔ You are not permitted to run /status")
+                return
+            await update.message.reply_text(self._format_status())
+        
+        async def handle_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            # Check command permissions
+            if not self._command_policy.can_run(user_id, "new"):
+                await update.message.reply_text("⛔ You are not permitted to run /new")
+                return
+            # Pass the chat route so a /new in a group/channel clears the
+            # shared per_chat session (Issue #2376); a no-op for per_user.
+            self._session.reset(
+                user_id,
+                account=getattr(self.config, "account", "default"),
+                chat_id=str(update.message.chat_id) if update.message.chat_id else "",
+            )
+            await update.message.reply_text("Session reset. Starting fresh conversation.")
+        
+        async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            # Help is always allowed (in ALWAYS_ALLOWED set)
+            # Use instance method to include custom commands
+            help_text = self._format_help_with_permissions(user_id)
+            await update.message.reply_text(help_text)
+        
+        async def handle_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            # Check command permissions
+            if not self._command_policy.can_run(user_id, "stop"):
+                await update.message.reply_text("⛔ You are not permitted to run /stop")
+                return
+            response = handle_stop_command(self._session, user_id)
+            await update.message.reply_text(response)
+        
+        async def handle_whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            username = message.sender.username if message.sender else None
+            # Whoami is always allowed (in ALWAYS_ALLOWED set)
+            response = self._command_registry.format_whoami(user_id, username, self._command_policy)
+            await update.message.reply_text(response)
+        
+        async def handle_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message or not update.message.text:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            # Check command permissions
+            if not self._command_policy.can_run(user_id, "model"):
+                await update.message.reply_text("⛔ You are not permitted to run /model")
+                return
+            # Extract model name from command
+            parts = update.message.text.split(maxsplit=1)
+            model_name = parts[1] if len(parts) > 1 else None
+            response = handle_model_command(self._session, user_id, model_name, self._agent)
+            await update.message.reply_text(response)
+        
+        async def handle_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            # Check command permissions
+            if not self._command_policy.can_run(user_id, "usage"):
+                await update.message.reply_text("⛔ You are not permitted to run /usage")
+                return
+            response = handle_usage_command(self._session, user_id, self._agent)
+            await update.message.reply_text(response)
+        
+        async def handle_compress(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            # Check command permissions
+            if not self._command_policy.can_run(user_id, "compress"):
+                await update.message.reply_text("⛔ You are not permitted to run /compress")
+                return
+            response = handle_compress_command(self._session, user_id, self._agent)
+            await update.message.reply_text(response)
+
+        async def handle_recap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "recap"):
+                await update.message.reply_text("⛔ You are not permitted to run /recap")
+                return
+            response = handle_recap_command(self._session, user_id, self._agent)
+            await update.message.reply_text(response)
+
+        async def handle_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message or not update.message.text:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            # Check command permissions
+            if not self._command_policy.can_run(user_id, "queue"):
+                await update.message.reply_text("⛔ You are not permitted to run /queue")
+                return
+            # Extract message text from command
+            parts = update.message.text.split(maxsplit=1)
+            message_text = parts[1] if len(parts) > 1 else None
+            response = handle_queue_command(self._session, user_id, message_text)
+            await update.message.reply_text(response)
+
+        async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message or not update.message.text:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "learn"):
+                await update.message.reply_text("⛔ You are not permitted to run /learn")
+                return
+            parts = update.message.text.split(maxsplit=1)
+            request = parts[1] if len(parts) > 1 else None
+            response = handle_learn_command(self._agent, request)
+            await update.message.reply_text(response)
+
+        async def handle_undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "undo"):
+                await update.message.reply_text("⛔ You are not permitted to run /undo")
+                return
+            response = handle_undo_command(self._agent)
+            await update.message.reply_text(response)
+
+        async def handle_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "sessions"):
+                await update.message.reply_text("⛔ You are not permitted to run /sessions")
+                return
+            response = handle_sessions_command(self._session, user_id)
+            await update.message.reply_text(response)
+
+        async def handle_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message or not update.message.text:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "resume"):
+                await update.message.reply_text("⛔ You are not permitted to run /resume")
+                return
+            parts = update.message.text.split(maxsplit=1)
+            session_id = parts[1] if len(parts) > 1 else None
+            response = handle_resume_command(self._session, user_id, session_id)
+            await update.message.reply_text(response)
+
+        async def handle_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "retry"):
+                await update.message.reply_text("⛔ You are not permitted to run /retry")
+                return
+            last_user_msg = get_last_user_message(self._session, user_id)
+            if not last_user_msg:
+                await update.message.reply_text(
+                    "ℹ️ Nothing to retry — no previous message found."
+                )
+                return
+            user_name = (
+                update.message.from_user.username or update.message.from_user.first_name or ""
+            ) if update.message.from_user else ""
+            await update.message.reply_text("🔁 Retrying your last message…")
+            try:
+                response = await self._session.chat(
+                    self._agent, user_id, last_user_msg,
+                    chat_id=str(update.message.chat_id) if update.message.chat_id else "",
+                    user_name=user_name,
+                    message_id=str(update.message.message_id),
+                    account=getattr(self.config, "account", "default"),
+                )
+                await update.message.reply_text(response)
+            except Exception as e:  # noqa: BLE001 - surface a friendly message
+                logger.warning("retry failed: %s", e)
+                await update.message.reply_text(failure_reply_text(e))
+
+        async def handle_reasoning(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "reasoning"):
+                await update.message.reply_text("⛔ You are not permitted to run /reasoning")
+                return
+            response = handle_reasoning_command(self._session, user_id, self._agent)
+            await update.message.reply_text(response)
+
+        async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "tasks"):
+                await update.message.reply_text("⛔ You are not permitted to run /tasks")
+                return
+            parts = (update.message.text or "").split(maxsplit=1)
+            args = parts[1] if len(parts) > 1 else None
+            response = handle_tasks_command(user_id, args)
+            await update.message.reply_text(response)
+
+        async def handle_automations(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "automations"):
+                await update.message.reply_text("⛔ You are not permitted to run /automations")
+                return
+            items = _automations.list_suggestions()
+            await update.message.reply_text(
+                _automations.format_automations_header(len(items))
+            )
+            # One message per suggestion so each carries its own Accept/Dismiss
+            # inline keyboard (reusing the existing callback-query path).
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            for item in items:
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(label, callback_data=cb)
+                    for label, cb in item["buttons"]
+                ]])
+                await update.message.reply_text(item["text"], reply_markup=keyboard)
+
+        async def handle_blueprint(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message or not update.message.text:
+                return
+            message = await process_inbound_telegram_message(update, self)
+            if not message:
+                return
+            user_id = message.sender.user_id if message.sender else "unknown"
+            if not self._command_policy.can_run(user_id, "blueprint"):
+                await update.message.reply_text("⛔ You are not permitted to run /blueprint")
+                return
+            parts = update.message.text.split(maxsplit=2)
+            # /blueprint <name> [slot=value ...]
+            name = parts[1] if len(parts) > 1 else ""
+            args = parts[2] if len(parts) > 2 else ""
+            response = _automations.create_from_blueprint(name, args)
+            await update.message.reply_text(response)
+
+        self._application.add_handler(CommandHandler("status", handle_status))
+        self._application.add_handler(CommandHandler("new", handle_new))
+        self._application.add_handler(CommandHandler("help", handle_help))
+        self._application.add_handler(CommandHandler("stop", handle_stop))
+        self._application.add_handler(CommandHandler("whoami", handle_whoami))
+        self._application.add_handler(CommandHandler("model", handle_model))
+        self._application.add_handler(CommandHandler("usage", handle_usage))
+        self._application.add_handler(CommandHandler("compress", handle_compress))
+        self._application.add_handler(CommandHandler("recap", handle_recap))
+        self._application.add_handler(CommandHandler("queue", handle_queue))
+        self._application.add_handler(CommandHandler("learn", handle_learn))
+        self._application.add_handler(CommandHandler("undo", handle_undo))
+        self._application.add_handler(CommandHandler("sessions", handle_sessions))
+        self._application.add_handler(CommandHandler("resume", handle_resume))
+        self._application.add_handler(CommandHandler("retry", handle_retry))
+        self._application.add_handler(CommandHandler("reasoning", handle_reasoning))
+        self._application.add_handler(CommandHandler("tasks", handle_tasks))
+        # ``automations`` / ``blueprint`` are generic names, so let an existing
+        # custom @bot.on_command handler of the same name win instead of being
+        # shadowed by these built-ins (the custom loop below registers it).
+        if "automations" not in self._command_handlers:
+            self._application.add_handler(CommandHandler("automations", handle_automations))
+        if "blueprint" not in self._command_handlers:
+            self._application.add_handler(CommandHandler("blueprint", handle_blueprint))
+        
+        for command in self._command_handlers:
+            self._application.add_handler(CommandHandler(command, handle_command))
+
+        # Catch-all for any other slash command (Issue #3729): file-based and
+        # entry-point custom commands are discovered at runtime by
+        # ``_custom_command_resolver`` and are NOT registered as explicit
+        # ``CommandHandler`` instances above. Because handlers in a group are
+        # evaluated in registration order and the first match wins, this
+        # ``MessageHandler(filters.COMMAND, …)`` only ever sees slash commands
+        # that none of the built-in/registered handlers above claimed, routing
+        # them into ``handle_command`` (which renders the custom command and
+        # falls through to normal chat on a miss).
+        self._application.add_handler(
+            MessageHandler(filters.COMMAND, handle_command)
+        )
+
+        self._application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+        )
+        
+        # Add callback query handler for all interactive buttons
+        async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query or not query.data:
+                return
+            
+            # Answer the callback query to stop loading spinner
+            await query.answer()
+            
+            # Create interactive context
+            from praisonaiagents.bots import InteractiveContext
+            ctx = InteractiveContext(
+                callback_data=query.data,
+                user_id=str(query.from_user.id),
+                message_id=str(query.message.message_id) if query.message else None,
+                chat_id=str(query.message.chat_id) if query.message else None,
+                bot_adapter=self,
+                platform_data={
+                    "update": update,
+                    "context": context,
+                    "query": query
+                }
+            )
+            
+            # Try to dispatch through the interactive registry
+            handled = await self._interactive_registry.dispatch(ctx)
+            
+            if not handled:
+                # Fallback: handle legacy pairing callbacks
+                if query.data.startswith("pair:"):
+                    result = await self._pairing_callback_handler.handle_approval_callback(
+                        callback_data=query.data,
+                        owner_user_id=str(query.from_user.id),
+                        bot_adapter=self
+                    )
+                    
+                    # Update the message with result
+                    await query.edit_message_text(
+                        text=f"{query.message.text}\n\n{result.message}",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    logger.debug(f"Unhandled callback: {query.data}")
+        
+        self._application.add_handler(CallbackQueryHandler(handle_callback_query))
+        
+        # Add voice/audio handlers
+        self._application.add_handler(
+            MessageHandler(filters.VOICE | filters.AUDIO, handle_voice)
+        )
+
+        # Add photo/document handlers (Issue #2350): route inbound media to the
+        # agent's vision capability via the same message pipeline.
+        self._application.add_handler(
+            MessageHandler(
+                (filters.PHOTO | filters.VIDEO | filters.Document.ALL) & ~filters.COMMAND,
+                handle_message,
+            )
+        )
+        
+        self._is_running = True
+        logger.info(f"Telegram bot started: @{self._bot_user.username}")
+
+        # Auto-wire a durable PresentationApprovalBackend configured on the agent
+        # (e.g. via `--approval presentation`) so its Allow/Deny buttons render
+        # on this chat and `/approve` taps resolve durably — even when the caller
+        # did not call register_approval_backend explicitly.
+        self._autowire_agent_approval_backend()
+
+        # Restore any tool approvals left pending across a restart so a late
+        # Allow/Deny tap still resolves against the durable store.
+        try:
+            restored = await self.rehydrate_approvals()
+            if restored:
+                logger.info("Rehydrated %d pending tool approval(s)", restored)
+        except Exception as e:  # noqa: BLE001 — never block startup
+            logger.debug(f"Approval rehydration skipped (non-fatal): {e}")
+
+        # Project the shared command registry into Telegram's native command
+        # menu so typing "/" surfaces the available commands with descriptions.
+        try:
+            await self.publish_command_menu(self.build_command_menu_entries())
+        except Exception as e:  # noqa: BLE001 — menu is best-effort, never fatal
+            logger.debug(f"Failed to publish Telegram command menu (non-fatal): {e}")
+
+        # Initialize connection monitor for resilience
+        from ._resilience import ConnectionMonitor, TELEGRAM_BACKOFF, is_recoverable_error, is_conflict_error, sleep_with_abort
+        self._monitor = ConnectionMonitor(platform="telegram", policy=TELEGRAM_BACKOFF)
+        
+        if self.config.is_webhook_mode:
+            await self._application.run_webhook(
+                listen="0.0.0.0",
+                port=8443,
+                url_path=self.config.webhook_path,
+                webhook_url=f"{self.config.webhook_url}{self.config.webhook_path}",
+            )
+        else:
+            # Resilient polling loop with exponential backoff
+            self._stop_event = asyncio.Event()
+            while not self._stop_event.is_set():
+                try:
+                    await self._application.initialize()
+                    await self._application.start()
+                    await self._application.updater.start_polling(
+                        poll_interval=self.config.polling_interval,
+                    )
+                    self._monitor.record_success()
+                    
+                    # Block until stop() is called
+                    await self._stop_event.wait()
+                    
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    if is_conflict_error(e):
+                        logger.error(
+                            "[telegram] Another bot instance is running with this token. "
+                            "Stop the other instance first."
+                        )
+                        break  # Don't retry conflicts
+                    
+                    if is_recoverable_error(e, "telegram") and self._monitor.should_retry():
+                        delay = self._monitor.record_error(e)
+                        completed = await sleep_with_abort(delay, self._stop_event)
+                        if not completed:
+                            break  # Abort signaled during sleep
+                        # Attempt reconnect
+                        try:
+                            await self._application.updater.stop()
+                            await self._application.stop()
+                            await self._application.shutdown()
+                        except Exception:
+                            pass
+                        # Rebuild application for clean reconnect
+                        from telegram.ext import Application
+                        self._application = Application.builder().token(self._token).build()
+                        continue
+                    else:
+                        logger.error(f"[telegram] Unrecoverable error: {e}")
+                        break
+                finally:
+                    try:
+                        await self._application.updater.stop()
+                        await self._application.stop()
+                        await self._application.shutdown()
+                    except Exception:
+                        pass
+                    self._is_running = False
+    
+    async def stop(self) -> None:
+        """Stop the Telegram bot."""
+        if not self._is_running:
+            return
+        
+        # Cancel pending debounce timers
+        self._debouncer.cancel_all()
+
+        # Flush any pending media-album buffers (Issue #3298)
+        self._album.cancel_all()
+        
+        # Signal the stop event so the start() loop exits cleanly
+        if hasattr(self, '_stop_event') and self._stop_event:
+            self._stop_event.set()
+        else:
+            # Fallback for webhook mode or direct stop
+            self._is_running = False
+            if self._application:
+                try:
+                    await self._application.stop()
+                    await self._application.shutdown()
+                except Exception as e:
+                    logger.warning(f"Error during stop: {e}")
+        
+        logger.info("Telegram bot stopped")
+    
+    def set_agent(self, agent: "Agent") -> None:
+        """Set the agent that handles messages."""
+        self._agent = agent
+    
+    def get_agent(self) -> Optional["Agent"]:
+        """Get the current agent."""
+        return self._agent
+    
+    async def send_message(
+        self,
+        channel_id: str,
+        content: Union[str, Dict[str, Any]],
+        reply_to: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> BotMessage:
+        """Send a message to a channel."""
+        if not self._application:
+            raise RuntimeError("Bot not started")
+        
+        text = content if isinstance(content, str) else str(content)
+        
+        kwargs = {"chat_id": int(channel_id), "text": text}
+        if reply_to:
+            kwargs["reply_to_message_id"] = int(reply_to)
+        if thread_id:
+            kwargs["message_thread_id"] = int(thread_id)
+        
+        # Use retry wrapper for reliable delivery
+        send_kwargs = dict(kwargs)  # Copy to avoid closure issues
+        sent = await deliver_with_retry(
+            lambda: self._application.bot.send_message(**send_kwargs),
+            policy=self._outbound_backoff,
+            platform="telegram",
+            parked_store=self._outbound_dlq,
+            reply_data={
+                "channel_id": channel_id,
+                "reply_text": text,
+                "thread_id": thread_id or "",
+                "reply_to": reply_to or "",
+            }
+        )
+        
+        return BotMessage(
+            message_id=str(sent.message_id),
+            content=text,
+            message_type=MessageType.TEXT,
+            channel=BotChannel(channel_id=channel_id),
+        )
+    
+    async def _send_long_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_to: Optional[int] = None,
+    ) -> None:
+        """Send a long message, splitting with markdown-aware chunking."""
+        from ._chunk import chunk_message, enforce_hard_cap, _calculate_length
+
+        max_len = self.config.max_message_length
+        # Telegram measures message length in UTF-16 code units, not Python
+        # codepoints — a single emoji is 2 UTF-16 units. Measuring in
+        # codepoints lets an emoji-heavy reply exceed 4096 UTF-16 units and be
+        # rejected as "message too long", so use the platform's declared unit
+        # (Issue #4319).
+        length_unit = self.platform_capabilities().length_unit
+
+        if _calculate_length(text, length_unit) <= max_len:
+            kwargs = {"chat_id": chat_id, "text": text}
+            if reply_to:
+                kwargs["reply_to_message_id"] = reply_to
+            
+            # Use retry wrapper for reliable delivery
+            # Create a lambda that captures kwargs properly
+            send_kwargs = dict(kwargs)  # Copy to avoid closure issues
+            await deliver_with_retry(
+                lambda: self._application.bot.send_message(**send_kwargs),
+                policy=self._outbound_backoff,
+                platform="telegram",
+                parked_store=self._outbound_dlq,
+                reply_data={
+                    "channel_id": str(chat_id),
+                    "reply_text": text,
+                    "reply_to": str(reply_to) if reply_to else "",
+                }
+            )
+        else:
+            chunks = chunk_message(
+                text,
+                max_length=max_len,
+                preserve_fences=True,
+                length_unit=length_unit,
+            )
+            # Guarantee no chunk exceeds the platform cap; an over-cap code
+            # fence would otherwise raise "Message is too long" and drop the
+            # entire reply (Issue #4319).
+            chunks = enforce_hard_cap(chunks, max_len, length_unit=length_unit)
+            for i, chunk in enumerate(chunks):
+                kwargs = {"chat_id": chat_id, "text": chunk}
+                if i == 0 and reply_to:
+                    kwargs["reply_to_message_id"] = reply_to
+                
+                # Use retry wrapper for each chunk
+                send_kwargs = dict(kwargs)  # Copy to avoid closure issues
+                await deliver_with_retry(
+                    lambda: self._application.bot.send_message(**send_kwargs),
+                    policy=self._outbound_backoff,
+                    platform="telegram",
+                    parked_store=self._outbound_dlq,
+                    reply_data={
+                        "channel_id": str(chat_id),
+                        "reply_text": chunk,
+                        "reply_to": str(reply_to) if reply_to and i == 0 else "",
+                    }
+                )
+    
+    @staticmethod
+    def _remove_inbound_media(paths: List[str]) -> None:
+        """Remove per-turn cached inbound media temp files (best effort).
+
+        Shared by the post-turn ``finally`` cleanup and the album coalescer's
+        orphan hook (Issue #3298) so a cancelled owning turn never leaks the
+        merged album's temp files.
+        """
+        for _path in paths or []:
+            try:
+                os.remove(_path)
+            except OSError:
+                pass
+
+    async def _cache_inbound_telegram_media(self, update) -> List[str]:
+        """Download and validate inbound photo/document for the agent (Issue #2350).
+
+        Returns a list of cached local file paths the agent's vision capability
+        can act on. Empty when media handling is disabled or no media present.
+        """
+        try:
+            from ._media import cache_inbound_media, resolve_max_inbound_media_bytes
+        except Exception as e:  # pragma: no cover — defensive
+            logger.warning("Inbound media helper unavailable: %s", e)
+            return []
+
+        # Core BotConfig has no media field; the operator's
+        # max_inbound_media_bytes (including 0 to disable) is carried through
+        # config.metadata. Defaults to the shared cap so inbound media is
+        # enabled by default (Issue #2350).
+        max_bytes = resolve_max_inbound_media_bytes(self.config)
+        if not max_bytes or max_bytes <= 0:
+            return []
+        if not getattr(update, "message", None):
+            return []
+
+        paths: List[str] = []
+
+        async def _fetch(file_obj, kind: str, filename: Optional[str] = None):
+            try:
+                tg_file = await file_obj.get_file()
+                # Reject oversized files before buffering them in memory when
+                # Telegram declares the size.
+                file_size = getattr(tg_file, "file_size", None) or getattr(
+                    file_obj, "file_size", None
+                )
+                if file_size and file_size > max_bytes:
+                    logger.warning(
+                        "Inbound %s exceeds %s bytes (declared %s); skipping",
+                        kind, max_bytes, file_size,
+                    )
+                    return
+                if file_size:
+                    # Size is declared and within cap: in-memory download is safe.
+                    data = bytes(await tg_file.download_as_bytearray())
+                    path = cache_inbound_media(
+                        data, kind=kind, max_bytes=max_bytes, filename=filename
+                    )
+                else:
+                    # Unknown size: stream to disk first so the path-based cap
+                    # (os.path.getsize) rejects oversized media before it is
+                    # read into memory. Falls back to in-memory if the streaming
+                    # download API is unavailable.
+                    download_to_drive = getattr(tg_file, "download_to_drive", None)
+                    if download_to_drive is not None:
+                        tmp = tempfile.mkstemp(prefix="inbound_tg_")
+                        os.close(tmp[0])
+                        tmp_path = tmp[1]
+                        try:
+                            await download_to_drive(custom_path=tmp_path)
+                            path = cache_inbound_media(
+                                tmp_path, kind=kind, max_bytes=max_bytes,
+                                filename=filename,
+                            )
+                        finally:
+                            try:
+                                os.remove(tmp_path)
+                            except OSError:
+                                pass
+                    else:  # pragma: no cover — older PTB without download_to_drive
+                        data = bytes(await tg_file.download_as_bytearray())
+                        path = cache_inbound_media(
+                            data, kind=kind, max_bytes=max_bytes, filename=filename
+                        )
+                paths.append(path)
+            except Exception as e:
+                logger.warning("Failed to cache inbound %s: %s", kind, e)
+
+        # Photos arrive as a list of sizes; the last entry is the largest.
+        if update.message.photo:
+            await _fetch(update.message.photo[-1], "image")
+
+        # Native videos (sent as a video, not a document attachment).
+        video = getattr(update.message, "video", None)
+        if video is not None:
+            await _fetch(video, "video", filename=getattr(video, "file_name", None))
+
+        doc = update.message.document
+        if doc is not None:
+            mime = (getattr(doc, "mime_type", "") or "").lower()
+            if mime.startswith("image/"):
+                kind = "image"
+            elif mime.startswith("video/"):
+                kind = "video"
+            elif mime.startswith("audio/"):
+                kind = "audio"
+            else:
+                kind = "document"
+            await _fetch(doc, kind, filename=getattr(doc, "file_name", None))
+
+        return paths
+
+    async def _transcribe_audio(self, update) -> Optional[str]:
+        """Download and transcribe a voice/audio message (Issue #2721).
+
+        Returns the transcript, or ``None`` when STT is disabled or
+        transcription fails. Callers must fall back to a visible placeholder
+        rather than dropping the message.
+        """
+        if not self._stt_enabled:
+            return None
+
+        from ._stt import resolve_stt_config, transcribe_media_path
+
+        stt_cfg = resolve_stt_config(self.config)
+
+        temp_path: Optional[str] = None
+        try:
+            # Get file info
+            if update.message.voice:
+                file = await update.message.voice.get_file()
+            elif update.message.audio:
+                file = await update.message.audio.get_file()
+            else:
+                return None
+
+            # Download to temp file
+            temp_path = os.path.join(tempfile.gettempdir(), f"voice_{file.file_id}.ogg")
+            await file.download_to_drive(temp_path)
+
+            text = transcribe_media_path(
+                temp_path, language=stt_cfg.language, model=stt_cfg.model
+            )
+            if not text:
+                return None
+            if stt_cfg.echo_transcripts:
+                return f"[Voice message]: {text}"
+            return text
+        except Exception as e:
+            logger.error(f"Audio transcription error: {e}")
+            return None
+        finally:
+            # Clean up temp file
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+    
+    async def _send_response_with_media(
+        self,
+        chat_id: int,
+        response: str,
+        reply_to: Optional[int] = None,
+        inbound_was_voice: bool = False,
+    ) -> None:
+        """Send response, extracting and sending any MEDIA: files."""
+        # Parse response for media
+        parsed = split_media_from_output(response)
+        text = parsed["text"]
+        media_urls = parsed.get("media_urls", [])
+        audio_as_voice = parsed.get("audio_as_voice", False)
+        
+        # Send text first if present
+        if text:
+            await self._send_long_message(chat_id, text, reply_to=reply_to)
+
+        # Issue #3623: outbound voice reply. When the operator has enabled a
+        # ``voice`` policy, synthesise the agent's plain text and deliver it as
+        # a native Telegram voice note — the symmetric counterpart to inbound
+        # STT. The agent authors plain text; voice is a transport concern here.
+        # Skipped silently (text already sent) when disabled or synthesis fails.
+        await self._maybe_send_voice_reply(
+            chat_id, text, inbound_was_voice=inbound_was_voice
+        )
+        
+        # Send audio files
+        for media_path in media_urls:
+            if not os.path.exists(media_path):
+                logger.warning(f"Media file not found: {media_path}")
+                continue
+            
+            if is_audio_file(media_path):
+                try:
+                    with open(media_path, "rb") as f:
+                        if audio_as_voice:
+                            # Use retry wrapper for voice messages with proper seek
+                            async def send_voice():
+                                f.seek(0)  # Reset file position before each attempt
+                                return await self._application.bot.send_voice(
+                                    chat_id=chat_id, voice=f
+                                )
+                            await deliver_with_retry(
+                                send_voice,
+                                policy=self._outbound_backoff,
+                                platform="telegram",
+                                parked_store=None,  # Don't DLQ media for now (complex replay)
+                            )
+                        else:
+                            # Use retry wrapper for audio messages with proper seek
+                            async def send_audio():
+                                f.seek(0)  # Reset file position before each attempt
+                                return await self._application.bot.send_audio(
+                                    chat_id=chat_id, audio=f
+                                )
+                            await deliver_with_retry(
+                                send_audio,
+                                policy=self._outbound_backoff,
+                                platform="telegram",
+                                parked_store=None,  # Don't DLQ media for now (complex replay)
+                            )
+                except Exception as e:
+                    logger.error(f"Failed to send audio: {e}")
+
+    async def _maybe_send_voice_reply(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        inbound_was_voice: bool = False,
+    ) -> None:
+        """Synthesise and send ``text`` as a voice note per the ``voice`` policy.
+
+        The outbound mirror of :meth:`_transcribe_audio`: resolves the operator's
+        ``voice`` config, decides whether to speak (``always`` /
+        ``match_inbound``), synthesises via the shared TTS helper, and delivers a
+        native Telegram voice note. Best-effort — any failure is logged and the
+        already-sent text stands, so voice never breaks a reply.
+        """
+        if not text or not text.strip():
+            return
+        from ._tts import (
+            resolve_tts_config,
+            should_voice_reply,
+            synthesize_voice_reply,
+        )
+
+        cfg = resolve_tts_config(self.config)
+        if not should_voice_reply(cfg, inbound_was_voice=inbound_was_voice):
+            return
+
+        audio_path: Optional[str] = None
+        try:
+            audio_path = await asyncio.to_thread(synthesize_voice_reply, text, cfg)
+            if not audio_path or not os.path.exists(audio_path):
+                return
+            with open(audio_path, "rb") as f:
+                async def send_voice_reply():
+                    f.seek(0)
+                    return await self._application.bot.send_voice(
+                        chat_id=chat_id, voice=f
+                    )
+
+                await deliver_with_retry(
+                    send_voice_reply,
+                    policy=self._outbound_backoff,
+                    platform="telegram",
+                    parked_store=None,
+                )
+        except Exception as e:
+            logger.error(f"Failed to send voice reply: {e}")
+        finally:
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                except OSError:
+                    pass
+
+    
+    async def edit_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        content: Union[str, Dict[str, Any]],
+    ) -> BotMessage:
+        """Edit an existing message."""
+        if not self._application:
+            raise RuntimeError("Bot not started")
+        
+        text = content if isinstance(content, str) else str(content)
+        
+        await self._application.bot.edit_message_text(
+            chat_id=int(channel_id),
+            message_id=int(message_id),
+            text=text,
+        )
+        
+        return BotMessage(
+            message_id=message_id,
+            content=text,
+            message_type=MessageType.EDIT,
+            channel=BotChannel(channel_id=channel_id),
+        )
+    
+    async def delete_message(
+        self,
+        channel_id: str,
+        message_id: str,
+    ) -> bool:
+        """Delete a message."""
+        if not self._application:
+            raise RuntimeError("Bot not started")
+        
+        try:
+            await self._application.bot.delete_message(
+                chat_id=int(channel_id),
+                message_id=int(message_id),
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Delete message error: {e}")
+            return False
+    
+    def on_message(self, handler: Callable[[BotMessage], Any]) -> Callable:
+        """Register a message handler."""
+        self._message_handlers.append(handler)
+        return handler
+    
+    def on_command(self, command: str) -> Callable:
+        """Decorator to register a command handler."""
+        def decorator(func: Callable) -> Callable:
+            self._command_handlers[command] = func
+            return func
+        return decorator
+    
+    async def send_typing(self, channel_id: str) -> None:
+        """Send typing indicator."""
+        if self._application:
+            await self._application.bot.send_chat_action(
+                chat_id=int(channel_id),
+                action="typing",
+            )
+    
+    async def add_reaction(self, channel_id: str, message_id: str, emoji: str) -> bool:
+        """Add a reaction to a message."""
+        if not self._application:
+            return False
+        
+        try:
+            from telegram import ReactionTypeEmoji
+            await self._application.bot.set_message_reaction(
+                chat_id=int(channel_id),
+                message_id=int(message_id),
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to add reaction: {e}")
+            return False
+    
+    async def remove_reaction(self, channel_id: str, message_id: str, emoji: str) -> bool:
+        """Remove a reaction from a message.
+        
+        Note: Telegram's setMessageReaction API is set-based - it replaces all bot reactions.
+        To remove a specific emoji, we would need to fetch current reactions and filter out
+        the target. Since there's no getMessageReactions API, we'll clear all bot reactions
+        as a simpler approach (the bot typically has only one reaction anyway).
+        """
+        if not self._application:
+            return False
+        
+        try:
+            # Telegram API: send empty reaction list to remove all bot reactions
+            # This is a known limitation - we can't selectively remove individual reactions
+            await self._application.bot.set_message_reaction(
+                chat_id=int(channel_id),
+                message_id=int(message_id),
+                reaction=[],
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to remove reaction: {e}")
+            return False
+    
+    async def get_user(self, user_id: str) -> Optional[BotUser]:
+        """Get user information."""
+        if not self._application:
+            return None
+        
+        try:
+            chat = await self._application.bot.get_chat(int(user_id))
+            return BotUser(
+                user_id=str(chat.id),
+                username=chat.username,
+                display_name=chat.first_name,
+                is_bot=False,
+            )
+        except Exception:
+            return None
+    
+    async def get_channel(self, channel_id: str) -> Optional[BotChannel]:
+        """Get channel information."""
+        if not self._application:
+            return None
+        
+        try:
+            chat = await self._application.bot.get_chat(int(channel_id))
+            channel_type = "dm" if chat.type == "private" else chat.type
+            return BotChannel(
+                channel_id=str(chat.id),
+                name=chat.title or chat.username,
+                channel_type=channel_type,
+            )
+        except Exception:
+            return None
+    
+    async def probe(self):
+        """Test Telegram API connectivity without starting the bot."""
+        from praisonaiagents.bots import ProbeResult
+        started = time.time()
+        try:
+            import aiohttp
+            url = f"https://api.telegram.org/bot{self._token}/getMe"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    data = await resp.json()
+                    elapsed = (time.time() - started) * 1000
+                    if resp.status == 200 and data.get("ok"):
+                        result = data.get("result", {})
+                        return ProbeResult(
+                            ok=True,
+                            platform="telegram",
+                            elapsed_ms=elapsed,
+                            bot_username=result.get("username"),
+                            details={
+                                "bot_id": result.get("id"),
+                                "can_join_groups": result.get("can_join_groups"),
+                                "can_read_all_group_messages": result.get("can_read_all_group_messages"),
+                                "supports_inline_queries": result.get("supports_inline_queries"),
+                            },
+                        )
+                    else:
+                        return ProbeResult(
+                            ok=False,
+                            platform="telegram",
+                            elapsed_ms=elapsed,
+                            error=data.get("description", f"HTTP {resp.status}"),
+                        )
+        except Exception as e:
+            elapsed = (time.time() - started) * 1000
+            return ProbeResult(
+                ok=False,
+                platform="telegram",
+                elapsed_ms=elapsed,
+                error=str(e),
+            )
+
+    async def health(self):
+        """Get detailed health status of the Telegram bot."""
+        return await self._default_health()
+
+    async def publish_command_menu(self, entries: List[tuple]) -> None:
+        """Register commands in Telegram's native menu via ``set_my_commands``.
+
+        Projects the shared command registry's ``(name, description)`` pairs
+        into the platform menu so typing ``/`` shows the available commands
+        with descriptions. Telegram requires command names of 1-32 chars from
+        ``[a-z0-9_]`` and descriptions of 1-256 chars, so entries are
+        sanitised and out-of-range ones skipped. Best-effort: any failure is
+        logged and swallowed so bot startup is never blocked.
+
+        Args:
+            entries: ``(name, description)`` pairs to publish.
+        """
+        if not entries or self._application is None:
+            return
+
+        try:
+            from telegram import BotCommand
+        except ImportError:
+            return
+
+        import re
+
+        commands = []
+        for name, description in entries:
+            if not name:
+                continue
+            safe_name = str(name).lower()
+            if not re.fullmatch(r"[a-z0-9_]{1,32}", safe_name):
+                continue
+            desc = (str(description) or "").strip()[:256] or safe_name
+            commands.append(BotCommand(safe_name, desc))
+
+        if not commands:
+            return
+
+        try:
+            await self._application.bot.set_my_commands(commands)
+            logger.info(f"Published {len(commands)} commands to Telegram menu")
+        except Exception as e:  # noqa: BLE001 — best-effort
+            logger.debug(f"set_my_commands failed (non-fatal): {e}")
+
+    def _format_status(self) -> str:
+        """Format /status response."""
+        return format_status(self._agent, self.platform, self._started_at, self._is_running)
+    
+    def _format_help(self) -> str:
+        """Format /help response."""
+        extra = {cmd: "Custom command" for cmd in self._command_handlers}
+        return format_help(self._agent, self.platform, extra)
+    
+    def _format_help_with_permissions(self, user_id: str) -> str:
+        """Format /help response with permission filtering and custom commands."""
+        # Get allowed commands for this user
+        all_commands = self._command_registry.get_command_names() | set(self._command_handlers.keys())
+        
+        if self._command_policy:
+            allowed = self._command_policy.get_allowed_commands(user_id, all_commands)
+        else:
+            allowed = all_commands
+        
+        agent_name = self._agent.name if self._agent else "No agent"
+        model = getattr(self._agent, "llm", "default") if self._agent else "default"
+        
+        lines = ["Available Commands"]
+        
+        # Built-in commands from registry
+        for cmd in sorted(allowed):
+            if cmd in self._command_registry.get_all_commands():
+                cmd_info = self._command_registry.get_command(cmd)
+                desc = cmd_info.get("description", "No description")
+                lines.append(f"/{cmd} - {desc}")
+            elif cmd in self._command_handlers:
+                # Custom commands
+                lines.append(f"/{cmd} - Custom command")
+
+        # File-based / entry-point custom commands (Issue #3729): merge them in
+        # via the shared resolver so they surface in /help just like builtins.
+        # Builtins and adapter-registered handlers keep precedence (skip names
+        # already listed). Best-effort — a resolver error never breaks /help.
+        resolver = getattr(self, "_custom_command_resolver", None)
+        if resolver is not None:
+            try:
+                for name, desc in sorted(resolver.descriptions().items()):
+                    if name in all_commands:
+                        continue
+                    lines.append(f"/{name} - {desc}")
+            except Exception:  # noqa: BLE001 — /help must never raise
+                pass
+
+        lines.append(f"\nAgent: {agent_name}")
+        lines.append(f"Model: {model}")
+        
+        return "\n".join(lines)
+    
+    def _convert_update_to_message(self, update, override_text: Optional[str] = None) -> BotMessage:
+        """Convert Telegram Update to BotMessage."""
+        msg = update.message
+        
+        sender = BotUser(
+            user_id=str(msg.from_user.id),
+            username=msg.from_user.username,
+            display_name=msg.from_user.first_name,
+            is_bot=msg.from_user.is_bot,
+        ) if msg.from_user else None
+        
+        channel_type = "dm" if msg.chat.type == "private" else msg.chat.type
+        channel = BotChannel(
+            channel_id=str(msg.chat.id),
+            name=msg.chat.title or msg.chat.username,
+            channel_type=channel_type,
+        )
+        
+        # Use override text for transcribed audio, otherwise message text
+        content = override_text if override_text else (msg.text or "")
+        msg_type = MessageType.COMMAND if content and content.startswith("/") else MessageType.TEXT
+        
+        return BotMessage(
+            message_id=str(msg.message_id),
+            content=content,
+            message_type=msg_type,
+            sender=sender,
+            channel=channel,
+            timestamp=msg.date.timestamp() if msg.date else 0,
+            thread_id=str(msg.message_thread_id) if msg.message_thread_id else None,
+        )
+    
+    # Adapter methods for pairing system
+    async def send_approval_dm(
+        self, 
+        owner_user_id: str, 
+        user_name: str, 
+        code: str, 
+        channel: str,
+        user_id: str
+    ) -> Optional[str]:
+        """Send approval DM to owner with inline buttons."""
+        if not self._application:
+            return None
+        
+        try:
+            from telegram import InlineKeyboardMarkup
+            
+            keyboard = PairingUIBuilder.create_telegram_keyboard(
+                user_name=user_name,
+                code=code, 
+                channel=channel,
+                user_id=user_id
+            )
+            
+            message = await self._application.bot.send_message(
+                chat_id=owner_user_id,
+                text=f"*{user_name}* wants to chat. Approve access?",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup.from_dict(keyboard)
+            )
+            
+            return str(message.message_id)
+            
+        except Exception as e:
+            logger.error(f"Failed to send approval DM: {e}")
+            return None
+    
+    async def reply(self, chat_id: str, text: str) -> None:
+        """Reply to a chat/DM with a text message."""
+        if not self._application:
+            return
+        
+        try:
+            await self._application.bot.send_message(
+                chat_id=chat_id,
+                text=text
+            )
+        except Exception as e:
+            logger.error(f"Failed to send reply: {e}")
+
+    @property
+    def presentation_limits(self) -> "PresentationLimits":
+        """Telegram presentation limits (see ``SupportsPresentation``)."""
+        from praisonaiagents.bots.presentation import PresentationLimits
+        return PresentationLimits.telegram()
+
+    def truncate_presentation(
+        self, presentation: "MessagePresentation"
+    ) -> "MessagePresentation":
+        """Adapt a portable presentation to Telegram's limits."""
+        from praisonaiagents.bots.presentation import adapt_presentation
+        return adapt_presentation(presentation, self.presentation_limits)
+
+    async def render_presentation(
+        self,
+        target: str,
+        presentation: "MessagePresentation",
+    ) -> Optional[str]:
+        """Render a portable presentation as a Telegram inline keyboard.
+
+        Implements ``SupportsPresentation``: delegates to
+        ``TelegramPresentationRenderer`` (which runs ``adapt_presentation``
+        internally), then sends the resulting text + ``reply_markup`` natively.
+        Returns the sent message id, or ``None`` if delivery failed.
+        """
+        if not self._application:
+            return None
+        try:
+            from telegram import (
+                InlineKeyboardButton,
+                InlineKeyboardMarkup,
+                WebAppInfo,
+            )
+            from ._presentation_renderer import TelegramPresentationRenderer
+
+            def _build_button(btn: Dict[str, Any]) -> "InlineKeyboardButton":
+                # The portable renderer emits ``web_app`` as a plain dict, but
+                # python-telegram-bot (>=20) requires a ``WebAppInfo`` object.
+                web_app = btn.get("web_app")
+                if isinstance(web_app, dict):
+                    btn = {**btn, "web_app": WebAppInfo(**web_app)}
+                return InlineKeyboardButton(**btn)
+
+            rendered = TelegramPresentationRenderer.render(
+                presentation,
+                callback_store=getattr(self, "_callback_store", None),
+            )
+            send_kwargs: Dict[str, Any] = {
+                "chat_id": int(target),
+                "text": rendered.get("text") or "\u200b",
+            }
+            reply_markup = rendered.get("reply_markup")
+            inline_keyboard = (reply_markup or {}).get("inline_keyboard")
+            if inline_keyboard:
+                send_kwargs["reply_markup"] = InlineKeyboardMarkup(
+                    [
+                        [_build_button(btn) for btn in row]
+                        for row in inline_keyboard
+                    ]
+                )
+            message = await self._application.bot.send_message(**send_kwargs)
+            return str(message.message_id)
+        except Exception as e:
+            logger.error(f"Failed to render presentation: {e}")
+            return None
+
+
+def _record_passive_group_message(bot: "TelegramBot", message) -> None:
+    """Record an unmentioned group message as passive session context.
+
+    Issue #3380: used by the ``observe`` group policy so that unmentioned
+    messages are retained in the transcript (without triggering an agent run)
+    and are visible to the agent when it is next addressed. Best-effort — a
+    missing session manager or any failure is swallowed so inbound handling is
+    never broken by observation.
+    """
+    session_mgr = getattr(bot, "_session", None)
+    if session_mgr is None or not hasattr(session_mgr, "record_passive"):
+        return
+    try:
+        content = message.get_text() if hasattr(message, "get_text") else str(message.content)
+        user_id = message.sender.user_id if message.sender else ""
+        sender = (message.sender.display_name or user_id) if message.sender else user_id
+        # Thread the same routing fields an addressed turn uses so that with
+        # session_scope="per_chat" the passive entry lands on the shared group
+        # key the next mentioned run reads from (Issue #3380 / #2376). With the
+        # default per_user scope these are simply ignored.
+        session_mgr.record_passive(
+            user_id,
+            content,
+            sender=sender,
+            chat_id=str(message.channel.channel_id) if message.channel and message.channel.channel_id else "",
+            thread_id=str(message.thread_id) if getattr(message, "thread_id", None) else "",
+            account=getattr(bot.config, "account", "default"),
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug(f"Failed to record passive group message: {e}")
+
+
+async def process_inbound_telegram_message(
+    update,  # Telegram Update
+    bot: TelegramBot,
+    gateway_context: Optional[Dict] = None
+) -> Optional[BotMessage]:
+    """
+    Shared security pipeline for processing inbound Telegram messages.
+    
+    Used by both standalone bot (TelegramBot.handle_message) and 
+    gateway polling (_start_telegram_bot_polling) to ensure consistent
+    access control enforcement.
+    
+    Args:
+        update: Telegram Update object
+        bot: TelegramBot instance with config and security settings
+        gateway_context: Optional dict with gateway-specific context
+        
+    Returns:
+        BotMessage if message passes all security checks, None if dropped
+    """
+    if not update.message:
+        return None
+    
+    # Extract message text (including audio transcription)
+    message_text = None
+    if update.message.voice or update.message.audio:
+        # Issue #2721: transcribe inbound voice notes. If STT is disabled or
+        # transcription fails, fall back to a visible placeholder so the turn
+        # still reaches the agent instead of being silently dropped.
+        from ._stt import DEFAULT_VOICE_PLACEHOLDER
+        message_text = await bot._transcribe_audio(update) or DEFAULT_VOICE_PLACEHOLDER
+    elif update.message.text:
+        message_text = update.message.text
+    elif update.message.photo or update.message.document:
+        # Inbound photo/document (Issue #2350): use the caption as the prompt
+        # so the message still flows through the security pipeline. The media
+        # itself is downloaded and forwarded to the agent's vision capability
+        # by the caller via TelegramBot._cache_inbound_telegram_media().
+        message_text = update.message.caption or "[Media received]"
+
+    if not message_text:
+        return None
+    
+    # Convert to BotMessage for consistent processing
+    message = bot._convert_update_to_message(update, override_text=message_text)
+    
+    # Set channel type for pairing system
+    message._channel_type = "telegram"
+    
+    # Fire message received event (inbound gate: may drop or redact)
+    if bot.fire_message_received(message).get("drop"):
+        logger.debug("Message dropped by MESSAGE_RECEIVED hook")
+        return None
+    
+    # 1. Channel allowlist check
+    channel_id = message.channel.channel_id if message.channel else ""
+    if not bot.config.is_channel_allowed(channel_id):
+        logger.debug(f"Message dropped: channel {channel_id} not in allowed_channels")
+        return None
+    
+    # 2. User allowlist and pairing check
+    user_id = message.sender.user_id if message.sender else ""
+    is_explicitly_allowed = bot.config.is_explicitly_allowed(user_id)
+    
+    if not is_explicitly_allowed:
+        # Check if bot context is available for pairing system
+        if not hasattr(bot, '_bot_context') or bot._bot_context is None:
+            # For gateway mode, we need to create bot context on demand
+            if not hasattr(bot, '_pairing_store'):
+                from ..gateway.pairing import PairingStore
+                bot._pairing_store = PairingStore()
+            
+            bot._bot_context = BotContext(
+                config=bot.config,
+                pairing_store=bot._pairing_store,
+                adapter=bot
+            )
+        
+        user_allowed = await UnknownUserHandler.handle(message, bot._bot_context)
+        if not user_allowed:
+            logger.debug(f"Message dropped: user {user_id} not allowed by pairing system")
+            return None
+    
+    # 3. Group policy enforcement
+    if message.channel and message.channel.channel_type not in ("dm", "private"):
+        # This is a group/channel message, check group policies
+        group_policy = getattr(bot.config, 'group_policy', 'mention_only')
+        mention_required = getattr(bot.config, 'mention_required', True)
+        
+        if group_policy == "command_only":
+            if message.message_type != MessageType.COMMAND:
+                logger.debug(f"Message dropped: non-command in command_only group {channel_id}")
+                return None
+        elif group_policy in ("mention_only", "observe"):
+            # Check if bot was mentioned in the message
+            bot_username = bot._bot_user.username.lower() if bot._bot_user and bot._bot_user.username else ""
+            mention_handle = f"@{bot_username}" if bot_username else ""
+            bot_mentioned = (
+                mention_handle and mention_handle in message.content.lower()
+            ) or message.message_type == MessageType.COMMAND  # Commands are always allowed
+            
+            if not bot_mentioned:
+                # Issue #3380: under ``observe`` an unmentioned group message is
+                # recorded into the session transcript as passive context (no
+                # agent run) so the bot has memory of the conversation when it is
+                # next addressed. ``mention_only`` still drops it outright.
+                if group_policy == "observe":
+                    _record_passive_group_message(bot, message)
+                    logger.debug(f"Message observed (no run) in group {channel_id}")
+                else:
+                    logger.debug(f"Message dropped: bot not mentioned in group {channel_id}")
+                return None
+        elif group_policy == "respond_all":
+            # Allow all group messages
+            pass
+        elif mention_required:
+            # Fallback for backward compatibility when group_policy is not set
+            bot_username = bot._bot_user.username.lower() if bot._bot_user and bot._bot_user.username else ""
+            mention_handle = f"@{bot_username}" if bot_username else ""
+            bot_mentioned = (
+                mention_handle and mention_handle in message.content.lower()
+            ) or message.message_type == MessageType.COMMAND  # Commands are always allowed
+            
+            if not bot_mentioned:
+                logger.debug(f"Message dropped: bot not mentioned in group {channel_id}")
+                return None
+    
+    # All security checks passed
+    logger.debug(f"Message security checks passed for user {user_id} in channel {channel_id}")
+    return message

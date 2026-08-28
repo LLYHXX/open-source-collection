@@ -1,0 +1,30 @@
+meta {
+  name: Create Annotation Label ( Text )
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations-labels/
+  body: json
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  ~Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  {
+    "name": "Multiple Annotators",
+    "type": "text",
+    "settings": {
+      "placeholder": "Enter your text here",
+      "max_length": 199,
+      "min_length": 0
+    },
+    "project": "3274f1e5-803c-4dae-b26f-a37d36f6a068"
+  }
+}

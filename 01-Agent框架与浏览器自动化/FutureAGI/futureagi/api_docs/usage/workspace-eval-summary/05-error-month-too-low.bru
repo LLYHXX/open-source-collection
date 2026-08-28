@@ -1,0 +1,43 @@
+meta {
+  name: 05 - Error - Month Below Range (0)
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}/usage/workspace-eval-summary/?workspace_id={{workspace_id}}&month=0&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  workspace_id: {{workspace_id}}
+  month: 0
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Workspace Evaluation Summary - Invalid Month (Too Low)
+
+  ### Test Scenario
+  - Month set to 0 (invalid - below minimum)
+  - Tests month range validation
+
+  ### Expected Response
+  - Status: 400 Bad Request
+  - Response structure:
+    ```json
+    {
+      "status": false,
+      "message": "Error message containing 'month'"
+    }
+    ```
+
+  ### Notes
+  - Month must be between 1 and 12 (inclusive)
+  - Tests lower boundary validation
+}

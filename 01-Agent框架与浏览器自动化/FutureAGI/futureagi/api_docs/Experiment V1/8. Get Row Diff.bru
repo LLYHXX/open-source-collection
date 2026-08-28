@@ -1,0 +1,39 @@
+meta {
+  name: Get Row Diff
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/develops/get-row-diff/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "experiment_id": "{{experimentId}}",
+    "column_ids": ["uuid-col-1", "uuid-col-2"],
+    "row_ids": ["uuid-row-1"],
+    "compare_column_ids": ["uuid-compare-col-1"]
+  }
+}
+
+docs {
+  ## Get Row Diff (V1)
+
+  Calculates diff between multiple column responses for given rows.
+
+  ### Request Body
+  - `experiment_id` — Experiment UUID
+  - `column_ids` — Columns to compare
+  - `row_ids` — Rows to calculate diff for
+  - `compare_column_ids` — Base columns to compare against
+
+  ### Response
+  Returns cell values with diff calculations.
+}

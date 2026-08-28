@@ -1,0 +1,21 @@
+meta {
+  name: Get Base Column for Compare Dataset
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{host}}/model-hub/datasets/get-base-columns/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_ids": ["a23f29dd-ef3e-4404-9b1a-af186b243187", "58065dbc-6968-4d82-be0c-cd0e73373961"]
+  }
+}

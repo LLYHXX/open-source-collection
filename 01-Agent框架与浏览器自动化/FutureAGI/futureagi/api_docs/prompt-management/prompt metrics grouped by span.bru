@@ -1,0 +1,94 @@
+meta {
+  name: prompt metrics grouped by span
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{host}}/model-hub/prompt/span-metrics/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "filters": [
+      {
+        "columnId": "trace_id",
+        "filterConfig": {
+          "filterOp": "equals",
+          "filterType": "text",
+          "filterValue": "22eaab1f-e184-4775-ab2e-b85b2aa2c411"
+        }
+      },
+      {
+        "columnId": "span_name",
+        "filterConfig": {
+          "filterOp": "contains",
+          "filterType": "text",
+          "filterValue": "uery"
+        }
+      },
+      {
+        "columnId": "span_id",
+        "filterConfig": {
+          "filterOp": "equals",
+          "filterType": "text",
+          "filterValue": "44cafa64e5244ae6"
+        }
+      },
+      {
+        "column_id": "prompt_template_version",
+        "filter_config": {
+          "filter_op": "contains",
+          "filter_type": "text",
+          "filter_value": "2"
+        }
+      },
+      {
+        "column_id": "labels",
+        "filter_config": {
+          "filter_op": "contains",
+          "filter_type": "array",
+          "filter_value": [
+            "production"
+          ]
+        }
+      },
+      {
+        "columnId": "54c5839b-86f7-4d4d-995a-49b7e4384f80",
+        "filterConfig": {
+          "filterType": "array",
+          "filter_value": [
+            "yes",
+            "maybe"
+          ]
+        },
+        "col_type": "PROMPT_METRIC"
+      },
+      {
+        "columnId": "92411b56-1f5b-4e91-952c-699b33926754",
+        "filterConfig": {
+          "filterType": "boolean",
+          "filter_value": true // false
+        },
+        "col_type": "PROMPT_METRIC"
+      },
+      {
+        "columnId": "7c320396-f015-49a1-bb30-1cac6a15303f",
+        "filterConfig": {
+          "filter_op": "greater_than",
+          "filter_value": 10,
+          "filterType": "number"
+        },
+        "col_type": "PROMPT_METRIC"
+      }
+    ],
+    "prompt_template_id": "6ec85a9c-5712-4d99-9fff-1ca4a55b621f",
+    "search_term": "v"
+  }
+}

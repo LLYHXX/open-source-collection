@@ -1,0 +1,22 @@
+meta {
+  name: Fetch logs
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{host}}/tracer/user-alerts/ec59f057-94eb-4672-a331-573600cf0cd5/fetch_logs/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  Test Cases:
+
+  1. Tested api to check if all details are fetchded for the alert logs
+  2. Tested pagination
+}

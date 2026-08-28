@@ -1,0 +1,77 @@
+meta {
+  name: Bulk Delete Test Executions
+  type: http
+  seq: 21
+}
+
+post {
+  url: http://localhost:8000/simulate/run-tests/{{run_test_id}}/delete-test-executions/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "select_all": true
+  }
+}
+
+docs {
+  name: Bulk Delete Test Executions
+  description: Delete multiple test executions within a run test. Cascades to delete all associated call executions.
+  request: {
+    "method": "POST",
+    "url": "http://localhost:8000/simulate/run-tests/{run_test_id}/delete-test-executions/",
+    "headers": {
+      "Authorization": "Bearer {token}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "test_execution_ids": ["uuid1", "uuid2"],
+      "select_all": "boolean (default false)"
+    }
+  }
+  response: {
+    "message": "Successfully deleted 3 test execution(s).",
+    "run_test_id": "uuid",
+    "deleted_count": 3,
+    "deleted_ids": ["uuid1", "uuid2", "uuid3"]
+  }
+  error_responses: [
+    {
+      "status": 400,
+      "error": "Invalid request data"
+    },
+    {
+      "status": 400,
+      "error": "No test executions found that can be deleted."
+    },
+    {
+      "status": 400,
+      "error": "Cannot delete test executions that are currently running."
+    },
+    {
+      "status": 404,
+      "error": "Organization not found for the user."
+    },
+    {
+      "status": 404,
+      "error": "Run test not found."
+    },
+    {
+      "status": 500,
+      "error": "Failed to delete test executions"
+    }
+  ]
+  notes: [
+    "Either 'select_all' must be true or 'test_execution_ids' must be provided",
+    "When select_all=true and test_execution_ids are provided, those IDs are excluded",
+    "Cannot delete test executions that are currently running (status=RUNNING)",
+    "Deletion is a hard delete - cascades to all associated call executions",
+    "Requires authentication and organization access"
+  ]
+}

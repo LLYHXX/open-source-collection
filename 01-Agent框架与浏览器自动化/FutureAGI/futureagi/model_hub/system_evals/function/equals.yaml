@@ -1,0 +1,39 @@
+eval_id: 25
+name: equals
+description: Compares if two texts are exactly equal
+eval_tags:
+- Output Validation
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  - expected_text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config:
+    case_sensitive:
+      type: boolean
+      default: true
+  config_params_desc:
+    text: The input text to be compared
+    expected_text: The text to compare against
+    case_sensitive: Whether the comparison should be case-sensitive
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        text = kwargs.get("text", output or "")
+        expected_text = kwargs.get("expected_text", expected or "")
+        case_sensitive = kwargs.get("case_sensitive", True)
+        text = str(text)
+        expected_text = str(expected_text)
+        if not case_sensitive:
+            text = text.lower()
+            expected_text = expected_text.lower()
+        if text == expected_text:
+            return {"score": 1.0, "reason": "Text exactly matches expected"}
+        else:
+            return {"score": 0.0, "reason": "Output does not exactly match expected"}

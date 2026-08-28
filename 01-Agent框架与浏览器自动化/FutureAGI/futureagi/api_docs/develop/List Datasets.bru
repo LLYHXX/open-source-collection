@@ -1,0 +1,27 @@
+meta {
+  name: List Datasets
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/model-hub/develops/get-datasets/
+  body: json
+  auth: bearer
+}
+
+headers {
+  X-Workspace-ID: ed160bc1-c783-4d56-963a-c129549e0c09
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "page" : 0,
+    "page_size" :10,
+    "search_text" : ""
+  }
+}

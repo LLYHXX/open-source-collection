@@ -1,0 +1,89 @@
+meta {
+  name: Activate Graph Version
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{host}}/agent-playground/graphs/:id/versions/:version_id/activate/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  id: {{graph_id}}
+  version_id: {{version_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  version_id: faa1fb43-869b-4098-9347-a88135c40256
+  graph_id: 116f530d-13a9-41dd-a13a-b5f70ab5b57e
+}
+
+docs {
+  # Activate Graph Version
+
+  Promote an inactive version to active. The currently active version (if any) is demoted to inactive atomically.
+
+  ## Path Parameters
+  - `id`: Graph UUID
+  - `version_id`: Version UUID to activate
+
+  ## Business Rules
+  - Only **inactive** versions can be activated
+  - Draft and already-active versions are rejected with 400
+  - The swap is atomic: the old active version becomes inactive and the target version becomes active in a single transaction
+  - Only one active version is allowed per graph at any time
+
+  ## Response (Success)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "version-uuid",
+      "version_number": 2,
+      "status": "active",
+      "tags": [],
+      "commit_message": "Initial release",
+      "created_at": "2024-01-15T10:30:00Z",
+      "nodes": [...],
+      "edges": [...]
+    }
+  }
+  ```
+
+  ## Response (Error - Not Inactive)
+  ```json
+  {
+    "status": false,
+    "result": "Only inactive versions can be activated."
+  }
+  ```
+
+  ## Response (Error - Version Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Version not found."
+  }
+  ```
+
+  ## Response (Error - Duplicate Exposed Output Port Display Names)
+  ```json
+  {
+    "status": false,
+    "result": "Duplicate exposed output port display name 'response' found on nodes 'LLM 1' and 'LLM 2'. All exposed output port display names must be unique for activation."
+  }
+  ```
+  This error occurs when two or more unconnected output ports across the version share the same `display_name`. To fix, give each exposed output port a unique `display_name`. Note: duplicate input port display_names are allowed (broadcast pattern).
+
+  ## Side Effects
+  - Dataset columns are synced (add-only) for the new active version's exposed input ports. Columns are never deleted — previously created columns from other versions remain in the dataset.
+
+  ## Atomicity
+  The entire operation is wrapped in a database transaction. If any error occurs, all changes are rolled back — the old active version remains active and the target version remains inactive.
+}

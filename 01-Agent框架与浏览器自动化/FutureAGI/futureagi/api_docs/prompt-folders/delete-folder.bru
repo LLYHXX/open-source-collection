@@ -1,0 +1,15 @@
+meta {
+  name: delete-folder
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{host}}/model-hub/prompt-folders/cdf611be-30cb-4053-b19e-18d58cb119c2/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

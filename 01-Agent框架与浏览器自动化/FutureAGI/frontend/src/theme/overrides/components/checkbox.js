@@ -1,0 +1,25 @@
+// ----------------------------------------------------------------------
+
+export function checkbox(theme) {
+  const lightMode = theme.palette.mode === "light";
+
+  return {
+    MuiCheckbox: {
+      styleOverrides: {
+        root: {
+          padding: theme.spacing(1),
+          color: lightMode
+            ? theme.palette.black?.o20
+            : theme.palette.border?.bright,
+
+          "&.Mui-checked, &.MuiCheckbox-indeterminate": {
+            color: theme.palette.purple?.[300],
+            ...(!lightMode && {
+              "& path[stroke]": { stroke: theme.palette.background.paper },
+            }),
+          },
+        },
+      },
+    },
+  };
+}

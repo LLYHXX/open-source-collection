@@ -1,0 +1,30 @@
+meta {
+  name: fetch prompt base templates
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/model-hub/prompt-base-templates/?sort_by=created_at&sort_order=desc&page_size=10&page_number=0&category=abc&name=tem
+  body: none
+  auth: bearer
+}
+
+params:query {
+  sort_by: created_at
+  sort_order: desc
+  page_size: 10
+  page_number: 0
+  category: abc
+  name: tem
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "name": "test_folder_2"
+    }
+}

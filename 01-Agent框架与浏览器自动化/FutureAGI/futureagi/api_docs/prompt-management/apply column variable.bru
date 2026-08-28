@@ -1,0 +1,25 @@
+meta {
+  name: apply column variable
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{backend_url}}/model-hub/get-column-values/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_id": "8e43e8fc-92cd-4294-b449-3e795fe8c773",
+    "column_placeholders": {
+      "TEXT": "aa71952f-e064-45c7-98bc-313c20e720b7",
+      "LABEL": "7e38f67d-c283-4724-9682-ced74a65c993"
+    }
+  }
+}

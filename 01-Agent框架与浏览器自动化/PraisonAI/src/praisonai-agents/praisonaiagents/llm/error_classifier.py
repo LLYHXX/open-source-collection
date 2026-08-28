@@ -1,0 +1,675 @@
+"""
+Error Classification - Multi-category error classifier for intelligent retry logic.
+
+Extends the existing single-category rate limit detection with comprehensive
+error classification for better handling of different failure modes.
+
+Provides both legacy API (classify_error) and new structured classification
+(classify_llm_error) with explicit recovery routing hints.
+"""
+
+import re
+import random
+from dataclasses import dataclass
+from enum import Enum
+from typing import Dict, Tuple, List, Optional
+
+__all__ = [
+    "ErrorCategory",
+    "LLMErrorClassification", 
+    "classify_error", 
+    "classify_llm_error",
+    "should_retry", 
+    "is_replay_unsafe",
+    "get_retry_delay",
+    "extract_retry_after",
+    "get_error_context",
+]
+
+
+class ErrorCategory(str, Enum):
+    """Categories of LLM provider errors for intelligent handling."""
+    RATE_LIMIT = "rate_limit"           # Too many requests, temporary
+    CONTEXT_LIMIT = "context_limit"     # Input too long, need compression
+    AUTH = "auth"                       # Authentication/authorization failure  
+    INVALID_REQUEST = "invalid_request" # Malformed request, permanent
+    TRANSIENT = "transient"            # Network/server issues, temporary
+    PERMANENT = "permanent"            # Unrecoverable error
+
+
+@dataclass
+class LLMErrorClassification:
+    """
+    Structured result of LLM error classification with explicit recovery hints.
+    
+    This replaces the simple `is_retryable: bool` with actionable recovery routing
+    that allows the agent to take specific recovery actions beyond simple retry.
+    """
+    error_category: str           # "rate_limit" | "context_overflow" | "auth" | "overloaded" | ...
+    is_retryable: bool
+    should_compress_context: bool # True on context overflow → trigger compaction then retry
+    should_rotate_credential: bool
+    should_fallback_model: bool   # True when primary model is unavailable
+    backoff_seconds: float        # 0 = no wait; >0 = jittered delay before retry
+    user_message: str             # Human-readable hint for the end user
+
+
+# Error patterns for classification (case-insensitive)
+_ERROR_PATTERNS: Dict[ErrorCategory, List[str]] = {
+    ErrorCategory.RATE_LIMIT: [
+        r"rate.?limit",
+        r"429",
+        r"too.?many.?request",
+        r"resource.?exhausted", 
+        r"quota.?exceeded",
+        r"tokens.?per.?minute",
+        r"requests.?per.?minute",
+        r"concurrent.?requests",
+    ],
+    
+    ErrorCategory.CONTEXT_LIMIT: [
+        r"context.?length",
+        r"maximum.?context", 
+        r"token.?limit",
+        r"input.?too.?long",
+        r"sequence.?too.?long",
+        r"context.?window",
+        r"413",  # Request Entity Too Large
+        r"payload.?too.?large",
+    ],
+    
+    ErrorCategory.AUTH: [
+        r"authenticat",
+        r"authoriz",
+        r"401", 
+        r"403",
+        r"invalid.?api.?key",
+        r"api.?key.*invalid",
+        r"permission.?denied", 
+        r"access.?denied",
+        r"forbidden",
+        r"unauthorized",
+        r"invalid.?token",
+        r"expired.*token",
+    ],
+    
+    ErrorCategory.INVALID_REQUEST: [
+        r"invalid.*request",
+        r"bad.?request",
+        r"400",
+        r"malformed",
+        r"invalid.*parameter",
+        r"unsupported.*model",
+        r"model.*not.*found",
+        r"validation.*error",
+        r"schema.*error",
+    ],
+    
+    ErrorCategory.TRANSIENT: [
+        r"timeout",
+        r"timed.?out",
+        r"500", r"502", r"503", r"504",
+        r"internal.?server.?error",
+        r"bad.?gateway", 
+        r"service.?unavailable",
+        r"gateway.?timeout",
+        r"connection.*error",
+        r"network.*error",
+        r"temporary.*unavailable",
+        r"server.?overload",
+        r"retry.?after",
+    ],
+}
+
+
+def classify_llm_error(
+    exc: Exception,
+    *,
+    provider: str,
+    model: str,
+    prompt_tokens: int = 0,
+    context_length: int = 0,
+    retry_depth: int = 0,
+) -> LLMErrorClassification:
+    """
+    Classify an LLM error and return structured recovery hints.
+    
+    This is the enhanced error classifier that provides explicit recovery routing
+    beyond simple retry/no-retry decisions.
+    
+    Args:
+        exc: The original exception from the LLM API call
+        provider: LLM provider name (e.g., "openai", "anthropic", "azure")
+        model: Model name (e.g., "gpt-4", "claude-3-sonnet")
+        prompt_tokens: Current prompt token count
+        context_length: Current context window usage
+        retry_depth: Current retry attempt (0-based)
+        
+    Returns:
+        LLMErrorClassification with specific recovery routing
+    """
+    from .retry_utils import jittered_backoff
+    
+    error_str = str(exc).lower()
+    
+    # Use existing classification as base
+    category = classify_error(exc)
+    
+    # Rate limit classification
+    if category == ErrorCategory.RATE_LIMIT:
+        retry_after = extract_retry_after(exc)
+        if retry_after:
+            from .retry_utils import calculate_backoff_with_retry_after
+            backoff_time = calculate_backoff_with_retry_after(retry_after, retry_depth + 1)
+        else:
+            backoff_time = _calculate_rate_limit_backoff(error_str, provider, retry_depth + 1)
+        
+        return LLMErrorClassification(
+            error_category="rate_limit",
+            is_retryable=True,
+            should_compress_context=False,
+            should_rotate_credential=False,
+            should_fallback_model=False,
+            backoff_seconds=backoff_time,
+            user_message=f"Rate limit exceeded for {provider}. Retrying with exponential backoff.",
+        )
+    
+    # Context overflow classification  
+    if category == ErrorCategory.CONTEXT_LIMIT:
+        return LLMErrorClassification(
+            error_category="context_overflow",
+            is_retryable=True,
+            should_compress_context=True,
+            should_rotate_credential=False,
+            should_fallback_model=False,
+            backoff_seconds=0.0,
+            user_message=f"Context window exceeded for {model}. Compressing context and retrying.",
+        )
+    
+    # Authentication/authorization errors
+    if category == ErrorCategory.AUTH:
+        return LLMErrorClassification(
+            error_category="auth",
+            is_retryable=False,  # Don't retry until credential rotation is implemented
+            should_compress_context=False,
+            should_rotate_credential=True,
+            should_fallback_model=False,
+            backoff_seconds=0.0,
+            user_message=f"Authentication failed for {provider}. Check API credentials.",
+        )
+    
+    # Transient service errors (map to overloaded category for consistency with issue)
+    if category == ErrorCategory.TRANSIENT:
+        return LLMErrorClassification(
+            error_category="overloaded",
+            is_retryable=True,
+            should_compress_context=False,
+            should_rotate_credential=False,
+            should_fallback_model=True,
+            backoff_seconds=_calculate_service_backoff(error_str, retry_depth + 1),
+            user_message=f"Service {provider} temporarily unavailable. Falling back to alternate model.",
+        )
+    
+    # Invalid request errors (generally not retryable)
+    if category == ErrorCategory.INVALID_REQUEST:
+        return LLMErrorClassification(
+            error_category="model_error",
+            is_retryable=False,
+            should_compress_context=False,
+            should_rotate_credential=False,
+            should_fallback_model=False,
+            backoff_seconds=0.0,
+            user_message=f"Model {model} returned an error. Check your request parameters.",
+        )
+    
+    # Permanent errors
+    if category == ErrorCategory.PERMANENT:
+        return LLMErrorClassification(
+            error_category="permanent",
+            is_retryable=False,
+            should_compress_context=False,
+            should_rotate_credential=False,
+            should_fallback_model=False,
+            backoff_seconds=0.0,
+            user_message="Permanent error occurred. Cannot retry.",
+        )
+    
+    # This fallback should be unreachable since classify_error() always returns one of the 6 categories
+    # But we keep it for safety in case of future enum additions
+    return LLMErrorClassification(
+        error_category="unknown",
+        is_retryable=True,
+        should_compress_context=False,
+        should_rotate_credential=False,
+        should_fallback_model=False,
+        backoff_seconds=jittered_backoff(retry_depth + 1, base=2.0),
+        user_message="Unknown error occurred. Retrying with backoff.",
+    )
+
+
+def _calculate_rate_limit_backoff(error_str: str, provider: str, retry_attempt: int = 1) -> float:
+    """Calculate jittered backoff time for rate limits based on provider and attempt."""
+    from .retry_utils import jittered_backoff
+    
+    # Provider-specific base delays
+    if provider == "openai":
+        base = 60.0  # OpenAI rate limits are typically per minute
+    elif provider == "anthropic":
+        base = 20.0  # Anthropic rate limits are often shorter
+    elif provider == "azure":
+        base = 45.0  # Azure varies by deployment
+    else:
+        base = 30.0  # Default backoff
+    
+    # Apply jittered exponential backoff
+    return jittered_backoff(retry_attempt, base=base)
+
+
+def _calculate_service_backoff(error_str: str, retry_attempt: int = 1) -> float:
+    """Calculate jittered backoff time for service unavailable errors."""
+    from .retry_utils import jittered_backoff
+    
+    # Look for any suggested retry time in error message
+    retry_match = re.search(r'retry[:\s]+(\d+)', error_str)
+    if retry_match:
+        suggested_delay = min(float(retry_match.group(1)), 120.0)  # Cap at 2 minutes
+        # Use the larger of suggested delay or jittered backoff
+        jittered_delay = jittered_backoff(retry_attempt, base=15.0)
+        return max(suggested_delay, jittered_delay)
+    
+    # Default jittered service unavailable backoff
+    return jittered_backoff(retry_attempt, base=15.0)
+
+
+# Mapping of HTTP status codes to error categories. Provider SDKs (openai,
+# anthropic, litellm, httpx) expose the underlying status on the exception, so
+# we classify by code first — this is stable across providers and does not
+# depend on the wording of the message.
+_STATUS_CODE_CATEGORIES: Dict[int, ErrorCategory] = {
+    400: ErrorCategory.INVALID_REQUEST,
+    401: ErrorCategory.AUTH,
+    403: ErrorCategory.AUTH,
+    404: ErrorCategory.INVALID_REQUEST,
+    408: ErrorCategory.TRANSIENT,
+    413: ErrorCategory.CONTEXT_LIMIT,
+    422: ErrorCategory.INVALID_REQUEST,
+    429: ErrorCategory.RATE_LIMIT,
+    500: ErrorCategory.TRANSIENT,
+    502: ErrorCategory.TRANSIENT,
+    503: ErrorCategory.TRANSIENT,
+    504: ErrorCategory.TRANSIENT,
+    529: ErrorCategory.TRANSIENT,  # Anthropic "overloaded"
+}
+
+# Mapping of provider/stdlib exception class names to error categories. We match
+# on the class name (and its base classes) so that we never need to import the
+# provider SDKs at module load time (keeps the core lightweight and avoids hard
+# dependencies), while still classifying by type rather than message substrings.
+_EXCEPTION_NAME_CATEGORIES: Dict[str, ErrorCategory] = {
+    # openai / anthropic SDK exception classes
+    "ratelimiterror": ErrorCategory.RATE_LIMIT,
+    "authenticationerror": ErrorCategory.AUTH,
+    "permissiondeniederror": ErrorCategory.AUTH,
+    "badrequesterror": ErrorCategory.INVALID_REQUEST,
+    "notfounderror": ErrorCategory.INVALID_REQUEST,
+    "unprocessableentityerror": ErrorCategory.INVALID_REQUEST,
+    "conflicterror": ErrorCategory.TRANSIENT,
+    "internalservererror": ErrorCategory.TRANSIENT,
+    "apiconnectionerror": ErrorCategory.TRANSIENT,
+    "apitimeouterror": ErrorCategory.TRANSIENT,
+    "overloadederror": ErrorCategory.TRANSIENT,
+    "servicunavailableerror": ErrorCategory.TRANSIENT,
+    "serviceunavailableerror": ErrorCategory.TRANSIENT,
+    "contextwindowexceedederror": ErrorCategory.CONTEXT_LIMIT,
+    # litellm exception classes
+    "contentpolicyviolationerror": ErrorCategory.INVALID_REQUEST,
+    # Budget exhaustion is a billing state, not a temporary rate limit — it must
+    # surface immediately rather than being retried under the rate-limit policy.
+    "budgetexceedederror": ErrorCategory.PERMANENT,
+    # stdlib / httpx
+    "timeouterror": ErrorCategory.TRANSIENT,
+    "connectionerror": ErrorCategory.TRANSIENT,
+    "connecterror": ErrorCategory.TRANSIENT,
+    "connecttimeout": ErrorCategory.TRANSIENT,
+    "readtimeout": ErrorCategory.TRANSIENT,
+}
+
+
+def _extract_status_code(error: Exception) -> Optional[int]:
+    """Extract an HTTP status code from a provider exception, if present.
+
+    Provider SDKs surface the status code in different attributes; we probe the
+    common ones (``status_code``, ``code``, ``http_status``) and the nested
+    ``response`` object without importing any provider SDK.
+    """
+    for attr in ("status_code", "http_status", "status"):
+        value = getattr(error, attr, None)
+        if isinstance(value, int) and 100 <= value <= 599:
+            return value
+    # ``code`` may be an int status or a string error code — only accept ints
+    code = getattr(error, "code", None)
+    if isinstance(code, int) and 100 <= code <= 599:
+        return code
+    # httpx-style: exception carries a ``response`` with ``status_code``
+    response = getattr(error, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int) and 100 <= status <= 599:
+            return status
+    return None
+
+
+# Status codes that some providers overload to encode a more specific
+# condition (e.g. OpenAI returns ``context_length_exceeded`` as an HTTP 400).
+# For these we let the message text refine the classification before falling
+# back to the generic bucket, so context overflow still triggers compression
+# and auth failures are not retried as invalid requests.
+_AMBIGUOUS_STATUS_CODES = frozenset({400})
+
+
+def _refine_ambiguous_category(error: Exception) -> Optional[ErrorCategory]:
+    """Refine a broad status code using message signals (context/auth only)."""
+    error_text = f"{type(error).__name__} {error}".lower()
+    for category in (ErrorCategory.CONTEXT_LIMIT, ErrorCategory.AUTH):
+        for pattern in _ERROR_PATTERNS[category]:
+            if re.search(pattern, error_text, re.IGNORECASE):
+                return category
+    return None
+
+
+def _classify_by_type_and_code(error: Exception) -> Optional[ErrorCategory]:
+    """Classify an error by exception type and HTTP status code.
+
+    Returns ``None`` when neither the exception class hierarchy nor a status
+    code yields a match, so the caller can fall back to message matching.
+    """
+    # 1. HTTP status code is the most stable signal across providers.
+    status_code = _extract_status_code(error)
+    if status_code is not None and status_code in _STATUS_CODE_CATEGORIES:
+        # Some providers overload broad codes (e.g. 400) to encode context
+        # overflow or auth failures — refine those before returning the bucket.
+        if status_code in _AMBIGUOUS_STATUS_CODES:
+            refined = _refine_ambiguous_category(error)
+            if refined is not None:
+                return refined
+        return _STATUS_CODE_CATEGORIES[status_code]
+
+    # 2. Exception class name (walking the MRO to catch provider subclasses).
+    for cls in type(error).__mro__:
+        name = cls.__name__.lower()
+        if name in _EXCEPTION_NAME_CATEGORIES:
+            return _EXCEPTION_NAME_CATEGORIES[name]
+
+    return None
+
+
+def classify_error(error: Exception) -> ErrorCategory:
+    """Classify an error into a category for intelligent handling.
+
+    Classification prefers stable signals — exception type and HTTP status
+    code (including provider error codes) — and only falls back to matching the
+    message text when the type/code are unknown. This makes classification
+    reliable across providers (e.g. a 429 rate limit whose message does not
+    contain the word "rate" is still classified correctly).
+
+    Args:
+        error: Exception to classify
+        
+    Returns:
+        ErrorCategory indicating how the error should be handled
+        
+    Examples:
+        >>> classify_error(Exception("Rate limit exceeded"))
+        ErrorCategory.RATE_LIMIT
+        >>> classify_error(Exception("Context length 8192 exceeded"))  
+        ErrorCategory.CONTEXT_LIMIT
+        >>> classify_error(Exception("Invalid API key"))
+        ErrorCategory.AUTH
+    """
+    # 1. Classify by exception type / status code first (stable across providers).
+    typed = _classify_by_type_and_code(error)
+    if typed is not None:
+        return typed
+
+    # 2. Fall back to message/regex matching for plain/unknown exceptions.
+    error_text = f"{type(error).__name__} {error}".lower()
+    
+    # Check each category's patterns
+    for category, patterns in _ERROR_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, error_text, re.IGNORECASE):
+                return category
+    
+    # Default to permanent for unknown errors
+    return ErrorCategory.PERMANENT
+
+
+def should_retry(category: ErrorCategory) -> bool:
+    """Determine if an error category should be retried.
+    
+    Args:
+        category: Error category from classify_error()
+        
+    Returns:
+        True if the error type should be retried
+    """
+    return category in {
+        ErrorCategory.RATE_LIMIT,
+        ErrorCategory.CONTEXT_LIMIT,  # Could retry with compression
+        ErrorCategory.TRANSIENT,
+    }
+
+
+# Signals that a transient failure happened AFTER the request was dispatched, so
+# the provider may already have produced output (and any side-effecting tool
+# calls in that turn may already have run). Replaying such a call is unsafe: it
+# risks double-executing the turn. Read timeouts, connection resets and
+# incomplete/streaming reads all occur once bytes have been sent.
+_REPLAY_UNSAFE_EXCEPTION_NAMES = frozenset({
+    "readtimeout",              # httpx.ReadTimeout / requests ReadTimeout
+    "readtimeouterror",         # urllib3 ReadTimeoutError
+    "connectionreseterror",     # stdlib socket reset mid-response
+    "chunkedencodingerror",     # response body truncated after dispatch
+    "incompleteread",           # http.client partial read after dispatch
+    "remoteprotocolerror",      # httpx: peer closed connection mid-response
+    "protocolerror",            # urllib3 protocol error mid-response
+    "apitimeouterror",          # provider SDK request timeout (post-send)
+})
+
+# Signals that a transient failure happened BEFORE the request was dispatched,
+# so the provider provably did not process it — safe to replay automatically.
+_REPLAY_SAFE_EXCEPTION_NAMES = frozenset({
+    "connecttimeout",           # TCP connect never completed
+    "connecttimeouterror",      # urllib3 connect timeout
+    "connectionrefusederror",   # nothing accepted the connection
+    "connecterror",             # httpx connect error (pre-dispatch)
+    "newconnectionerror",       # urllib3: connection never established
+    "gaierror",                 # DNS resolution failure
+    "sslerror",                 # TLS handshake failure (pre-dispatch)
+    "sslcertverificationerror",
+})
+
+_REPLAY_UNSAFE_MESSAGE_PATTERNS = (
+    r"read.?timed?.?out",
+    r"read.?timeout",
+    r"connection.?reset",
+    r"peer.?closed",
+    r"incomplete.?read",
+    r"chunked",
+    r"response.?ended.?prematurely",
+    r"server.?disconnected",
+)
+
+_REPLAY_SAFE_MESSAGE_PATTERNS = (
+    r"connect.?timed?.?out",
+    r"connection.?timed?.?out",
+    r"connection.?refused",
+    r"name.?resolution",
+    r"failed.?to.?resolve",
+    r"getaddrinfo",
+    r"ssl",
+    r"handshake",
+    r"tls",
+)
+
+
+def is_replay_unsafe(error: Exception) -> bool:
+    """Return True if replaying the request could double-execute the turn.
+
+    Distinguishes *pre-dispatch* failures (the request provably never reached
+    the provider — DNS/connect/TLS failures) which are safe to replay, from
+    *post-dispatch* failures (read timeout, connection reset mid-response) where
+    the provider may already have produced output and any side-effecting tool
+    calls may already have run. Post-dispatch failures are replay-unsafe.
+
+    Defaults to ``False`` (safe/retryable) for ambiguous transient errors so
+    existing auto-retry behaviour is preserved unless a post-dispatch signal is
+    present. Callers should only block the retry when the turn is side-effecting.
+    """
+    # 1. Exception type (walk the MRO to catch provider subclasses) — most stable.
+    for cls in type(error).__mro__:
+        name = cls.__name__.lower()
+        if name in _REPLAY_SAFE_EXCEPTION_NAMES:
+            return False
+        if name in _REPLAY_UNSAFE_EXCEPTION_NAMES:
+            return True
+
+    # 2. Message text — pre-dispatch signals win over the generic "timeout".
+    error_text = f"{type(error).__name__} {error}".lower()
+    for pattern in _REPLAY_SAFE_MESSAGE_PATTERNS:
+        if re.search(pattern, error_text):
+            return False
+    for pattern in _REPLAY_UNSAFE_MESSAGE_PATTERNS:
+        if re.search(pattern, error_text):
+            return True
+
+    return False
+
+
+def get_retry_delay(category: ErrorCategory, attempt: int = 1, base_delay: float = 1.0) -> float:
+    """Get the appropriate delay before retrying based on error category.
+    
+    Uses full jitter to prevent thundering herd problems in multi-agent setups
+    where multiple agents hit rate limits simultaneously.
+    
+    Args:
+        category: Error category
+        attempt: Current attempt number (1-based)
+        base_delay: Base delay in seconds
+        
+    Returns:
+        Delay in seconds, or 0 if should not retry
+        
+    Examples:
+        >>> # With jitter, these will return random values in range:
+        >>> get_retry_delay(ErrorCategory.RATE_LIMIT, attempt=1)  # 0.0 to 3.0
+        >>> get_retry_delay(ErrorCategory.TRANSIENT, attempt=3)   # 0.0 to 8.0
+        >>> get_retry_delay(ErrorCategory.AUTH, attempt=1)        # Always 0
+    """
+    attempt = max(1, attempt)
+
+    if not should_retry(category):
+        return 0
+    
+    if category == ErrorCategory.RATE_LIMIT:
+        # Exponential backoff with equal jitter for rate limits (minimum floor to prevent instant retries)
+        max_delay = min(base_delay * (3 ** attempt), 60.0)
+        return base_delay + random.uniform(0, max_delay - base_delay)
+    
+    elif category == ErrorCategory.CONTEXT_LIMIT:
+        # Short delay for context limits (no jitter needed - not a contention issue)
+        return base_delay * 0.5
+    
+    elif category == ErrorCategory.TRANSIENT:
+        # Exponential backoff with equal jitter for transient errors (minimum floor to prevent instant retries)
+        max_delay = min(base_delay * (2 ** attempt), 30.0)
+        return base_delay + random.uniform(0, max_delay - base_delay)
+    
+    return 0
+
+
+def extract_retry_after(error: Exception) -> Optional[float]:
+    """Extract Retry-After header value from rate limit errors.
+    
+    Args:
+        error: Exception potentially containing Retry-After info
+        
+    Returns:
+        Delay in seconds if found, None otherwise
+    """
+    # 1. Prefer the structured Retry-After header from the provider response.
+    #    Provider SDKs (openai/anthropic/httpx) expose ``response.headers``.
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None) or getattr(error, "headers", None)
+    if headers is not None:
+        try:
+            retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        except (AttributeError, TypeError):
+            retry_after = None
+        if retry_after is not None:
+            try:
+                return min(float(retry_after), 300.0)  # Cap at 5 minutes
+            except (ValueError, TypeError):
+                pass  # Not a plain number (could be an HTTP-date); fall through
+
+    # 2. Some SDKs expose a numeric ``retry_after`` attribute directly.
+    retry_after_attr = getattr(error, "retry_after", None)
+    if isinstance(retry_after_attr, (int, float)):
+        return min(float(retry_after_attr), 300.0)
+
+    error_str = str(error)
+    
+    # 3. Fall back to parsing common Retry-After patterns from the message.
+    patterns = [
+        r"retry.?after[:\s]+(\d+)",
+        r"retry[:\s]+(\d+)",
+        r"wait[:\s]+(\d+)",
+        r"(\d+).*second",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, error_str, re.IGNORECASE)
+        if match:
+            try:
+                delay = float(match.group(1))
+                return min(delay, 300.0)  # Cap at 5 minutes
+            except (ValueError, IndexError):
+                continue
+    
+    return None
+
+
+def get_error_context(error: Exception) -> Dict[str, str]:
+    """Extract structured context from an error for logging/debugging.
+    
+    Args:
+        error: Exception to analyze
+        
+    Returns:
+        Dictionary with error context information
+    """
+    category = classify_error(error)
+    
+    context = {
+        "error_type": type(error).__name__,
+        "category": category.value,
+        "should_retry": str(should_retry(category)),
+        "message": str(error)[:500],  # Truncate long messages
+    }
+    
+    # Add category-specific context
+    if category == ErrorCategory.RATE_LIMIT:
+        retry_after = extract_retry_after(error)
+        if retry_after:
+            context["retry_after"] = str(retry_after)
+    
+    elif category == ErrorCategory.CONTEXT_LIMIT:
+        context["suggestion"] = "Try reducing input size or enabling compression"
+        
+    elif category == ErrorCategory.AUTH:
+        context["suggestion"] = "Check API key configuration"
+    
+    elif category == ErrorCategory.INVALID_REQUEST:
+        context["suggestion"] = "Review request parameters"
+        
+    return context

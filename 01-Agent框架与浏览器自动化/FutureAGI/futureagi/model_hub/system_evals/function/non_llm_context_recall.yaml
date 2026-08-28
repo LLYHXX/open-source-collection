@@ -1,0 +1,32 @@
+eval_id: 193
+name: non_llm_context_recall
+description: Non-LLM context recall for RAG evaluation. Measures what fraction of reference contexts were successfully retrieved.
+eval_tags:
+- RAG
+- Retrieval Systems
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [output, expected]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {output: "Retrieved contexts (JSON array)", expected: "Reference contexts (JSON array)"}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _p(v):
+            if isinstance(v, str):
+                try: return json.loads(v)
+                except: return [x.strip() for x in v.split("\n") if x.strip()]
+            if isinstance(v, list): return v
+            return [str(v)]
+        ret = _p(kwargs.get("output", output))
+        ref = _p(kwargs.get("expected", expected))
+        if not ref: return {"score": 1.0 if not ret else 0.0, "reason": "No reference contexts"}
+        ret_set = set(str(r).lower().strip() for r in ret)
+        hits = sum(1 for c in ref if str(c).lower().strip() in ret_set)
+        rec = hits/len(ref)
+        return {"score": float(rec), "reason": f"Context Recall: {rec:.4f} ({hits}/{len(ref)})"}

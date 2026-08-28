@@ -1,0 +1,15 @@
+meta {
+  name: get dataset table columns
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}/model-hub/dataset/column-config/7c7ddf39-f8b7-4f49-9bd9-2432a9ccdf5e/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

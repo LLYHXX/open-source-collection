@@ -1,0 +1,26 @@
+meta {
+  name: Create Trace
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/tracer/trace/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "241358a5-7558-4987-bb57-e4d033db159c",
+    "name": "trace_2",
+    "input":{
+      "test_metadata": "trace number 2"
+    },
+    "project_version": "947f51e7-19c8-4a2f-a239-f1fd2ede64ee"
+  }
+}

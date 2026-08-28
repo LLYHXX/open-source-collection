@@ -1,0 +1,64 @@
+eval_id: 67
+name: translation_accuracy
+description: Evaluates the quality of translation by checking semantic accuracy, cultural appropriateness, and preservation
+  of original meaning. Considers both literal accuracy and natural expression in the target language.
+criteria: "You are evaluating whether the translated output accurately conveys the meaning of the original input text.\n\n\
+  ## Criteria\n\n1. Semantic preservation: The core meaning, intent, and factual content of the source must be maintained.\n\
+  \   - Pass: All key ideas from the source appear correctly in the translation.\n   - Fail: A sentence's meaning is reversed\
+  \ or a key concept is mistranslated.\n\n2. Fluency and naturalness: The translation should sound natural in the target language,\
+  \ not transliterated.\n   - Pass: Reads like it was originally written in the target language.\n   - Fail: Awkward word-by-word\
+  \ translation that sounds unnatural.\n\n3. Cultural adaptation: Idioms, cultural references, and tone should be adapted\
+  \ appropriately.\n   - Pass: An English idiom is rendered as an equivalent expression in the target language.\n   - Fail:\
+  \ A literal translation of an idiom that makes no sense in the target language.\n\n## Anti-bias Rules\n\n- Proper nouns\
+  \ and technical terms may be kept in original language if that is standard practice.\n- Minor grammatical imperfections\
+  \ that do not affect meaning should NOT significantly reduce the score.\n- A short accurate translation scores higher than\
+  \ a long translation with meaning-altering errors.\n\n## Scoring\n\nScore 0.0 if the translation fundamentally misrepresents\
+  \ the source meaning. Score 0.5 if general meaning is conveyed but with notable accuracy, fluency, or tone errors. Score\
+  \ 1.0 if translation accurately conveys full meaning, sounds natural, and preserves tone.\n\n## Inputs\n\n<input>{{input}}</input>\n\
+  \n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  output: score
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    input: The input to be evaluated
+    output: The output to be evaluated
+  param_modalities:
+    input: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output: *id001
+  rule_prompt: "You are evaluating whether the translated output accurately conveys the meaning of the original input text.\n\
+    \n## Criteria\n\n1. Semantic preservation: The core meaning, intent, and factual content of the source must be maintained.\n\
+    \   - Pass: All key ideas from the source appear correctly in the translation.\n   - Fail: A sentence's meaning is reversed\
+    \ or a key concept is mistranslated.\n\n2. Fluency and naturalness: The translation should sound natural in the target\
+    \ language, not transliterated.\n   - Pass: Reads like it was originally written in the target language.\n   - Fail: Awkward\
+    \ word-by-word translation that sounds unnatural.\n\n3. Cultural adaptation: Idioms, cultural references, and tone should\
+    \ be adapted appropriately.\n   - Pass: An English idiom is rendered as an equivalent expression in the target language.\n\
+    \   - Fail: A literal translation of an idiom that makes no sense in the target language.\n\n## Anti-bias Rules\n\n- Proper\
+    \ nouns and technical terms may be kept in original language if that is standard practice.\n- Minor grammatical imperfections\
+    \ that do not affect meaning should NOT significantly reduce the score.\n- A short accurate translation scores higher\
+    \ than a long translation with meaning-altering errors.\n\n## Scoring\n\nScore 0.0 if the translation fundamentally misrepresents\
+    \ the source meaning. Score 0.5 if general meaning is conveyed but with notable accuracy, fluency, or tone errors. Score\
+    \ 1.0 if translation accurately conveys full meaning, sounds natural, and preserves tone.\n\n## Inputs\n\n<input>{{input}}</input>\n\
+    \n<output>{{output}}</output>"

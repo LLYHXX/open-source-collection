@@ -1,0 +1,596 @@
+"""
+Prompt injection defense for PraisonAI agents.
+
+Implements a 6-check detection pipeline adapted from production
+sovereign-agent security research. Works as a PraisonAI hook
+registered on BEFORE_TOOL and BEFORE_AGENT events.
+
+Zero overhead when not enabled — all imports are local.
+"""
+import re
+import logging
+import unicodedata
+from dataclasses import dataclass, field
+from enum import IntEnum
+from typing import Callable, List, Optional, Any
+
+logger = logging.getLogger(__name__)
+
+# ─── Threat Classification ────────────────────────────────────────────────────
+
+class ThreatLevel(IntEnum):
+    """Severity of detected injection attempt."""
+    LOW = 0       # Log only; no action
+    MEDIUM = 1    # Log + warn; continue
+    HIGH = 2      # Log + warn; sanitize
+    CRITICAL = 3  # Block execution entirely
+
+
+# ─── Detection Pattern Sets ───────────────────────────────────────────────────
+
+# Strict instruction-override patterns: unambiguous jailbreak / override intent.
+# A single hit escalates to HIGH (block), because these phrases have no benign
+# reading in a tool input or user prompt.
+_INSTRUCTION_PATTERNS_STRICT: List[str] = [
+    r"ignore\s+(all\s+)?(previous|prior|earlier|above)\s+(instructions?|directives?|rules?|prompts?)",
+    r"disregard\s+(your\s+)?(previous|prior|earlier|above|all|system|prompt|instructions?)",
+    r"forget\s+(everything|all|your)\s+(you\s+)?(know|were\s+told|learned)",
+    r"override\s+(your\s+)?(guidelines?|rules?|instructions?|directives?)",
+    r"act\s+as\s+if\s+you\s+(have\s+no|don'?t\s+have)\s+(restrictions?|rules?|guidelines?)",
+    r"DAN\s*[\-:,]",       # "Do Anything Now" jailbreak
+    r"jailbreak",
+    r"your\s+true\s+self",
+    r"developer\s+mode\s+enabled",
+    r"unrestricted\s+mode",
+]
+
+# Soft patterns: common in benign role-play / coaching / planning prompts
+# ("You are now analyzing…", "Pretend to be a writing coach"). On their own
+# these are only MEDIUM; they escalate to HIGH only when combined with another
+# category (e.g. an authority claim), so real attacks are still caught while
+# ordinary prompts are not blocked.
+_INSTRUCTION_PATTERNS_SOFT: List[str] = [
+    r"(new|updated?|revised?)\s+instructions?\s*(are|:)",
+    r"you\s+are\s+now\s+",
+    r"you\s+must\s+now\s+",
+    r"pretend\s+(you\s+are|to\s+be)\s+",
+    r"roleplay\s+as\s+",
+]
+
+# Back-compat: the union is still exported as the original name so any external
+# code (or extra_patterns callers) referencing _INSTRUCTION_PATTERNS keeps
+# working.
+_INSTRUCTION_PATTERNS: List[str] = (
+    _INSTRUCTION_PATTERNS_STRICT + _INSTRUCTION_PATTERNS_SOFT
+)
+
+_AUTHORITY_PATTERNS: List[str] = [
+    r"i\s+am\s+(your\s+)?(creator|developer|owner|admin|administrator|operator|god|master)",
+    r"i\s+am\s+the\s+(developer|creator|owner|admin|administrator)\s+(of|for)\s+(this|the)\s+system",
+    r"as\s+(your|the)\s+(creator|developer|owner|admin|administrator|system|openai|anthropic|google)",
+    r"message\s+from\s+(openai|anthropic|google|microsoft|your\s+creator|your\s+developer)",
+    r"this\s+is\s+(openai|anthropic|google|your\s+creator|your\s+developer|your\s+owner)",
+    r"(openai|anthropic|google)\s+(hereby|grants?|allows?|authorizes?)",
+    r"system\s+override\s+(by|from|authorized)",
+    r"root\s+access\s+granted",
+    r"(elevated|admin)\s+privilege",
+]
+
+_BOUNDARY_PATTERNS: List[str] = [
+    r"</?(system|human|assistant|user|prompt|instruction)\s*>",
+    r"\[/?(SYSTEM|HUMAN|ASSISTANT|USER|PROMPT|INST)\]",
+    r"---+\s*(END|STOP|IGNORE|NEW)\s+(SYSTEM|PROMPT|INSTRUCTIONS?)\s*---+",
+    r"={3,}\s*(END|STOP|IGNORE)\s+(SYSTEM|PROMPT)\s*={3,}",
+    r"<\|im_start\|>|<\|im_end\|>",    # OpenAI ChatML boundary tags
+    r"<<SYS>>|<</SYS>>",               # Llama system tags
+    r"\[INST\]|\[/INST\]",             # Llama instruction tags
+    r"###\s*(Human|Assistant|System):",
+]
+
+_OBFUSCATION_PATTERNS: List[str] = [
+    r"0x[0-9a-fA-F]{16,}",            # Long hex strings (potential encoding)
+    r"\\u[0-9a-fA-F]{4}(\\u[0-9a-fA-F]{4}){4,}",  # Unicode escape sequences
+    r"\.(decode|encode)\(['\"]base64['\"]",         # Base64 decode calls
+]
+
+_FINANCIAL_PATTERNS: List[str] = [
+    r"transfer\s+(funds?|money|\$|usdc|eth|btc|crypto|\d+)",
+    r"send\s+(money|\$|usdc|eth|btc|funds?|crypto|payment|\$?\d+)\s+(to|into)",
+    r"send\s+.{0,20}\s+to\s+(my|your|their|the)?\s*wallet",
+    r"(approve|authorize|confirm)\s+(this\s+)?(payment|transaction|transfer)",
+    r"(buy|purchase|acquire)\s+(bitcoin|eth|crypto|usdc)\s+(with|using)\s+(all|my|your)",
+    r"wire\s+(transfer|funds?)",
+    r"withdraw\s+(all|funds?|balance)",
+    r"drain\s+(wallet|account|funds?|balance)",
+]
+
+_SELF_HARM_PATTERNS: List[str] = [
+    r"(delete|destroy|erase|wipe|remove)\s+(yourself|your\s+(data|memory|files|code|database))",
+    r"(shutdown|shut\s+down|terminate|kill)\s+(yourself|your\s+(process|runtime|server)|immediately)",
+    r"shut\s+down\s+(immediately|now|completely)",
+    r"erase\s+(all|your)\s+(memory|data|history)",
+    r"erase\s+all\s+your\s+",
+    r"rm\s+-rf\s+[/~]",               # Destructive shell command
+    r"drop\s+(database|table|schema)\s+",  # SQL destruction
+    r"format\s+(c:|/dev/sd[a-z])",    # Disk format
+    r"self[\s-]?destruct",
+    r"(corrupt|destroy)\s+(your\s+)?(state|database|config|wallet)",
+]
+
+_LONG_B64_RE = re.compile(r"^[A-Za-z0-9+/]{40,}={0,2}$")
+
+# Zero-width / invisible characters commonly injected between letters to break
+# token matches (e.g. "ig\u200bnore"). Stripped BEFORE pattern search.
+_ZERO_WIDTH_RE = re.compile(
+    "[\u200b\u200c\u200d\u200e\u200f\u2060\ufeff\u00ad\u180e]"
+)
+
+# Cross-script homoglyph map. NFKC folds full-width / small-form / ligature
+# glyphs into ASCII, but it does NOT fold Cyrillic/Greek look-alikes onto Latin
+# (they are distinct code points in distinct scripts). This small confusables
+# table catches the common one-liner bypass "іgnore …" (Cyrillic і) etc.
+_CONFUSABLES = {
+    "\u0430": "a",  # Cyrillic а
+    "\u0435": "e",  # Cyrillic е
+    "\u043e": "o",  # Cyrillic о
+    "\u0440": "p",  # Cyrillic р
+    "\u0441": "c",  # Cyrillic с
+    "\u0443": "y",  # Cyrillic у
+    "\u0445": "x",  # Cyrillic х
+    "\u0456": "i",  # Cyrillic і
+    "\u0455": "s",  # Cyrillic ѕ
+    "\u0501": "d",  # Cyrillic ԁ
+    "\u04bb": "h",  # Cyrillic һ
+    "\u0391": "A",  "\u0392": "B",  "\u0395": "E",  "\u0396": "Z",
+    "\u0397": "H",  "\u0399": "I",  "\u039a": "K",  "\u039c": "M",
+    "\u039d": "N",  "\u039f": "O",  "\u03a1": "P",  "\u03a4": "T",
+    "\u03a5": "Y",  "\u03a7": "X",
+    "\u03b1": "a",  "\u03bf": "o",  "\u03c1": "p",  "\u03c5": "u",
+}
+_CONFUSABLES_TABLE = str.maketrans(_CONFUSABLES)
+
+
+def _normalize_for_scan(text: str) -> str:
+    """Fold obfuscation into canonical ASCII so pattern matching sees intent.
+
+    - NFKC collapses full-width, small-form, ligature and superscript glyphs
+      into their ASCII-equivalent forms.
+    - Zero-width joiners/spaces are stripped so they can't break word tokens.
+    - A small confusables table maps common Cyrillic/Greek homoglyphs onto
+      their Latin look-alikes (NFKC alone does not fold across scripts).
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = _ZERO_WIDTH_RE.sub("", text)
+    return text.translate(_CONFUSABLES_TABLE)
+
+# Trust sources that bypass injection scanning
+_TRUSTED_SOURCES = frozenset([
+    "trusted_tool", "internal", "system", "praisonai_core",
+])
+
+# Bounds for _extract_strings: cap by total scanned bytes and cardinality
+# instead of tree depth, so nested tool inputs are still fully scanned while a
+# pathological adversarial blob cannot OOM the process.
+_EXTRACT_MAX_TOTAL_BYTES = 1_048_576  # 1 MiB per scan
+_EXTRACT_MAX_STRINGS = 10_000         # hard cap on distinct strings emitted
+
+
+# ─── Detection Functions ──────────────────────────────────────────────────────
+
+def detect_instruction_patterns(text: str) -> bool:
+    """Check 1: Instruction override / jailbreak patterns (strict OR soft)."""
+    for pat in _INSTRUCTION_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def detect_instruction_strict(text: str) -> bool:
+    """Check 1a: Unambiguous instruction-override / jailbreak patterns."""
+    for pat in _INSTRUCTION_PATTERNS_STRICT:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def detect_instruction_soft(text: str) -> bool:
+    """Check 1b: Softer role-play / imperative patterns (benign on their own)."""
+    for pat in _INSTRUCTION_PATTERNS_SOFT:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def detect_authority_claims(text: str) -> bool:
+    """Check 2: Fake authority / impersonation patterns."""
+    for pat in _AUTHORITY_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def detect_boundary_manipulation(text: str) -> bool:
+    """Check 3: Prompt boundary injection (fake system/human/assistant tags)."""
+    for pat in _BOUNDARY_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def detect_obfuscation(text: str) -> bool:
+    """Check 4: Encoding/obfuscation tricks (base64, hex, unicode escapes)."""
+    # Long hex strings
+    for pat in _OBFUSCATION_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    # Long base64-like blobs (≥40 chars of valid b64 chars)
+    stripped = text.strip()
+    if _LONG_B64_RE.match(stripped) and len(stripped) >= 40:
+        return True
+    return False
+
+
+def detect_financial_manipulation(text: str) -> bool:
+    """Check 5: Unauthorized financial / crypto manipulation patterns."""
+    for pat in _FINANCIAL_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def detect_self_harm_instructions(text: str) -> bool:
+    """Check 6: Instructions to destroy agent data, shutdown, or wipe memory."""
+    for pat in _SELF_HARM_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+# ─── ScanResult ───────────────────────────────────────────────────────────────
+
+@dataclass
+class ScanResult:
+    """Result of scanning a text for injection threats."""
+    threat_level: ThreatLevel
+    blocked: bool
+    checks_triggered: List[str] = field(default_factory=list)
+    source: str = "external"
+    text_preview: str = ""
+
+    @property
+    def is_safe(self) -> bool:
+        return self.threat_level == ThreatLevel.LOW
+
+    def __repr__(self) -> str:
+        return (
+            f"ScanResult(level={self.threat_level.name}, blocked={self.blocked}, "
+            f"checks={self.checks_triggered})"
+        )
+
+
+def scan_text(text: str, source: str = "external") -> ScanResult:
+    """
+    Run all 6 injection checks on a text string.
+
+    Args:
+        text: The text to scan.
+        source: Source of the text. Trusted sources bypass blocking.
+                Values: 'external' (default), 'trusted_tool', 'internal'.
+
+    Returns:
+        ScanResult with threat level and triggered checks.
+
+    Example:
+        >>> result = scan_text("Ignore all previous instructions")
+        >>> result.threat_level
+        <ThreatLevel.HIGH: 2>
+    """
+    if not text or not isinstance(text, str):
+        return ScanResult(ThreatLevel.LOW, blocked=False, source=source)
+
+    # Fold full-width / zero-width / homoglyph obfuscation to canonical ASCII
+    # before matching so attackers can't slip past ASCII-anchored patterns.
+    normalized = _normalize_for_scan(text)
+
+    # Trusted sources: scan but never block
+    is_trusted = source in _TRUSTED_SOURCES
+
+    triggered = []
+    # Split instruction detection: strict phrases are auto-HIGH on a single hit;
+    # soft role-play / imperative phrases are benign alone (MEDIUM) and only
+    # escalate when paired with another signal. A strict hit supersedes a soft
+    # one so we never double-count instruction checks.
+    if detect_instruction_strict(normalized):
+        triggered.append("instruction_override")
+    elif detect_instruction_soft(normalized):
+        triggered.append("instruction_soft")
+    if detect_authority_claims(normalized):
+        triggered.append("authority_claim")
+    if detect_boundary_manipulation(normalized):
+        triggered.append("boundary_manipulation")
+    if detect_obfuscation(normalized):
+        triggered.append("obfuscation")
+    if detect_financial_manipulation(normalized):
+        triggered.append("financial_manipulation")
+    if detect_self_harm_instructions(normalized):
+        triggered.append("self_harm_instruction")
+
+    count = len(triggered)
+    if count == 0:
+        level = ThreatLevel.LOW
+    elif count == 1:
+        # Single check: HIGH for dangerous categories, MEDIUM for softer signals
+        # (soft instruction phrases, authority claims, etc.) so common benign
+        # role-play / coaching prompts are not blocked on their own.
+        dangerous = {"financial_manipulation", "self_harm_instruction", "instruction_override"}
+        level = ThreatLevel.HIGH if triggered[0] in dangerous else ThreatLevel.MEDIUM
+    elif count == 2:
+        level = ThreatLevel.HIGH
+    else:
+        level = ThreatLevel.CRITICAL
+
+    # Trusted sources are never blocked regardless of level
+    blocked = (level >= ThreatLevel.HIGH) and not is_trusted
+
+    if triggered:
+        logger.warning(
+            "[praisonai.security] Injection detected | source=%s level=%s checks=%s preview=%r",
+            source, level.name, triggered, text[:80],
+        )
+
+    return ScanResult(
+        threat_level=level,
+        blocked=blocked,
+        checks_triggered=triggered,
+        source=source,
+        text_preview=text[:100],
+    )
+
+
+# ─── InjectionDefense Class ───────────────────────────────────────────────────
+
+class InjectionDefense:
+    """
+    Injection defense that integrates with PraisonAI's hook system.
+
+    Scans tool inputs and agent prompts for prompt injection attempts
+    and blocks critical threats before they reach the LLM.
+
+    Example:
+        >>> defense = InjectionDefense()
+        >>> hook = defense.create_hook()
+        >>> # Register with agent:
+        >>> from praisonaiagents.hooks import add_hook
+        >>> add_hook("before_tool", hook)
+    """
+
+    def __init__(
+        self,
+        extra_patterns: Optional[List[str]] = None,
+        block_threshold: ThreatLevel = ThreatLevel.HIGH,
+        trusted_sources: Optional[List[str]] = None,
+    ):
+        """
+        Args:
+            extra_patterns: Additional regex patterns to include in Check 1.
+            block_threshold: Minimum threat level that causes blocking.
+                             Default: HIGH (block single high-severity detections).
+            trusted_sources: Source names that bypass blocking.
+        """
+        self._extra_patterns = extra_patterns or []
+        self._block_threshold = block_threshold
+        self._trusted_sources = frozenset(trusted_sources or []) | _TRUSTED_SOURCES
+
+    def scan(self, text: str, source: str = "external") -> ScanResult:
+        """
+        Scan text through the 6-check pipeline.
+
+        Args:
+            text: Text to scan.
+            source: Source identifier ('external', 'trusted_tool', etc.)
+
+        Returns:
+            ScanResult with threat classification.
+        """
+        result = scan_text(text, source=source)
+
+        # Apply extra patterns as Check 1 extension (against normalized text so
+        # obfuscated payloads can't bypass custom patterns either).
+        if self._extra_patterns and text:
+            normalized = _normalize_for_scan(text)
+            for pat in self._extra_patterns:
+                if re.search(pat, normalized, re.IGNORECASE):
+                    if "extra_pattern" not in result.checks_triggered:
+                        result.checks_triggered.append("extra_pattern")
+                    # Escalate if extra pattern fires
+                    if result.threat_level < ThreatLevel.MEDIUM:
+                        result.threat_level = ThreatLevel.MEDIUM
+                    break
+
+        # Re-evaluate blocking with custom threshold
+        is_trusted = source in self._trusted_sources
+        result.blocked = (result.threat_level >= self._block_threshold) and not is_trusted
+
+        return result
+
+    def _extract_strings_bounded(self, obj: Any) -> "tuple[List[str], bool]":
+        """Walk ``obj`` iteratively; return (strings, truncated).
+
+        Bounded by total scanned bytes and cardinality, NOT by tree depth, so a
+        legitimately nested tool argument (a filter DSL, a JSON-schema payload,
+        a handoff routing config) is still fully scanned instead of being
+        silently dropped once nesting exceeds a fixed depth. Dict keys are
+        scanned too, since attacker-controlled keys are routed into the prompt
+        on many frameworks. Cycles are handled via a seen-set on container
+        identity, and the byte/cardinality caps fail *loud* (warning + partial
+        scan) so a pathological input can never OOM the process.
+
+        ``truncated`` is True when the byte/cardinality budget was exhausted
+        before the object was fully walked, meaning some values were NOT
+        scanned. Security callers MUST treat truncated untrusted input as
+        un-vettable and fail *closed* (block) rather than allow-on-no-match,
+        otherwise an attacker can pad benign strings ahead of an injection
+        payload so the payload is never reached (see ``create_hook``).
+        """
+        strings: List[str] = []
+        seen_ids: set = set()
+        stack: List[Any] = [obj]
+        total_bytes = 0
+        truncated = False
+
+        while stack:
+            item = stack.pop()
+
+            if isinstance(item, str):
+                if not item:
+                    continue
+                strings.append(item)
+                total_bytes += len(item)
+                if (
+                    total_bytes >= _EXTRACT_MAX_TOTAL_BYTES
+                    or len(strings) >= _EXTRACT_MAX_STRINGS
+                ):
+                    truncated = bool(stack)
+                    if truncated:
+                        logger.warning(
+                            "[praisonai.security] extraction bounded: %d strings / "
+                            "%d bytes seen; remaining nested values were not "
+                            "scanned — treating input as unsafe (fail-closed).",
+                            len(strings), total_bytes,
+                        )
+                    break
+                continue
+
+            oid = id(item)
+            if oid in seen_ids:
+                continue
+
+            if isinstance(item, dict):
+                seen_ids.add(oid)
+                stack.extend(item.keys())
+                stack.extend(item.values())
+            elif isinstance(item, (list, tuple, set, frozenset)):
+                seen_ids.add(oid)
+                stack.extend(item)
+            # Other types (numbers, bools, None, custom objects) are ignored.
+
+        return strings, truncated
+
+    def _extract_strings(self, obj: Any) -> List[str]:
+        """Back-compat shim: return only the extracted strings.
+
+        Retained so external callers referencing ``_extract_strings`` keep
+        working. The security hook uses :meth:`_extract_strings_bounded` so it
+        can also observe truncation and fail closed.
+        """
+        return self._extract_strings_bounded(obj)[0]
+
+    def create_hook(self) -> Callable:
+        """
+        Create a BEFORE_TOOL hook function for use with PraisonAI's hook system.
+
+        Returns:
+            Hook function that accepts BeforeToolInput and returns HookResult or None.
+
+        Example:
+            >>> from praisonaiagents.hooks import add_hook
+            >>> defense = InjectionDefense()
+            >>> add_hook("before_tool", defense.create_hook())
+        """
+        defense = self
+
+        def _injection_hook(data: Any):
+            # Lazily import to avoid circular at module load
+            from praisonaiagents.hooks import HookResult
+
+            # Extract all string values from tool_input dict
+            strings, truncated = defense._extract_strings_bounded(
+                getattr(data, "tool_input", {})
+            )
+            # Also check the prompt if this is a before_agent event
+            prompt = getattr(data, "prompt", "")
+            if prompt:
+                strings.append(prompt)
+
+            # SECURITY: if extraction hit its byte/cardinality budget the input
+            # was NOT fully scanned. Allowing it would let an attacker pad
+            # benign strings ahead of an injection payload so the payload is
+            # never reached. A before-tool gate must fail *closed*: block the
+            # call rather than allow an un-vettable, oversized tool input.
+            if truncated:
+                logger.warning(
+                    "[praisonai.security] Blocking tool=%s agent=%s: tool input "
+                    "exceeded scan budget and could not be fully vetted.",
+                    getattr(data, "tool_name", "?"),
+                    getattr(data, "agent_name", "?"),
+                )
+                return HookResult(
+                    decision="block",
+                    reason=(
+                        "Injection defense: tool input exceeded the scan budget "
+                        "and could not be fully vetted [CRITICAL]"
+                    ),
+                )
+
+            # SECURITY: never derive trust from a plain attribute on the hook
+            # payload. A compromised tool wrapper or a mis-wired intermediate
+            # could set ``data._source = "internal"`` and silently disable
+            # scanning. Hook inputs are always treated as external so the
+            # injection checks cannot be bypassed by a forged label.
+            source = "external"
+
+            for text in strings:
+                if not text:
+                    continue
+                result = defense.scan(text, source=source)
+                if result.blocked:
+                    logger.warning(
+                        "[praisonai.security] Blocking tool=%s agent=%s checks=%s",
+                        getattr(data, "tool_name", "?"),
+                        getattr(data, "agent_name", "?"),
+                        result.checks_triggered,
+                    )
+                    return HookResult(
+                        decision="block",
+                        reason=(
+                            f"Injection defense: {', '.join(result.checks_triggered)} "
+                            f"[{result.threat_level.name}]"
+                        ),
+                    )
+            return None  # Allow
+
+        return _injection_hook
+
+    def create_agent_hook(self) -> Callable:
+        """
+        Create a BEFORE_AGENT hook that scans the incoming user prompt.
+
+        Returns:
+            Hook function for BEFORE_AGENT events.
+        """
+        defense = self
+
+        def _agent_injection_hook(data: Any):
+            from praisonaiagents.hooks import HookResult
+
+            prompt = getattr(data, "prompt", "")
+            if not prompt:
+                return None
+
+            result = defense.scan(prompt, source="external")
+            if result.blocked:
+                logger.warning(
+                    "[praisonai.security] Blocking agent prompt agent=%s checks=%s",
+                    getattr(data, "agent_name", "?"),
+                    result.checks_triggered,
+                )
+                return HookResult(
+                    decision="block",
+                    reason=(
+                        f"Injection defense (prompt): {', '.join(result.checks_triggered)} "
+                        f"[{result.threat_level.name}]"
+                    ),
+                )
+            return None
+
+        return _agent_injection_hook

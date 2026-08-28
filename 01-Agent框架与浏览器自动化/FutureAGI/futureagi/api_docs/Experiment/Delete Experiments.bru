@@ -1,0 +1,21 @@
+meta {
+  name: Delete Experiments
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{host}}model-hub/experiments/delete/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "experiment_ids": ["156ad119-42c2-46a3-8a6d-9e9bb448d38f"]
+  }
+}

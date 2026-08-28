@@ -1,0 +1,51 @@
+meta {
+  name: validate experiment name v2
+  type: http
+  seq: 17
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/validate-name/?dataset_id={{datasetId}}&name={{experimentName}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+vars:pre-request {
+  datasetId: aa1abcc5-fef9-44ee-96c6-2f499296c8f3
+  experimentName: DS_google/deepsearchqa_exp_26/03/03_v7
+}
+
+docs {
+  ## Validate Experiment Name V2
+
+  Checks whether an experiment name is unique within a dataset.
+
+  ### Query Parameters
+  - `dataset_id` (required) — UUID of the dataset
+  - `name` (required) — experiment name to validate
+
+  ### Response (valid)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "isValid": true
+    }
+  }
+  ```
+
+  ### Response (duplicate)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "isValid": false,
+      "message": "Experiment name already exists"
+    }
+  }
+  ```
+}

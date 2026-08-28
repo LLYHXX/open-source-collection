@@ -1,0 +1,17 @@
+meta {
+  name: Get row data
+  type: http
+  seq: 53
+}
+
+get {
+  url: {{host}}/model-hub/get-eval-logs?log_id&order=0&source
+  body: none
+  auth: inherit
+}
+
+params:query {
+  log_id:
+  order: 0
+  source:
+}

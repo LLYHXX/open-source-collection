@@ -1,0 +1,78 @@
+eval_id: 126
+name: clip_score
+description: 'Computes the CLIP Score between images and text prompts. CLIP Score measures how well images match their text
+  descriptions - higher scores indicate better alignment (range: 0-100).'
+criteria: Check if the generated images align well with their text descriptions based on CLIP score. Higher CLIP scores indicate
+  better image-text alignment.
+eval_tags:
+- Image
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - images
+  - text
+  output: numeric
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    images: Single image or list of images (PIL Image, URL, or JSON string of URLs)
+    text: Text description or list of text descriptions to compare against the images
+  code: |
+    import json
+    import math
+
+    def evaluate(images, text, **kwargs):
+        """Compute CLIP score from pre-computed image and text embeddings.
+
+        If raw URLs/text are passed (no preprocessing), returns instructions.
+        If embeddings are passed (after preprocessing), computes cosine similarity.
+        """
+        image_embeddings = kwargs.get("_image_embeddings")
+        text_embeddings = kwargs.get("_text_embeddings")
+
+        if image_embeddings and text_embeddings:
+            if isinstance(image_embeddings, str):
+                image_embeddings = json.loads(image_embeddings)
+            if isinstance(text_embeddings, str):
+                text_embeddings = json.loads(text_embeddings)
+
+            if image_embeddings and not isinstance(image_embeddings[0], list):
+                image_embeddings = [image_embeddings]
+            if text_embeddings and not isinstance(text_embeddings[0], list):
+                text_embeddings = [text_embeddings]
+
+            scores = []
+            for img_emb, txt_emb in zip(image_embeddings, text_embeddings):
+                dot = sum(a * b for a, b in zip(img_emb, txt_emb))
+                mag_img = math.sqrt(sum(a * a for a in img_emb))
+                mag_txt = math.sqrt(sum(b * b for b in txt_emb))
+                if mag_img == 0 or mag_txt == 0:
+                    scores.append(0.0)
+                else:
+                    scores.append(dot / (mag_img * mag_txt))
+
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+            normalized = max(0.0, min(avg_score, 1.0))
+            return {"result": round(normalized, 4), "reason": f"CLIP score: {normalized:.4f} (cosine similarity, {len(scores)} pairs)"}
+
+        return {"result": None, "reason": "CLIP score requires image/text embeddings. Enable preprocessing in eval config or use the Agent evaluator."}
+  param_modalities:
+    images:
+    - IMAGE
+    - IMAGES
+    text:
+    - TEXT
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME

@@ -1,0 +1,25 @@
+meta {
+  name: run prompt
+  type: ws
+  seq: 1
+}
+
+ws {
+  url: ws://localhost:8000/ws/prompt-stream/?token={{access_token}}
+  body: ws
+  auth: none
+}
+
+body:ws {
+  name: message 1
+  type: json
+  content: '''
+    {
+      "type": "run_template",
+      "template_id": "6a9f9dc0-328e-414f-9891-4064bdba9e2e",
+      "version": "v6",
+      "is_run": "prompt",
+      "run_index": 2
+    }
+  '''
+}

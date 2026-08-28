@@ -1,0 +1,64 @@
+eval_id: 171
+name: matthews_correlation
+description: Computes Matthews Correlation Coefficient (MCC). A balanced metric for binary and multiclass classification that
+  produces high scores only when the prediction obtains good results in all four confusion matrix categories. Range -1 to 1,
+  normalized to 0-1.
+criteria: Measures classification quality using a balanced metric that accounts for all confusion matrix categories.
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    output: Predicted label(s)
+    expected: Expected label(s)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json, math
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return [str(v).strip().lower() for v in val]
+            if isinstance(val, str):
+                try:
+                    p = json.loads(val)
+                    if isinstance(p, list):
+                        return [str(v).strip().lower() for v in p]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                return [val.strip().lower()]
+            return [str(val).strip().lower()]
+        preds = _parse(kwargs.get("output", output))
+        labels = _parse(kwargs.get("expected", expected))
+        if not preds and not labels:
+            return {"score": 1.0, "reason": "Both empty"}
+        if len(preds) != len(labels):
+            return {"score": 0.0, "reason": f"Length mismatch: {len(preds)} vs {len(labels)}"}
+        cats = sorted(set(labels) | set(preds))
+        if len(cats) == 2:
+            pos = cats[0]
+            tp = sum(1 for p, l in zip(preds, labels) if p == pos and l == pos)
+            tn = sum(1 for p, l in zip(preds, labels) if p != pos and l != pos)
+            fp = sum(1 for p, l in zip(preds, labels) if p == pos and l != pos)
+            fn = sum(1 for p, l in zip(preds, labels) if p != pos and l == pos)
+            d = math.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
+            mcc = (tp*tn - fp*fn) / d if d > 0 else 0.0
+        else:
+            n = len(labels)
+            correct = sum(1 for p, l in zip(preds, labels) if p == l)
+            nc = len(cats)
+            mcc = (correct/n - 1/nc) / (1 - 1/nc) if nc > 1 else 0.0
+        score = (mcc + 1) / 2
+        return {"score": float(score), "reason": f"MCC: {mcc:.4f}, normalized={score:.4f}"}

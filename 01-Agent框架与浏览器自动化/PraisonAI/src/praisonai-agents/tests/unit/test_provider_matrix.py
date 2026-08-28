@@ -1,0 +1,567 @@
+"""Every provider, checked for the things that do not need a credential.
+
+Most of what breaks an integration is checkable for free: the class resolves,
+it satisfies the protocol, its methods are actually coroutines, it reports
+availability without raising, both placement parameters accept or refuse it
+correctly, and — the one that actually bites people — the failure when a
+credential is missing names the key or the install command instead of throwing
+an AttributeError from four frames down.
+
+Modal was the cautionary tale: its `run_in=` path was broken in five separate
+ways and nothing noticed, because nothing ever ran it. These tests are the
+cheap half of not repeating that. The expensive half is a CI job with real
+credentials.
+"""
+
+import inspect
+
+import pytest
+
+from praisonaiagents import Agent
+from praisonaiagents.agent.placement import managed_runtimes, tool_places
+from praisonaiagents.managed._compute_bridge import resolve_compute
+
+#: Places resolvable without any vendor account.
+LOCAL_PLACES = ("subprocess", "local", "docker")
+
+#: Every place except the two that cannot be resolved from a bare name:
+#: `ssh` needs a host object, `native` is an alias checked separately.
+ALL_PLACES = [p for p in tool_places() if p not in ("ssh", "native")]
+
+#: Words that make a credential failure actionable.
+_ACTIONABLE = (
+    "key", "token", "auth", "credential", "not available",
+    "install", "config", "login", "unauthor", "api", "host", "daemon",
+)
+
+
+@pytest.fixture(scope="module", params=ALL_PLACES)
+def place(request):
+    return request.param
+
+
+def _agent(**kw):
+    return Agent(name="p", instructions="x", **kw)
+
+
+# ── the registry ─────────────────────────────────────────────────────────────
+def test_every_place_resolves_to_a_provider(place):
+    assert resolve_compute(place) is not None
+
+
+def test_every_provider_satisfies_the_protocol(place):
+    """Everything downstream assumes these three exist."""
+    provider = resolve_compute(place)
+    for method in ("provision", "execute", "shutdown"):
+        assert hasattr(provider, method), f"{place} has no {method}()"
+
+
+def test_every_protocol_method_is_awaitable(place):
+    """A sync method here does not raise -- it returns a coroutine nobody
+    awaits, so the call silently does nothing."""
+    provider = resolve_compute(place)
+    for method in ("provision", "execute", "shutdown"):
+        fn = getattr(provider, method)
+        assert inspect.iscoroutinefunction(fn), f"{place}.{method}() is not async"
+
+
+def test_availability_can_be_answered_without_raising(place):
+    """`is_available` is consulted before anything is provisioned, so it has to
+    survive a machine with no credentials and no daemon."""
+    provider = resolve_compute(place)
+    value = getattr(provider, "is_available", None)
+    value = value() if callable(value) else value
+    assert isinstance(value, bool) or value is None
+
+
+# ── the parameters ───────────────────────────────────────────────────────────
+def test_tools_run_on_accepts_every_place(place):
+    agent = _agent(tools_run_on=place)
+    assert agent.tools_run_on == place
+
+
+def test_run_on_accepts_exactly_the_places_that_host_a_loop(place):
+    """A place that only runs commands must be refused by run_on=, and a place
+    that can host a loop must be accepted. Getting this backwards either hides
+    a capability or silently runs the agent somewhere unintended."""
+    hosts_a_loop = place in managed_runtimes()
+    if hosts_a_loop:
+        assert _agent(run_on=place).backend is not None
+    else:
+        with pytest.raises(TypeError) as exc:
+            _agent(run_on=place)
+        assert "tools_run_on" in str(exc.value), "must name the parameter that works"
+
+
+def test_the_repr_names_the_place_it_was_given(place):
+    """The repr must describe the place that was actually chosen.
+
+    A place with no phrase falls back to its own name, which is fine. What
+    would not be fine is the repr describing a different place -- so the value
+    has to match what say_place() resolves for this name, not merely be
+    non-empty. (An earlier version of this test banned the substring "this
+    machine", which wrongly failed `sandlock`: a locked-down process really is
+    on this machine.)
+    """
+    from praisonaiagents.agent.execution_location import say_place
+
+    text = repr(_agent(tools_run_on=place))
+    assert "tools_run_on=" in text
+    assert say_place(place, via="compute") in text, (
+        f"repr describes something other than {place!r}: {text}"
+    )
+
+
+# ── failure quality, which is most of the user experience ────────────────────
+def test_a_missing_credential_fails_with_something_actionable(place):
+    """The failure has to name the key, the install command, or the daemon --
+    not surface as an AttributeError from inside a vendor SDK."""
+    import asyncio
+
+    from praisonaiagents.managed.protocols import ComputeConfig
+
+    provider = resolve_compute(place)
+    available = getattr(provider, "is_available", True)
+    available = available() if callable(available) else available
+    if available:
+        pytest.skip(f"{place} is usable on this machine, so it cannot fail here")
+
+    async def attempt():
+        info = await provider.provision(ComputeConfig())
+        await provider.shutdown(getattr(info, "instance_id", info))
+
+    with pytest.raises(Exception) as exc:
+        asyncio.run(attempt())
+
+    message = f"{type(exc.value).__name__}: {exc.value}".lower()
+    assert any(word in message for word in _ACTIONABLE), (
+        f"{place} failed unhelpfully: {message[:160]}"
+    )
+
+
+# ── the places that deliberately refuse a bare name ──────────────────────────
+def test_ssh_explains_that_a_name_is_not_enough():
+    with pytest.raises(TypeError) as exc:
+        _agent(tools_run_on="ssh")
+    message = str(exc.value)
+    assert "SSHSandbox" in message and "host" in message
+
+
+def test_native_is_accepted_as_an_alias_for_sandlock():
+    from praisonaiagents.agent.execution_location import say_place
+
+    assert say_place("sandlock") in repr(_agent(tools_run_on="native"))
+
+
+# ── live, where the machine allows it ────────────────────────────────────────
+@pytest.mark.parametrize("place", LOCAL_PLACES)
+def test_a_locally_available_place_actually_runs_a_command(place):
+    """Skips loudly rather than passing quietly when the backend is absent."""
+    import asyncio
+
+    from praisonaiagents.managed.protocols import ComputeConfig
+
+    provider = resolve_compute(place)
+    available = getattr(provider, "is_available", True)
+    available = available() if callable(available) else available
+    if not available:
+        pytest.skip(f"{place} is not available on this machine")
+
+    async def run():
+        info = await provider.provision(ComputeConfig())
+        instance = getattr(info, "instance_id", info)
+        try:
+            return await provider.execute(instance, "echo matrix-ok")
+        finally:
+            await provider.shutdown(instance)
+
+    result = asyncio.run(run())
+    assert "matrix-ok" in (result.get("stdout") or ""), result
+
+
+# ── reclaiming what we provisioned ───────────────────────────────────────────
+def test_managed_ps_polls_places_from_the_registry_not_a_literal():
+    """`_PS_PROVIDERS` was a hardcoded tuple, so a place contributed by another
+    package could be provisioned and then never listed or stopped -- and an
+    unreclaimable cloud sandbox is a bill nobody sees."""
+    pytest.importorskip("praisonai.cli.commands.managed")
+    from praisonai.cli.commands.managed import _ps_providers
+
+    polled = set(_ps_providers())
+    assert "docker" in polled
+
+    # Local places have nothing to reclaim and must not be polled.
+    assert not polled & {"local", "subprocess", "sandlock", "ssh"}
+
+    # Everything polled must be a real place.
+    assert polled <= set(tool_places())
+
+
+def test_a_contributed_place_would_be_polled(monkeypatch):
+    pytest.importorskip("praisonai.cli.commands.managed")
+    import praisonaiagents.managed._compute_bridge as bridge
+    from praisonai.cli.commands.managed import _ps_providers
+
+    monkeypatch.setattr(bridge, "available_providers",
+                        lambda: ["docker", "contributed-cloud"])
+    assert "contributed-cloud" in _ps_providers()
+
+
+def test_a_contributed_place_can_name_itself(monkeypatch):
+    """The phrase table is a literal, so it cannot know about a package
+    installed later. Rather than always printing a bare name, a contributed
+    provider may declare `display_name` and have it used."""
+    import praisonaiagents.managed._compute_bridge as bridge
+    from praisonaiagents.agent.execution_location import say_place
+
+    monkeypatch.setitem(bridge._DISPLAY_NAMES, "contributed", "a Contributed cloud sandbox")
+    assert say_place("contributed") == "a Contributed cloud sandbox"
+
+
+def test_an_unknown_place_still_falls_back_to_its_name():
+    """Declaring a phrase is optional; the fallback must stay graceful."""
+    from praisonaiagents.agent.execution_location import say_place
+
+    assert say_place("some-new-cloud") == "some-new-cloud"
+
+
+def test_sandbox_backends_from_plugins_are_selectable():
+    """`SANDBOX_ONLY` was a hardcoded tuple, so a sandbox contributed by another
+    package worked with run_in= and was invisible to tools_run_on=. `capsule`
+    was the live example: it ships from praisonai-plugins."""
+    from praisonaiagents.managed._sandbox_adapter import sandbox_only_names
+
+    names = set(sandbox_only_names())
+    assert {"subprocess", "sandlock", "ssh", "novita"} <= names, "the floor must hold"
+
+    # Anything the compute registry already provides keeps its richer
+    # implementation rather than being downgraded to the one-instance adapter.
+    from praisonaiagents.managed._compute_bridge import _PROVIDERS
+
+    assert not names & set(_PROVIDERS)
+
+
+def test_a_plugin_sandbox_reaches_both_parameters(monkeypatch):
+    import praisonaiagents.managed._sandbox_adapter as adapter
+
+    monkeypatch.setattr(adapter, "sandbox_only_names",
+                        lambda: ("subprocess", "contributed-box"))
+    from praisonaiagents.managed._compute_bridge import available_providers
+
+    assert "contributed-box" in available_providers()
+
+
+# ── the two implementations must agree on vendor CONVENTIONS, not just names ──
+#
+# These exercise the SDK boundary rather than reading source text: a wrong
+# conversion or a reversed upload with different phrasing would still slip past
+# a substring check, and a harmless refactor could fail one. We mock the vendor
+# SDK and assert the value Daytona actually receives.
+def _daytona_with_recorded_provision(monkeypatch, config):
+    """Provision against a fake Daytona SDK and return the Resources it built."""
+    import sys
+    import types
+
+    recorded = {}
+
+    class _Resources:
+        def __init__(self, cpu=None, memory=None, **kw):
+            recorded["cpu"] = cpu
+            recorded["memory"] = memory
+
+    class _CreateParams:
+        def __init__(self, **kw):
+            recorded["params"] = kw
+
+    class _Sandbox:
+        id = "sbx-1"
+        class process:
+            @staticmethod
+            def exec(*a, **k):
+                return types.SimpleNamespace(exit_code=0, result="")
+
+    class _Client:
+        def create(self, params, timeout=120):
+            return _Sandbox()
+
+    fake = types.ModuleType("daytona_sdk")
+    fake.Daytona = lambda cfg: _Client()
+    fake.DaytonaConfig = lambda **kw: None
+    fake.Resources = _Resources
+    fake.CreateSandboxFromImageParams = _CreateParams
+    monkeypatch.setitem(sys.modules, "daytona_sdk", fake)
+
+    from praisonai.integrations.compute.daytona import DaytonaCompute
+
+    provider = DaytonaCompute(api_key="test-key")
+    provider._provision_sync(config)
+    return recorded
+
+
+def test_daytona_asks_for_memory_in_the_unit_the_sdk_documents(monkeypatch):
+    """Daytona's Resources.memory is GiB. The compute side passed megabytes
+    straight through, so the default config asked for 1024 GiB of RAM and
+    could not provision. Assert the actual value handed to the SDK, not the
+    source that produces it."""
+    pytest.importorskip("praisonai.integrations.compute.daytona")
+    from praisonaiagents.managed.protocols import ComputeConfig
+
+    recorded = _daytona_with_recorded_provision(
+        monkeypatch, ComputeConfig(memory_mb=2048)
+    )
+    assert recorded["memory"] == 2, (
+        f"2048 MB must become 2 GiB, got {recorded['memory']}"
+    )
+
+    recorded = _daytona_with_recorded_provision(
+        monkeypatch, ComputeConfig(memory_mb=512)
+    )
+    assert recorded["memory"] == 1, (
+        f"sub-GiB requests must floor to 1 GiB, not 0, got {recorded['memory']}"
+    )
+
+
+def test_daytona_uploads_content_then_destination(monkeypatch, tmp_path):
+    """`FileSystem.upload_file(src, dst)` -- content first. The arguments were
+    reversed on the compute side, so an upload wrote the path into a file
+    named after the content. Assert the order the SDK actually receives."""
+    pytest.importorskip("praisonai.integrations.compute.daytona")
+    from praisonai.integrations.compute.daytona import DaytonaCompute
+
+    calls = {}
+
+    class _FS:
+        def upload_file(self, src, dst, timeout=1800):
+            calls["src"] = src
+            calls["dst"] = dst
+
+    provider = DaytonaCompute(api_key="test-key")
+    provider._sandboxes["i"] = {"sandbox": type("S", (), {"fs": _FS()})()}
+
+    local = tmp_path / "payload.txt"
+    local.write_bytes(b"real-content")
+    assert provider._upload_sync("i", str(local), "/remote/dest.txt") is True
+
+    assert calls["src"] == b"real-content", "file content must be the src argument"
+    assert calls["dst"] == "/remote/dest.txt", "remote path must be the dst argument"
+
+
+# ── conformance: the four vendors implemented twice must agree ───────────────
+# Docker-only parity is what let Daytona rot. Three defects — a Python version
+# split, memory in the wrong unit, and reversed upload arguments — were all the
+# same shape: one of two implementations of a vendor learned a convention and
+# the other never did, and nothing compared them.
+
+SHARED_VENDORS = ("docker", "e2b", "modal", "daytona")
+
+
+@pytest.mark.parametrize("vendor", SHARED_VENDORS)
+def test_both_implementations_of_a_vendor_exist_and_are_distinct(vendor):
+    """Establishes the premise the rest of this section rests on."""
+    from praisonaiagents.managed._compute_bridge import _PROVIDERS
+    from praisonaiagents.sandbox._sandbox_bridge import resolve_sandbox_class
+
+    assert vendor in _PROVIDERS, f"{vendor} should have a compute implementation"
+    assert resolve_sandbox_class(vendor), f"{vendor} should have a sandbox implementation"
+
+
+@pytest.mark.parametrize("vendor", SHARED_VENDORS)
+def test_neither_implementation_passes_megabytes_where_gib_is_wanted(vendor):
+    """Daytona's SDK documents memory in GiB. One side converted, the other
+    passed ComputeConfig.memory_mb straight through and asked for 1024 GiB."""
+    import inspect
+
+    from praisonaiagents.sandbox._sandbox_bridge import resolve_sandbox_class
+
+    sources = []
+    try:
+        from praisonaiagents.managed._compute_bridge import _PROVIDERS
+
+        module, attr = _PROVIDERS[vendor]
+        sources.append(getattr(__import__(module, fromlist=[attr]), attr))
+    except Exception:
+        pass
+    try:
+        sources.append(resolve_sandbox_class(vendor))
+    except Exception:
+        pass
+
+    for cls in sources:
+        try:
+            src = inspect.getsource(cls)
+        except Exception:
+            continue
+        assert "memory=config.memory_mb" not in src, (
+            f"{cls.__name__} passes megabytes into a field whose SDK wants GiB"
+        )
+        assert "memory=self.memory_mb" not in src, (
+            f"{cls.__name__} passes megabytes into a field whose SDK wants GiB"
+        )
+
+
+# ── an explicitly requested image must reach the provider, not be dropped ─────
+# The generic ComputeManagedAgent forwards `image=` only through
+# ComputeConfig.image. Docker/Daytona/Fly read that field; E2B and Modal chose
+# their own base and ignored it, so `run_on='e2b', image=...` silently booted
+# the default. Same shape of drift as the memory-unit bug: assert the value the
+# vendor SDK actually receives, not the source that produces it.
+def test_e2b_honours_a_non_default_image_as_its_template(monkeypatch):
+    pytest.importorskip("praisonai.integrations.compute.e2b")
+    import sys
+    import types
+
+    from praisonaiagents.managed.protocols import ComputeConfig
+
+    recorded = {}
+
+    class _Sandbox:
+        sandbox_id = "sbx-1"
+
+        @staticmethod
+        def create(template=None, **kw):
+            recorded["template"] = template
+            return _Sandbox()
+
+    fake = types.ModuleType("e2b")
+    fake.Sandbox = _Sandbox
+    monkeypatch.setitem(sys.modules, "e2b", fake)
+
+    from praisonai.integrations.compute.e2b import E2BCompute
+
+    provider = E2BCompute(api_key="test-key")
+
+    provider._provision_sync(ComputeConfig(image="my-custom-template"))
+    assert recorded["template"] == "my-custom-template", (
+        "an explicitly requested image must reach E2B as the template"
+    )
+
+    provider._provision_sync(ComputeConfig())
+    assert recorded["template"] is None, (
+        "the default image must not be forced onto E2B as a template"
+    )
+
+
+def test_modal_honours_a_non_default_image_from_the_registry(monkeypatch):
+    pytest.importorskip("praisonai.integrations.compute.modal_compute")
+    import sys
+    import types
+
+    from praisonaiagents.managed.protocols import ComputeConfig
+
+    recorded = {}
+
+    class _Image:
+        def pip_install(self, *a, **k):
+            return self
+
+        def apt_install(self, *a, **k):
+            return self
+
+    class _ImageFactory:
+        @staticmethod
+        def from_registry(ref, **kw):
+            recorded["from_registry"] = ref
+            return _Image()
+
+        @staticmethod
+        def debian_slim(**kw):
+            recorded["debian_slim"] = True
+            return _Image()
+
+    class _Sandbox:
+        object_id = "mdl-1"
+
+        @staticmethod
+        def create(*a, **k):
+            return _Sandbox()
+
+    fake = types.ModuleType("modal")
+    fake.Image = _ImageFactory
+    fake.Sandbox = _Sandbox
+    fake.Secret = types.SimpleNamespace(from_dict=lambda d: object())
+    monkeypatch.setitem(sys.modules, "modal", fake)
+
+    from praisonai.integrations.compute.modal_compute import ModalCompute
+
+    provider = ModalCompute()
+    monkeypatch.setattr(provider, "_get_app", lambda: object())
+
+    recorded.clear()
+    provider._provision_sync(ComputeConfig(image="ghcr.io/acme/base:1"))
+    assert recorded.get("from_registry") == "ghcr.io/acme/base:1", (
+        "an explicitly requested image must reach Modal via from_registry"
+    )
+
+    recorded.clear()
+    provider._provision_sync(ComputeConfig())
+    assert recorded.get("debian_slim") and "from_registry" not in recorded, (
+        "the default image must keep Modal on debian_slim"
+    )
+
+
+def test_the_two_docker_implementations_agree_on_their_image():
+    """`docker` has an implementation in each package, and they drifted: one
+    defaulted to python:3.11-slim and the other to 3.12-slim, so
+    tools_run_on="docker" and run_in="docker" handed you different Pythons for
+    the same word. Nobody chose that, which is exactly why it needs a test.
+
+    Both sides are read as the *effective runtime default* -- the value a caller
+    actually gets when they name no image -- not a docstring or a comment. An
+    earlier version scanned the DockerCompute docstring for `image="python:`,
+    which would keep passing even after the real default drifted, because the
+    example is prose the provisioning path never consults.
+    """
+    from praisonaiagents.managed.protocols import ComputeConfig
+    from praisonaiagents.sandbox import SandboxConfig
+
+    sandbox_default = SandboxConfig.docker().image
+    compute_default = ComputeConfig().image
+
+    assert sandbox_default == compute_default, (
+        f"the two docker implementations disagree: sandbox={sandbox_default!r} "
+        f"compute={compute_default!r} -- same name, different container"
+    )
+
+
+def test_every_install_hint_names_an_extra_that_exists():
+    """The hints told users to run `pip install praisonai[e2b]`, which did not
+    exist, and `praisonai[daytona]`, which existed but was empty. Following the
+    official advice installed nothing and produced the identical failure -- the
+    worst kind of error message, because it looks like it is helping."""
+    from pathlib import Path
+
+    try:
+        import tomllib  # Python 3.11+
+    except ModuleNotFoundError:  # Python 3.10 ships no stdlib TOML parser
+        tomllib = pytest.importorskip(
+            "tomli", reason="need a TOML parser (stdlib tomllib or tomli) to read pyproject"
+        )
+
+    from praisonaiagents.managed._compute_bridge import _EXTRA_HINTS
+
+    root = Path(__file__).resolve().parents[4]
+    tables = {}
+    for pkg, rel in (("praisonai-sandbox", "src/praisonai-sandbox/pyproject.toml"),
+                     ("praisonai", "src/praisonai/pyproject.toml")):
+        path = root / rel
+        if path.exists():
+            tables[pkg] = tomllib.load(path.open("rb"))["project"].get(
+                "optional-dependencies", {}
+            )
+    if not tables:
+        pytest.skip("running against installed packages, not the source tree")
+
+    for place, hint in _EXTRA_HINTS.items():
+        if "pip install" not in hint:
+            continue                     # a credential hint, not an install
+        spec = hint.split("'")[1] if "'" in hint else hint.split()[-1]
+        base, _, extra = spec.partition("[")
+        extra = extra.rstrip("]")
+        assert base in tables, (
+            f"the hint for {place!r} says `{hint}`, but {base!r} is not one of "
+            f"the packages whose extras were resolved ({sorted(tables)})"
+        )
+        assert tables[base].get(extra), (
+            f"the hint for {place!r} says `{hint}`, but {base}[{extra}] is "
+            f"missing or empty -- following it installs nothing"
+        )

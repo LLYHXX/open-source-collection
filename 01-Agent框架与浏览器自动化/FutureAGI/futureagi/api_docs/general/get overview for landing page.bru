@@ -1,0 +1,15 @@
+meta {
+  name: get overview for landing page
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/overview/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

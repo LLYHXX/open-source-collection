@@ -1,0 +1,32 @@
+eval_id: 40
+name: is_email
+description: Validates email address format
+eval_tags:
+- Output Format
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    text: The input text to be evaluated as an email address
+  code: |
+    import re
+
+    def evaluate(input, output, expected, context, **kwargs):
+        text = str(kwargs.get("text", output or "")).strip()
+        local = r"(?!\.)(?!.*\.\.)[A-Za-z0-9._%+\-]+(?<!\.)"
+        label = r"(?!-)[A-Za-z0-9-]+(?<!-)"
+        domain = rf"{label}(?:\.{label})*\.[A-Za-z]{{2,}}"
+        pattern = rf"^{local}@{domain}$"
+        if re.match(pattern, text):
+            return {"score": 1.0, "reason": "Text is a valid email address format"}
+        return {"score": 0.0, "reason": "Text is not a valid email address format"}

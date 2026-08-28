@@ -1,0 +1,15 @@
+meta {
+  name: Rate Limit
+  type: http
+  seq: 1
+}
+
+patch {
+  url: {{host}}/usage/rate-limits/19/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

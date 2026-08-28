@@ -1,0 +1,38 @@
+eval_id: 182
+name: r2_score
+description: Computes R-squared (coefficient of determination). Measures proportion of variance explained by predictions.
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [output, expected]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {output: Predicted values, expected: Actual values}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _p(v):
+            if isinstance(v, list): return [float(x) for x in v]
+            if isinstance(v, str):
+                try:
+                    p = json.loads(v)
+                    if isinstance(p, list): return [float(x) for x in p]
+                except: pass
+                return [float(x.strip()) for x in v.split(",") if x.strip()]
+            return [float(v)]
+        yp, yt = _p(kwargs.get("output", output)), _p(kwargs.get("expected", expected))
+        if len(yp) != len(yt):
+            return {"score": 0.0, "reason": f"R2 score requires the same number of predicted and actual values; received {len(yp)} predicted and {len(yt)} actual values."}
+        if len(yt) < 2:
+            return {"score": 0.0, "reason": f"R2 score requires at least 2 predicted/actual value pairs; received {len(yt)} pair."}
+        m = sum(yt)/len(yt)
+        ss_res = sum((a-b)**2 for a,b in zip(yt,yp))
+        ss_tot = sum((a-m)**2 for a in yt)
+        r2 = 1 - ss_res/ss_tot if ss_tot > 0 else (1.0 if ss_res == 0 else 0.0)
+        return {"score": float(max(0, min(1, (r2+1)/2))), "reason": f"R2={r2:.4f}"}

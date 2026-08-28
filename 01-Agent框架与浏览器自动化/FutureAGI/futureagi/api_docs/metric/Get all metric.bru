@@ -1,0 +1,19 @@
+meta {
+  name: Get all metric
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/custom-metric/all/:model_id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  model_id: 299a5bd0-fb7d-4c11-bb3d-369242048a32
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

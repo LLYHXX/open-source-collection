@@ -1,0 +1,35 @@
+meta {
+  name: Get system metrics
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{host}}/tracer/project/fetch_system_metrics/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_id": "ec5ef8f0-729a-457f-9ec2-e831bb6de0a8",
+    "filters": [
+      {
+        "columnId": "created_at",
+        "filterConfig": {
+          "filterType": "datetime",
+          "filterOp": "between",
+          "filterValue": [
+            "2025-06-02T12:52:26.738Z",
+            "2025-07-02T18:29:59.999Z"
+          ]
+        }
+      }
+    ],
+    "interval": "day"
+  }
+}

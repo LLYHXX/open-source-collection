@@ -1,0 +1,21 @@
+meta {
+  name: Update KB Test1
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{host}}/model-hub/knowledge-base/
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  name: testkb
+  file[0]: @file(/home/aryan/Downloads/test-files/file_3.txt)
+  file[1]: @file(/home/aryan/Downloads/test-files/file_16.txt)
+}

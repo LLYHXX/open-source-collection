@@ -1,0 +1,87 @@
+meta {
+  name: Update Graph
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{host}}/agent-playground/graphs/:id/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "Updated Pipeline Name",
+    "description": "Updated description"
+  }
+}
+
+vars:pre-request {
+  graph_id: 00eb7b6b-f2df-44c5-bb19-0b1ca6734291
+}
+
+docs {
+  # Update Graph
+
+  Update graph metadata only (name, description). Does NOT touch versions.
+
+  ## Path Parameters
+  - `id`: Graph UUID
+
+  ## Request Body (all fields optional)
+  - `name`: New display name (max 255 characters)
+  - `description`: New description (can be null or empty)
+
+  ## Response (Success)
+  Returns the updated graph with full details including current version:
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "graph-uuid",
+      "name": "Updated Pipeline Name",
+      "description": "Updated description",
+      "is_template": false,
+      "created_at": "2024-01-15T10:30:00Z",
+      "updated_at": "2024-01-15T11:00:00Z",
+      "created_by": {
+        "id": "user-uuid",
+        "name": "John Doe",
+        "email": "john@example.com"
+      },
+      "collaborators": [],
+      "current_version": {
+        "id": "version-uuid",
+        "version_number": 2,
+        "status": "active",
+        "tags": [],
+        "commit_message": "Added summarization step",
+        "created_at": "2024-01-15T10:30:00Z",
+        "nodes": [...],
+        "edges": [...]
+      }
+    }
+  }
+  ```
+
+  ## Response (Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Graph not found"
+  }
+  ```
+
+  ## Notes
+  - Only metadata is updated; versions remain unchanged
+  - Use PATCH method for partial updates
+}

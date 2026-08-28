@@ -1,0 +1,55 @@
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+.final-prompt-loading {
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    var(--shimmer-dark) 0%,
+    var(--shimmer-light) 23.83%,
+    var(--shimmer-dark) 47.66%
+  );
+  background-size: 300% 100%;
+  animation: shimmer 3s infinite linear;
+  animation-delay: 1.2s;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.final-icon-loading {
+  background-image: linear-gradient(
+    90deg,
+    var(--shimmer-dark) 0%,
+    var(--shimmer-light) 23.83%,
+    var(--shimmer-dark) 47.66%
+  );
+  background-size: 300% 100%;
+  animation: shimmer 3s infinite linear;
+  animation-delay: 1s;
+  background-color: transparent;
+}
+
+@keyframes text-ease-in {
+  0% {
+    width: 0%;
+  }
+  100% {
+    width: 40%;
+  }
+}
+
+.prompt-loading-container {
+  /* max-width :50% ; */
+  overflow: hidden;
+  white-space: nowrap;
+  display: inline-flex;
+  animation: text-ease-in 2s;
+}

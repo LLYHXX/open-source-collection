@@ -1,0 +1,32 @@
+meta {
+  name: Create Optimize Dataset
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8000/model-hub/optimize-dataset/
+  body: json
+  auth: none
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "ce8ff327-680a-46ac-8a22-bf6c92fe707b",
+    "startDate": "2024-08-14",
+    "endDate": "2024-08-21",
+    "model": "ce8ff327-680a-46ac-8a22-bf6c92fe707b",
+    "environment": "Production",
+    "version": "v1",
+    "optimize_type": "TEMPLATE",
+    "metrics": [
+      "49c1349c-8fad-4df1-a26b-3ecaceb0238e"
+    ]
+  }
+}

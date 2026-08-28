@@ -1,0 +1,62 @@
+eval_id: 65
+name: prompt_adherence
+description: Assesses how closely the output follows the given prompt instructions, checking for completion of all requested
+  tasks and adherence to specified constraints or formats. Evaluates both explicit and implicit requirements in the prompt.
+criteria: "You are evaluating how closely the output follows the instructions given in the input prompt.\n\n## Criteria\n\n\
+  1. Instruction coverage: Every explicit instruction in the input must be reflected in the output.\n   - Pass: Input says\
+  \ \"list 3 pros and 3 cons\" and output contains both lists.\n   - Fail: Output lists pros but omits cons.\n\n2. Constraint\
+  \ compliance: Restrictions (\"do not include X,\" \"limit to 200 words\") must be honored.\n   - Pass: \"Do not mention\
+  \ competitors\" and no competitors are mentioned.\n   - Fail: \"Do not mention competitors\" but competitors are named.\n\
+  \n3. Format and scope: Topic, structure, and ordering requirements must match.\n   - Pass: Requested JSON format delivered\
+  \ as valid JSON.\n   - Fail: Requested JSON format delivered as plain text.\n\n## Anti-bias Rules\n\n- Minor formatting\
+  \ differences (bullets vs. numbers when not specified) should NOT reduce the score.\n- Implicit instructions carry less\
+  \ weight than explicit ones.\n- A short output that follows all instructions scores higher than a long output that violates\
+  \ constraints.\n\n## Scoring\n\nScore 0.0 if the output ignores instructions entirely. Score 0.5 if it partially follows\
+  \ but misses key requirements or violates constraints. Score 1.0 if it fully satisfies every instruction, constraint, and\
+  \ scope requirement.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  optional_keys:
+  - input
+  run_prompt_column: true
+  output: score
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    input: The input to be evaluated
+    output: The output to be evaluated
+  param_modalities:
+    input: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output: *id001
+  rule_prompt: "You are evaluating how closely the output follows the instructions given in the input prompt.\n\n## Criteria\n\
+    \n1. Instruction coverage: Every explicit instruction in the input must be reflected in the output.\n   - Pass: Input\
+    \ says \"list 3 pros and 3 cons\" and output contains both lists.\n   - Fail: Output lists pros but omits cons.\n\n2.\
+    \ Constraint compliance: Restrictions (\"do not include X,\" \"limit to 200 words\") must be honored.\n   - Pass: \"Do\
+    \ not mention competitors\" and no competitors are mentioned.\n   - Fail: \"Do not mention competitors\" but competitors\
+    \ are named.\n\n3. Format and scope: Topic, structure, and ordering requirements must match.\n   - Pass: Requested JSON\
+    \ format delivered as valid JSON.\n   - Fail: Requested JSON format delivered as plain text.\n\n## Anti-bias Rules\n\n\
+    - Minor formatting differences (bullets vs. numbers when not specified) should NOT reduce the score.\n- Implicit instructions\
+    \ carry less weight than explicit ones.\n- A short output that follows all instructions scores higher than a long output\
+    \ that violates constraints.\n\n## Scoring\n\nScore 0.0 if the output ignores instructions entirely. Score 0.5 if it partially\
+    \ follows but misses key requirements or violates constraints. Score 1.0 if it fully satisfies every instruction, constraint,\
+    \ and scope requirement.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>"

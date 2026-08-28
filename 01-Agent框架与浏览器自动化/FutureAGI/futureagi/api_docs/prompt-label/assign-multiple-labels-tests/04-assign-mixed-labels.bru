@@ -1,0 +1,53 @@
+meta {
+  name: 04 - Assign Mixed System and Custom Labels (Success)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v2_id}}",
+    "label_ids": [
+      "{{prod_label_id}}",
+      "{{custom_label_1_id}}"
+    ]
+  }
+}
+
+docs {
+  # Assign Mixed Labels - Success Case
+
+  ## Test Scenario
+  Assigns a mix of system labels (Production) and custom labels together.
+
+  ## Prerequisites
+  - System and custom labels exist
+  - `version_v1` has both labels
+  - `version_v2` exists
+
+  ## Expected Behavior
+  - Status: 200 OK
+  - Both system and custom labels are added to version_v2
+
+  ## Expected Response
+  ```json
+  {
+    "status": true,
+    "result": "Labels assigned successfully"
+  }
+  ```
+
+  ## Test Coverage
+  - Mixed label types in single request
+  - System + custom label handling
+}

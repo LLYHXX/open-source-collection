@@ -1,0 +1,114 @@
+meta {
+  name: Update Graph Version
+  type: http
+  seq: 9
+}
+
+patch {
+  url: {{host}}/agent-playground/graphs/:id/versions/:version_id/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  id: {{graph_id}}
+  version_id: {{version_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "status": "active",
+    "commit_message": "Promoting draft to active version"
+  }
+}
+
+vars:pre-request {
+  graph_id: 05fed664-761a-4355-ae8e-fa8616cf8861
+  version_id: 8b267ef1-e37e-43ed-89c5-c77d4b4c6535
+}
+
+docs {
+  # Update Graph Version (Metadata Only)
+
+  **Metadata-only update endpoint.** Updates version status (promote draft to active) and/or commit message.
+
+  **Content changes (nodes, ports, edges, node connections) must be done via:**
+  - Granular CRUD endpoints (POST/PATCH/DELETE on `/nodes/`, `/ports/`, `/node-connections/`)
+  - Or create a new version with content using `POST /graphs/:id/versions/`
+
+  ## Path Parameters
+  - `id`: Graph UUID
+  - `version_id`: Version UUID (must be DRAFT status)
+
+  ## Request Body (all fields optional)
+
+  | Field | Type | Required | Description |
+  |-------|------|----------|-------------|
+  | `status` | string | no | `"draft"` (default) or `"active"` (promote to active) |
+  | `commit_message` | string | no | Commit message (recommended when promoting to active) |
+
+  ## Example Payloads
+
+  ### Example 1: Promote draft to active with commit message
+  ```json
+  {
+    "status": "active",
+    "commit_message": "Initial release with text processing pipeline"
+  }
+  ```
+
+  ### Example 2: Update commit message only (keep status as draft)
+  ```json
+  {
+    "commit_message": "Updated workflow description"
+  }
+  ```
+
+  ### Example 3: Promote to active without message
+  ```json
+  {
+    "status": "active"
+  }
+  ```
+
+  ## Response (200)
+  Returns the updated version with full nested structure:
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "version-uuid",
+      "version_number": 2,
+      "status": "active",
+      "tags": [],
+      "commit_message": "Initial release with text processing pipeline",
+      "created_at": "2024-01-15T10:30:00Z",
+      "nodes": [...],
+      "node_connections": [...]
+    }
+  }
+  ```
+
+  ## Errors
+  - `400`: Version is not DRAFT (only draft versions can be updated)
+  - `404`: Graph or version not found
+
+  ## Notes
+  - Only DRAFT versions can be updated
+  - When promoting to `"active"`, the system validates the entire graph structure
+  - Promoting to active also triggers dataset column synchronization
+
+  ## Related Endpoints
+  - **To activate an INACTIVE version** (not draft), use: `POST /graphs/:id/versions/:version_id/activate/`
+  - **To update version content** (nodes, ports, edges), use granular CRUD endpoints:
+    - `POST /graphs/:id/versions/:version_id/nodes/` - Create node
+    - `PATCH /graphs/:id/versions/:version_id/nodes/:node_id/` - Update node
+    - `DELETE /graphs/:id/versions/:version_id/nodes/:node_id/` - Delete node
+    - `PATCH /graphs/:id/versions/:version_id/ports/:port_id/` - Update port
+    - `POST /graphs/:id/versions/:version_id/node-connections/` - Create connection
+    - `DELETE /graphs/:id/versions/:version_id/node-connections/:nc_id/` - Delete connection
+}

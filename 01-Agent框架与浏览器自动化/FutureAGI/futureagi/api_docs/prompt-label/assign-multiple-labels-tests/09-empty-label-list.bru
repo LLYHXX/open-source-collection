@@ -1,0 +1,46 @@
+meta {
+  name: 09 - Empty Label List (Error)
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v1_id}}",
+    "label_ids": []
+  }
+}
+
+docs {
+  # Empty Label List - Error Case
+
+  ## Test Scenario
+  Send an empty array of label_ids to test validation.
+
+  ## Expected Behavior
+  - Status: 400 Bad Request
+  - Error message about required labels
+
+  ## Expected Response
+  ```json
+  {
+    "status": false,
+    "result": "Error assigning multiple labels: Label ids are required"
+  }
+  ```
+
+  ## Test Coverage
+  - Input validation
+  - Empty array handling
+  - Required field check
+}

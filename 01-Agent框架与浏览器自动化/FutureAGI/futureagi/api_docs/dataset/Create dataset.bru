@@ -1,0 +1,24 @@
+meta {
+  name: Create dataset
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/dataset/create/23e33a4c-36ea-4491-9e06-f4bd7964a639/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "selectAll" : false,
+    "selected_datasets" : ["Corpus-v2"],
+    "environment" : "Production",
+    "version" : "V56"
+  }
+}

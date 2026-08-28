@@ -1,0 +1,33 @@
+meta {
+  name: Create+[Run] User Eval
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/model-hub/develops/85794bf6-6b20-463f-92e3-d12f0e5a3e02/add_user_eval/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "eval0229",
+    "template_id": "21a37ec2-d197-47ee-9207-e730bc510a97",
+    "save_as_template" : true,
+    "run" : true,
+    "config": {
+      "mapping": {
+        "response": "cb19fb93-424a-4df2-86d3-db0a7a7d38c3",
+        "query" : "afb71063-5714-448e-84a4-a06cfdbdadda"
+      },
+      "config": {
+        "model":"gpt-4o-mini"
+      }
+    }
+  }
+}

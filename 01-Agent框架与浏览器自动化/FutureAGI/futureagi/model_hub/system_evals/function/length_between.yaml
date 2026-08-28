@@ -1,0 +1,43 @@
+eval_id: 32
+name: length_between
+description: Checks if the text length is between specified min and max values
+eval_tags:
+- Output Validation
+- Text
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config:
+    max_length:
+      type: integer
+      default: null
+    min_length:
+      type: integer
+      default: null
+  config_params_desc:
+    text: The input text to be evaluated
+    max_length: The maximum allowed length of the text
+    min_length: The minimum allowed length of the text
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        text = kwargs.get("text", output or "")
+        min_length = kwargs.get("min_length")
+        max_length = kwargs.get("max_length")
+        text = str(text)
+        if min_length is None or max_length is None:
+            return {"score": 0.0, "reason": "Both min_length and max_length must be provided"}
+        min_length = int(min_length)
+        max_length = int(max_length)
+        text_len = len(text)
+        if min_length <= text_len <= max_length:
+            return {"score": 1.0, "reason": f"Text length ({text_len}) is between {min_length} and {max_length}"}
+        else:
+            return {"score": 0.0, "reason": f"Text length ({text_len}) is not between {min_length} and {max_length}"}

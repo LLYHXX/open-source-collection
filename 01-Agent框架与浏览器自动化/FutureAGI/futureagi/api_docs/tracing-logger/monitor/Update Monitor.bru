@@ -1,0 +1,39 @@
+meta {
+  name: Update Monitor
+  type: http
+  seq: 9
+}
+
+patch {
+  url: {{host}}/tracer/user-alerts/e18c3f72-56db-40a6-b357-4dc9c48cfb71/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "name": "heloo1",
+      "metric": "tokens",
+      "thresholdType": "greater_than",
+      "thresholdValue": 1,
+      "notificationEmails": [
+          "heloo@hh.com"
+      ],
+      "threshold_method": "auto",
+      "thresholdMetricValue": "",
+      "metricType": "system_metric",
+      "project": "27d23f59-91bd-41ba-8749-7139aadc1974"
+  }
+}
+
+docs {
+  Test Cases:
+
+  1. Update alert fields and verified if reflected in database and get api
+  2. Verified alert is reused on spans once alert is updated
+  3. Verified emails are getting sent when alert is triggered
+}

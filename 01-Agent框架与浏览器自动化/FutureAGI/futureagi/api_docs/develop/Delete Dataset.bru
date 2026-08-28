@@ -1,0 +1,21 @@
+meta {
+  name: Delete Dataset
+  type: http
+  seq: 12
+}
+
+delete {
+  url: {{host}}/model-hub/develops/delete_dataset/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_ids": []
+  }
+}

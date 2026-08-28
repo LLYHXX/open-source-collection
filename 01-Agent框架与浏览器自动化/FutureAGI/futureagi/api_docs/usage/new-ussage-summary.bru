@@ -1,0 +1,20 @@
+meta {
+  name: new-ussage-summary
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}/usage/usage-summary/?month=10&year=2025
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 10
+  year: 2025
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

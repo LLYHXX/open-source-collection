@@ -1,0 +1,24 @@
+meta {
+  name: Eval Configs
+  type: http
+  seq: 3
+}
+
+get {
+  url: http://localhost:8000/tracer/replay-session/eval-configs/?project_id=0c6dfa53-4010-4eff-913d-f10b19750c27
+  body: none
+  auth: inherit
+}
+
+params:query {
+  project_id: 0c6dfa53-4010-4eff-913d-f10b19750c27
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+}
+
+settings {
+  encodeUrl: false
+  timeout: 0
+}

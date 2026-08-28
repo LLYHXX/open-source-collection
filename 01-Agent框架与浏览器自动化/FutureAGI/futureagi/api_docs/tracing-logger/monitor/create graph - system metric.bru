@@ -1,0 +1,40 @@
+meta {
+  name: create graph - system metric
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{host}}/tracer/user-alerts/fetch_graph/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_id": "ec5ef8f0-729a-457f-9ec2-e831bb6de0a8",
+    "property": "average",
+    "interval": "week",
+    "filters": [
+      {
+        "columnId": "created_at",
+        "filterConfig": {
+          "filterType": "datetime",
+          "filterOp": "between",
+          "filterValue": [
+            "2025-05-13T18:30:00.000Z",
+            "2025-06-21T18:30:00.000Z"
+          ]
+        }
+      }
+    ],
+    "req_data_config": {
+      "id": "tokens", // cost, latency
+      "type": "SYSTEM_METRIC"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Get Compare Evals List
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{host}}/model-hub/develops/46bd91a5-2781-4b62-91c6-35e3b7fd0c8f/get_evals_list/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "search_text": "llm",
+    "eval_type" : "preset",
+    "example" : {
+      "eval_type" : "preset/previously_configured/user : where user evals are evals for the current dataset"
+    }
+  }
+
+
+}

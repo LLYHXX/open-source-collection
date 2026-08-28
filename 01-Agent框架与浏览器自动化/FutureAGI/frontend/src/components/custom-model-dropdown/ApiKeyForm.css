@@ -1,0 +1,33 @@
+.attributesJsonContainer * {
+  padding-left: 0px;
+  margin-left: 0px;
+  position: relative;
+}
+
+.attributesJsonContainer div {
+  margin-left: 6px !important;
+}
+
+.attributesLabel {
+  color: var(--syntax-label-orange);
+  margin-right: 8px;
+}
+
+.attributesClickableLabel {
+  color: var(--syntax-key);
+  cursor: pointer;
+  margin-right: 8px;
+}
+
+.attributesNullValue,
+.attributesUndefinedValue,
+.attributesNumberValue,
+.attributesStringValue,
+.attributesBooleanValue,
+.attributesOtherValue {
+  color: var(--syntax-value-blue);
+}
+
+.attributesPunctuation {
+  display: none;
+}

@@ -1,0 +1,21 @@
+meta {
+  name: update name of folder
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{host}}/model-hub/prompt-folders/c494c1cd-edc3-4065-ab17-08f2a183d855/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "name": "hello123"
+    }
+}

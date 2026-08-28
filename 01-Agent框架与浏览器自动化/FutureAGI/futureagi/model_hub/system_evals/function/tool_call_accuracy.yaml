@@ -1,0 +1,96 @@
+eval_id: 154
+name: tool_call_accuracy
+description: Evaluates accuracy of agent tool/function calls by comparing actual vs expected calls. Checks function names and
+  arguments, supporting both OpenAI and generic tool call formats. Scores full matches (name+args) at 1.0 and name-only matches
+  at 0.5.
+criteria: Measures how accurately an agent selects and parameterizes tool calls compared to expected behavior.
+eval_tags:
+- Agents
+- Code
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    output: 'Actual tool calls (JSON string or list). Format: [{"name": "func", "arguments": {...}}] or [{"function": {"name":
+      "func", "arguments": {...}}}]'
+    expected: 'Expected tool calls (same format as output)'
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, str):
+                try:
+                    val = json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    return []
+            if isinstance(val, dict):
+                val = [val]
+            if not isinstance(val, list):
+                return []
+            calls = []
+            for item in val:
+                if not isinstance(item, dict):
+                    continue
+                if "function" in item and isinstance(item["function"], dict):
+                    f = item["function"]
+                    calls.append({"name": f.get("name", ""), "arguments": f.get("arguments", {})})
+                else:
+                    calls.append({"name": item.get("name", ""), "arguments": item.get("arguments", {})})
+            return calls
+        def _norm_args(args):
+            if isinstance(args, str):
+                try:
+                    return json.loads(args)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return args
+        actual = _parse(kwargs.get("output", output))
+        exp = _parse(kwargs.get("expected", expected))
+        if not exp:
+            if not actual:
+                return {"score": 1.0, "reason": "No tool calls expected or made"}
+            return {"score": 0.0, "reason": f"No calls expected but {len(actual)} made"}
+        if not actual:
+            return {"score": 0.0, "reason": f"{len(exp)} calls expected but none made"}
+        matched = 0
+        name_matches = 0
+        used = set()
+        for a in actual:
+            best_j = -1
+            best_s = -1
+            for j, e in enumerate(exp):
+                if j in used:
+                    continue
+                if a["name"] == e["name"]:
+                    if _norm_args(a.get("arguments", {})) == _norm_args(e.get("arguments", {})):
+                        s = 2
+                    else:
+                        s = 1
+                    if s > best_s:
+                        best_s = s
+                        best_j = j
+            if best_j >= 0:
+                used.add(best_j)
+                if best_s == 2:
+                    matched += 1
+                    name_matches += 1
+                else:
+                    name_matches += 1
+        total = max(len(exp), len(actual))
+        score = max(0.0, min(1.0, (matched + (name_matches - matched) * 0.5) / total))
+        return {
+            "score": float(score),
+            "reason": f"Tool Call Accuracy: {score:.3f} ({matched}/{len(exp)} exact, {name_matches} name matches, {len(actual)} actual vs {len(exp)} expected)",
+        }

@@ -1,0 +1,53 @@
+meta {
+  name: 08 - Idempotent Assignment (Success)
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v2_id}}",
+    "label_ids": [
+      "{{prod_label_id}}",
+      "{{staging_label_id}}"
+    ]
+  }
+}
+
+docs {
+  # Idempotent Assignment - Success Case
+
+  ## Test Scenario
+  Call the same API twice with the same data to verify idempotency.
+
+  ## Prerequisites
+  - First call: version_v1 has Production and Staging
+  - Second call: version_v2 already has Production and Staging from first call
+
+  ## Expected Behavior
+  - First call: Status 200 OK, labels added
+  - Second call: Status 200 OK, labels still present (no duplicates)
+
+  ## Expected Response (Both Calls)
+  ```json
+  {
+    "status": true,
+    "result": "Labels assigned successfully"
+  }
+  ```
+
+  ## Test Coverage
+  - Idempotency
+  - Duplicate prevention
+  - Safe to retry
+}

@@ -1,0 +1,63 @@
+eval_id: 130
+name: image_instruction_adherence
+description: Measures how well generated images adhere to the given text instruction. Evaluates whether the image(s) accurately
+  reflect the specified requirements, style, content, and constraints outlined in the instruction.
+criteria: "You are evaluating how accurately generated images follow the requirements in the text instruction.\n\n## Criteria\n\
+  \n1. Subject matter: The image should depict the objects, people, or scenes described in the instruction.\n   - High score:\
+  \ All requested subjects are present and recognizable.\n   - Low score: Key subjects are missing or unrecognizable.\n\n\
+  2. Style compliance: If the instruction specifies a style (photorealistic, watercolor, cartoon), the image should match.\n\
+  \   - High score: Style clearly matches the instruction.\n   - Low score: Style is completely different from what was requested.\n\
+  \n3. Detail accuracy: Specific attributes (colors, positions, quantities) from the instruction should be reflected.\n  \
+  \ - High score: \"A blue bird on a red branch\" shows exactly that.\n   - Low score: Colors, positions, or quantities don't\
+  \ match the instruction.\n\n## Anti-bias Rules\n\n- Artistic interpretation within instruction boundaries (e.g., specific\
+  \ shade of \"blue\") should NOT reduce the score.\n- If instructions contain conflicting requirements, evaluate based on\
+  \ the best reasonable interpretation.\n- Each image in a multi-image set should be evaluated; score reflects overall adherence.\n\
+  \n## Scoring\n\nScore 0.0 if the image bears no relationship to the instruction. Score 0.5 if it captures the general concept\
+  \ but misses specific details or style requirements. Score 1.0 if it faithfully represents all specified elements.\n\n##\
+  \ Inputs\n\n<instruction>{{instruction}}</instruction>\n\n<images>{{images}}</images>"
+eval_tags:
+- Image
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - instruction
+  - images
+  output: score
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    instruction: The text instruction describing what the image should contain or depict
+    images: The generated image(s) to be evaluated against the instruction
+  param_modalities:
+    instruction:
+    - TEXT
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    images:
+    - IMAGE
+    - IMAGES
+  rule_prompt: "You are evaluating how accurately generated images follow the requirements in the text instruction.\n\n##\
+    \ Criteria\n\n1. Subject matter: The image should depict the objects, people, or scenes described in the instruction.\n\
+    \   - High score: All requested subjects are present and recognizable.\n   - Low score: Key subjects are missing or unrecognizable.\n\
+    \n2. Style compliance: If the instruction specifies a style (photorealistic, watercolor, cartoon), the image should match.\n\
+    \   - High score: Style clearly matches the instruction.\n   - Low score: Style is completely different from what was\
+    \ requested.\n\n3. Detail accuracy: Specific attributes (colors, positions, quantities) from the instruction should be\
+    \ reflected.\n   - High score: \"A blue bird on a red branch\" shows exactly that.\n   - Low score: Colors, positions,\
+    \ or quantities don't match the instruction.\n\n## Anti-bias Rules\n\n- Artistic interpretation within instruction boundaries\
+    \ (e.g., specific shade of \"blue\") should NOT reduce the score.\n- If instructions contain conflicting requirements,\
+    \ evaluate based on the best reasonable interpretation.\n- Each image in a multi-image set should be evaluated; score\
+    \ reflects overall adherence.\n\n## Scoring\n\nScore 0.0 if the image bears no relationship to the instruction. Score\
+    \ 0.5 if it captures the general concept but misses specific details or style requirements. Score 1.0 if it faithfully\
+    \ represents all specified elements.\n\n## Inputs\n\n<instruction>{{instruction}}</instruction>\n\n<images>{{images}}</images>"

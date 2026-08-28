@@ -1,0 +1,26 @@
+meta {
+  name: user role update
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/accounts/user/role/update/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "userId": "{{user_id}}",
+    "newRole": "ADMIN"
+  }
+}

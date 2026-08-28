@@ -1,0 +1,338 @@
+"""
+Async SQLite implementation of ConversationStore.
+
+Requires: aiosqlite
+Install: pip install aiosqlite
+"""
+
+import asyncio
+import json
+import logging
+import time
+from typing import List, Optional
+
+from .base import AsyncConversationStore, ConversationSession, ConversationMessage, validate_identifier
+# Note: This store is async-only. For sync operations, use sync_sqlite.SyncSQLiteConversationStore
+
+try:
+    import aiosqlite
+except ImportError:
+    aiosqlite = None
+
+logger = logging.getLogger(__name__)
+
+
+class AsyncSQLiteConversationStore(AsyncConversationStore):
+    """
+    Async SQLite conversation store using aiosqlite.
+    
+    Provides async database operations for SQLite.
+    
+    Example:
+        store = AsyncSQLiteConversationStore(path="./conversations.db")
+        await store.init()
+    """
+    
+    def __init__(
+        self,
+        path: str = "praisonai_conversations.db",
+        table_prefix: str = "praison_",
+    ):
+        """
+        Initialize async SQLite store.
+        
+        Args:
+            path: Path to SQLite database file
+            table_prefix: Prefix for table names
+        """
+        self.path = path
+        validate_identifier(table_prefix, "table_prefix")
+        self.table_prefix = table_prefix
+        self._conn = None
+        self._initialized = False
+        self._init_lock = asyncio.Lock()
+    
+    async def init(self):
+        """Initialize connection and create tables."""
+        if self._initialized:
+            return
+        
+        async with self._init_lock:
+            if self._initialized:
+                return
+            
+            if aiosqlite is None:
+                raise ImportError(
+                    "aiosqlite is required for async SQLite support. "
+                    "Install with: pip install aiosqlite"
+                )
+            
+            self._aiosqlite = aiosqlite
+            self._conn = await aiosqlite.connect(self.path)
+            await self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.row_factory = aiosqlite.Row
+            await self._create_tables()
+            self._initialized = True
+    
+    async def _create_tables(self):
+        """Create required tables if they don't exist."""
+        sessions_table = f"{self.table_prefix}sessions"
+        messages_table = f"{self.table_prefix}messages"
+        
+        await self._conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {sessions_table} (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT,
+                agent_id TEXT,
+                name TEXT,
+                state TEXT,
+                metadata TEXT,
+                created_at REAL,
+                updated_at REAL
+            )
+        """)
+        
+        await self._conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {messages_table} (
+                id TEXT PRIMARY KEY,
+                session_id TEXT REFERENCES {sessions_table}(session_id) ON DELETE CASCADE,
+                role TEXT,
+                content TEXT,
+                tool_calls TEXT,
+                tool_call_id TEXT,
+                metadata TEXT,
+                created_at REAL
+            )
+        """)
+        
+        await self._conn.execute(f"""
+            CREATE INDEX IF NOT EXISTS idx_{messages_table}_session 
+            ON {messages_table}(session_id)
+        """)
+        
+        await self._conn.commit()
+    
+    async def create_session(self, session: ConversationSession) -> ConversationSession:
+        """Create a new session asynchronously."""
+        if not self._initialized:
+            await self.init()
+        
+        table = f"{self.table_prefix}sessions"
+        await self._conn.execute(f"""
+            INSERT INTO {table} (session_id, user_id, agent_id, name, state, metadata, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (session.session_id, session.user_id, session.agent_id, session.name,
+              json.dumps(session.state) if session.state else None,
+              json.dumps(session.metadata) if session.metadata else None,
+              session.created_at, session.updated_at))
+        await self._conn.commit()
+        
+        return session
+    
+    
+    async def get_session(self, session_id: str) -> Optional[ConversationSession]:
+        """Get a session by ID asynchronously."""
+        if not self._initialized:
+            await self.init()
+        
+        table = f"{self.table_prefix}sessions"
+        async with self._conn.execute(f"""
+            SELECT * FROM {table} WHERE session_id = ?
+        """, (session_id,)) as cursor:
+            row = await cursor.fetchone()
+        
+        if row:
+            return ConversationSession(
+                session_id=row['session_id'],
+                user_id=row['user_id'],
+                agent_id=row['agent_id'],
+                name=row['name'],
+                state=json.loads(row['state']) if row['state'] else None,
+                metadata=json.loads(row['metadata']) if row['metadata'] else None,
+                created_at=row['created_at'],
+                updated_at=row['updated_at']
+            )
+        return None
+    
+    
+    async def update_session(self, session: ConversationSession) -> ConversationSession:
+        """Update an existing session asynchronously."""
+        if not self._initialized:
+            await self.init()
+        
+        session.updated_at = time.time()
+        table = f"{self.table_prefix}sessions"
+        
+        await self._conn.execute(f"""
+            UPDATE {table} 
+            SET name = ?, state = ?, metadata = ?, updated_at = ?
+            WHERE session_id = ?
+        """, (session.name,
+              json.dumps(session.state) if session.state else None,
+              json.dumps(session.metadata) if session.metadata else None,
+              session.updated_at, session.session_id))
+        await self._conn.commit()
+        
+        return session
+    
+    
+    async def delete_session(self, session_id: str) -> bool:
+        """Delete a session asynchronously."""
+        if not self._initialized:
+            await self.init()
+        
+        table = f"{self.table_prefix}sessions"
+        cursor = await self._conn.execute(f"""
+            DELETE FROM {table} WHERE session_id = ?
+        """, (session_id,))
+        await self._conn.commit()
+        
+        return cursor.rowcount > 0
+    
+    
+    async def list_sessions(
+        self,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[ConversationSession]:
+        """List sessions asynchronously."""
+        if not self._initialized:
+            await self.init()
+        
+        table = f"{self.table_prefix}sessions"
+        conditions = []
+        params = []
+        
+        if user_id:
+            conditions.append("user_id = ?")
+            params.append(user_id)
+        
+        if agent_id:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
+        
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.extend([limit, offset])
+        
+        async with self._conn.execute(f"""
+            SELECT * FROM {table} {where_clause}
+            ORDER BY updated_at DESC
+            LIMIT ? OFFSET ?
+        """, params) as cursor:
+            rows = await cursor.fetchall()
+        
+        return [
+            ConversationSession(
+                session_id=row['session_id'],
+                user_id=row['user_id'],
+                agent_id=row['agent_id'],
+                name=row['name'],
+                state=json.loads(row['state']) if row['state'] else None,
+                metadata=json.loads(row['metadata']) if row['metadata'] else None,
+                created_at=row['created_at'],
+                updated_at=row['updated_at']
+            )
+            for row in rows
+        ]
+    
+    
+    async def add_message(self, session_id: str, message: ConversationMessage) -> ConversationMessage:
+        """Add a message asynchronously."""
+        if not self._initialized:
+            await self.init()
+        
+        message.session_id = session_id
+        table = f"{self.table_prefix}messages"
+        
+        await self._conn.execute(f"""
+            INSERT INTO {table} (id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (message.id, session_id, message.role, message.content,
+              json.dumps(message.tool_calls) if message.tool_calls else None,
+              message.tool_call_id,
+              json.dumps(message.metadata) if message.metadata else None,
+              message.created_at))
+        await self._conn.commit()
+        
+        return message
+    
+    
+    async def get_messages(
+        self,
+        session_id: str,
+        limit: Optional[int] = None,
+        before: Optional[float] = None,
+        after: Optional[float] = None
+    ) -> List[ConversationMessage]:
+        """Get messages asynchronously."""
+        if not self._initialized:
+            await self.init()
+        
+        table = f"{self.table_prefix}messages"
+        conditions = ["session_id = ?"]
+        params = [session_id]
+        
+        if before:
+            conditions.append("created_at < ?")
+            params.append(before)
+        
+        if after:
+            conditions.append("created_at > ?")
+            params.append(after)
+        
+        where_clause = f"WHERE {' AND '.join(conditions)}"
+        limit_clause = f"LIMIT ?" if limit else ""
+        if limit:
+            params.append(limit)
+        
+        async with self._conn.execute(f"""
+            SELECT * FROM {table} {where_clause}
+            ORDER BY created_at ASC {limit_clause}
+        """, params) as cursor:
+            rows = await cursor.fetchall()
+        
+        return [
+            ConversationMessage(
+                id=row['id'],
+                session_id=row['session_id'],
+                role=row['role'],
+                content=row['content'],
+                tool_calls=json.loads(row['tool_calls']) if row['tool_calls'] else None,
+                tool_call_id=row['tool_call_id'],
+                metadata=json.loads(row['metadata']) if row['metadata'] else None,
+                created_at=row['created_at']
+            )
+            for row in rows
+        ]
+    
+    
+    async def delete_messages(self, session_id: str, message_ids: Optional[List[str]] = None) -> int:
+        """Delete messages asynchronously."""
+        if not self._initialized:
+            await self.init()
+        
+        table = f"{self.table_prefix}messages"
+        
+        if message_ids is None:
+            cursor = await self._conn.execute(f"""
+                DELETE FROM {table} WHERE session_id = ?
+            """, (session_id,))
+        else:
+            placeholders = ','.join(['?' for _ in message_ids])
+            cursor = await self._conn.execute(f"""
+                DELETE FROM {table} WHERE session_id = ? AND id IN ({placeholders})
+            """, [session_id] + message_ids)
+        
+        await self._conn.commit()
+        return cursor.rowcount
+    
+    
+    async def close(self) -> None:
+        """Close the connection."""
+        if self._conn:
+            await self._conn.close()
+            self._conn = None
+            self._initialized = False
+    

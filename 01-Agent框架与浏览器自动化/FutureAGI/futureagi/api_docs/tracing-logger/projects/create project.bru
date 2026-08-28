@@ -1,0 +1,23 @@
+meta {
+  name: Create project
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/tracer/project/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "p-22",
+    "model_type": "Regression",
+    "trace_type": "experiment"
+  }
+}

@@ -1,0 +1,26 @@
+meta {
+  name: connection create
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{host}}/data-connector/connection/
+  body: json
+  auth: bearer
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "connection_id": "f2ccb3da-476c-4551-9a45-ba0448617cbc"
+  }
+}

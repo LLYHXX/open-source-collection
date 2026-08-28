@@ -1,0 +1,5 @@
+# Files allowed to contain lazy ``from praisonai.*`` imports in praisonai-code.
+# C8 complete — reverse imports eliminated; bridge-only access remains.
+# Regenerate counts: bash scripts/check_c7_imports.sh
+#
+# If a new direct import is unavoidable, add path below after Architecture Review.

@@ -1,0 +1,56 @@
+eval_id: 119
+name: customer_agent_language_handling
+description: Verifies the bot correctly detects the language/dialect and responds appropriately, including mid-call language
+  switching if supported.
+criteria: "You are evaluating whether the agent correctly detects and responds in the customer's language.\n\n## Criteria\n\
+  \n1. Language matching: The agent should respond in the same language the customer uses.\n   - Good: Customer speaks Spanish,\
+  \ agent responds in Spanish.\n   - Bad: Customer speaks Spanish, agent responds in English.\n\n2. Language switching: If\
+  \ the customer switches languages mid-conversation, the agent should follow.\n   - Good: Smoothly transitions to the new\
+  \ language within 1-2 turns.\n   - Bad: Continues in the previous language or mixes languages incorrectly.\n\n3. Dialect\
+  \ sensitivity: The agent should use terminology appropriate for the customer's regional variant.\n   - Good: Uses Latin\
+  \ American Spanish terms for a Latin American customer.\n   - Bad: Uses Castilian Spanish terms that confuse a Latin American\
+  \ customer.\n\n## Anti-bias Rules\n\n- Technical terms or brand names kept in their original language should NOT be penalized.\n\
+  - Code-switching by the customer (mixing languages naturally) should be handled by responding in the primary language.\n\
+  - If the conversation is entirely in one language, evaluate based on correct maintenance of that language.\n\n## Scoring\n\
+  \nScore 0.0 if the agent consistently responds in the wrong language. Score 0.5 if it mostly responds correctly but has\
+  \ occasional lapses. Score 1.0 if it correctly matches the customer's language throughout.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"
+eval_tags:
+- Agents
+- Conversation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - conversation
+  output: score
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    conversation: The conversation to be evaluated
+  param_modalities:
+    conversation:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether the agent correctly detects and responds in the customer's language.\n\n## Criteria\n\
+    \n1. Language matching: The agent should respond in the same language the customer uses.\n   - Good: Customer speaks Spanish,\
+    \ agent responds in Spanish.\n   - Bad: Customer speaks Spanish, agent responds in English.\n\n2. Language switching:\
+    \ If the customer switches languages mid-conversation, the agent should follow.\n   - Good: Smoothly transitions to the\
+    \ new language within 1-2 turns.\n   - Bad: Continues in the previous language or mixes languages incorrectly.\n\n3. Dialect\
+    \ sensitivity: The agent should use terminology appropriate for the customer's regional variant.\n   - Good: Uses Latin\
+    \ American Spanish terms for a Latin American customer.\n   - Bad: Uses Castilian Spanish terms that confuse a Latin American\
+    \ customer.\n\n## Anti-bias Rules\n\n- Technical terms or brand names kept in their original language should NOT be penalized.\n\
+    - Code-switching by the customer (mixing languages naturally) should be handled by responding in the primary language.\n\
+    - If the conversation is entirely in one language, evaluate based on correct maintenance of that language.\n\n## Scoring\n\
+    \nScore 0.0 if the agent consistently responds in the wrong language. Score 0.5 if it mostly responds correctly but has\
+    \ occasional lapses. Score 1.0 if it correctly matches the customer's language throughout.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"

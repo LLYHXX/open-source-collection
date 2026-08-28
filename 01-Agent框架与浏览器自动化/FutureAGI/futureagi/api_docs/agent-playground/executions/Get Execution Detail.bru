@@ -1,0 +1,107 @@
+meta {
+  name: Get Execution Detail
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/agent-playground/graphs/:graph_id/executions/:execution_id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  execution_id: {{execution_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  graph_id: graph-uuid
+  execution_id: execution-uuid
+}
+
+docs {
+  # Get Execution Detail
+
+  Returns the full graph execution detail including the DAG structure (nodes, edges) and each node's execution status.
+  Subgraph nodes include a nested `sub_graph` with their inner execution detail (recursive).
+
+  ## Path Parameters
+  - `graph_id`: Graph UUID
+  - `execution_id`: Graph Execution UUID
+
+  ## Response (Success)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "execution-uuid",
+      "status": "SUCCESS",
+      "input_payload": { "prompt": "Hello" },
+      "output_payload": { "response": "Hi there!" },
+      "started_at": "2024-01-15T10:30:00Z",
+      "completed_at": "2024-01-15T10:30:05Z",
+      "error_message": null,
+      "nodes": [
+        {
+          "id": "node-uuid",
+          "name": "LLM Prompt",
+          "type": "atomic",
+          "config": {},
+          "position_x": 100.0,
+          "position_y": 200.0,
+          "node_template_id": "template-uuid",
+          "ref_graph_version_id": null,
+          "ref_graph_name": null,
+          "ref_graph_id": null,
+          "ports": [
+            {
+              "id": "port-uuid",
+              "key": "prompt",
+              "direction": "input",
+              "data_schema": {}
+            }
+          ],
+          "node_execution": {
+            "id": "node-exec-uuid",
+            "status": "SUCCESS",
+            "started_at": "2024-01-15T10:30:01Z",
+            "completed_at": "2024-01-15T10:30:04Z",
+            "error_message": null
+          },
+          "sub_graph": null
+        }
+      ],
+      "node_connections": [
+        {
+          "id": "connection-uuid-1",
+          "source_node_id": "source-node-uuid",
+          "target_node_id": "target-node-uuid"
+        }
+      ]
+    }
+  }
+  ```
+
+  ## Response (Error - Execution Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Graph execution not found."
+  }
+  ```
+
+  ## Notes
+  - `nodes` includes the full DAG structure from the graph version with ports
+  - Each node has an attached `node_execution` with brief status (id, status, timing, error)
+  - `node_connections` is a top-level array showing design-time wiring between nodes:
+    - `id`: UUID of the NodeConnection
+    - `source_node_id`: UUID of the source node
+    - `target_node_id`: UUID of the target node
+  - Subgraph nodes (`type: "subgraph"`) include a nested `sub_graph` with the inner graph's execution detail
+  - `sub_graph` is `null` for non-subgraph nodes or when no child execution exists
+}

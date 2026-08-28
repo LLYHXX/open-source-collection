@@ -1,0 +1,149 @@
+meta {
+  name: Audio Embeddings
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{base_url}}/model/{{api_version}}/embed/audio
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  User-Agent: Bruno/1.0
+}
+
+body:json {
+  {
+    "audio": "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAECcAACBOAAACABAAZGF0YQAAAAA=",
+    "input_type": "audio"
+  }
+}
+
+docs {
+  # Audio Embeddings
+
+  Generate audio embeddings using the configured audio embedding model.
+  Accepts audio files in various formats encoded as base64.
+
+  ## Request Body
+
+  ```json
+  {
+    "audio": "data:audio/wav;base64,<base64_encoded_audio>",
+    "input_type": "audio"
+  }
+  ```
+
+  ### Parameters
+  - `audio` (string): Audio data in one of the following formats:
+    - Base64 encoded with data URI: `data:audio/wav;base64,<data>`
+    - Base64 encoded string (without data URI prefix)
+  - `input_type` (string): Must be "audio" for this endpoint
+
+  ## Response
+
+  ```json
+  {
+    "embeddings": [
+      [0.1, 0.2, 0.3, ...]  // Audio embedding vector
+    ]
+  }
+  ```
+
+  ### Response Fields
+  - `embeddings` (array): Array containing the audio embedding vector
+
+  ## Status Codes
+  - `200 OK` - Embedding generated successfully
+  - `400 Bad Request` - Invalid audio format or missing required fields
+  - `422 Unprocessable Entity` - Validation error in request body
+  - `500 Internal Server Error` - Model loading or audio processing error
+
+  ## Supported Audio Formats
+  - WAV (.wav)
+  - MP3 (.mp3)
+  - FLAC (.flac)
+  - OGG (.ogg)
+  - M4A (.m4a)
+  - AAC (.aac)
+
+  ## Audio Input Examples
+
+  ### Base64 with Data URI
+  ```json
+  {
+    "audio": "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAECcAACBOAAACABAAZGF0YQAAAAA=",
+    "input_type": "audio"
+  }
+  ```
+
+  ### Base64 without Data URI
+  ```json
+  {
+    "audio": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAECcAACBOAAACABAAZGF0YQAAAAA=",
+    "input_type": "audio"
+  }
+  ```
+
+  ## Use Cases
+  - Audio similarity search
+  - Music recommendation systems
+  - Sound classification
+  - Audio content analysis
+  - Voice recognition preprocessing
+  - Acoustic event detection
+  - Audio fingerprinting
+
+  ## Performance Notes
+  - Longer audio files take more time to process
+  - Audio is automatically resampled to model requirements
+  - Processing time scales with audio duration
+  - Consider audio compression for faster uploads
+
+  ## Audio Processing
+  - Automatic format conversion
+  - Resampling to model-specific sample rates
+  - Mono conversion if required by model
+  - Silence trimming (optional)
+  - Normalization applied automatically
+
+  ## Limitations
+  - Maximum audio duration may be limited
+  - Very long files may cause timeout errors
+  - Some models work best with specific sample rates
+  - Background noise may affect embedding quality
+}
+
+tests {
+  test("Status should be 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response should contain embeddings", function() {
+    const data = res.getBody();
+    expect(data.embeddings).to.exist;
+    expect(data.embeddings).to.be.an('array');
+  });
+
+  test("Should return one embedding for single audio", function() {
+    const data = res.getBody();
+    expect(data.embeddings).to.have.lengthOf(1);
+  });
+
+  test("Embedding should be an array of numbers", function() {
+    const data = res.getBody();
+    const embedding = data.embeddings[0];
+    expect(embedding).to.be.an('array');
+    expect(embedding.length).to.be.greaterThan(0);
+    embedding.forEach(value => {
+      expect(value).to.be.a('number');
+    });
+  });
+
+  test("Content-Type should be JSON", function() {
+    expect(res.getHeader("content-type")).to.contain("application/json");
+  });
+}

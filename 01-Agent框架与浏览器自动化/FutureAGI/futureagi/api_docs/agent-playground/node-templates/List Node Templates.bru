@@ -1,0 +1,52 @@
+meta {
+  name: List Node Templates
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/agent-playground/node-templates/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  # List Node Templates
+
+  List all node templates. Returns lightweight info (no port definitions or config schema).
+
+  Node templates are system-wide and not filtered by organization or workspace.
+
+  ## Response
+  ```json
+  {
+    "status": true,
+    "result": [
+      {
+        "id": "d523c598-1b0b-48f4-91ce-feab764e3ad4",
+        "name": "llm_prompt",
+        "display_name": "LLM Prompt",
+        "description": "Run a prompt against an LLM. Input ports are dynamic — users add ports for each variable referenced in the prompt messages.",
+        "icon": null,
+        "categories": ["llm", "ai", "prompt"]
+      }
+    ]
+  }
+  ```
+
+  ## Fields
+  - `id`: Template UUID (use this as `node_template_id` when creating atomic nodes)
+  - `name`: Internal template name (unique identifier)
+  - `display_name`: Human-readable name for UI display
+  - `description`: Brief description of what the template does
+  - `icon`: URL to template icon image
+  - `categories`: Array of category tags for filtering/grouping
+
+  ## Notes
+  - Templates are read-only; they cannot be created/modified via API
+  - Use Get Node Template endpoint for full details including port definitions
+}

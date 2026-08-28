@@ -1,0 +1,19 @@
+meta {
+  name: verify email
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{host}}/accounts/activate/OTk4NWY0YjQtM2NiOC00MzI4LThjYzAtYWU2NjA2NGRmYzIx/cge5ue-0920b44ffa64a5c7ff4ead0debff0640/
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "new_password": "{{pwd}}",
+    "repeat_password": "{{pwd}}"
+  }
+
+}

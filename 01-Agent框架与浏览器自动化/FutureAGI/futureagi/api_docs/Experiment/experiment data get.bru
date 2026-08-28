@@ -1,0 +1,22 @@
+meta {
+  name: experiment data get
+  type: http
+  seq: 4
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/data/?status=Completed&created_at=2024-03-20 14:30:00,2024-12-21 14:30:00&filter_op=between&search=test
+  body: json
+  auth: bearer
+}
+
+params:query {
+  status: Completed
+  created_at: 2024-03-20 14:30:00,2024-12-21 14:30:00
+  filter_op: between
+  search: test
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

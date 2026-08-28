@@ -1,0 +1,84 @@
+meta {
+  name: Get Agent Prompt Optimiser Run Detail
+  type: http
+  seq: 22
+}
+
+get {
+  url: http://localhost:8000/simulate/api/agent-prompt-optimiser/{{optimiser_run_id}}/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+docs {
+  name: Get Agent Prompt Optimiser Run Detail
+  description: Get detailed information about a specific optimization run, including trial comparison table, configuration, and labeled parameters for display.
+  request: {
+    "method": "GET",
+    "url": "http://localhost:8000/simulate/api/agent-prompt-optimiser/{optimiser_run_id}/",
+    "headers": {
+      "Authorization": "Bearer {token}"
+    }
+  }
+  response: {
+    "optimiserName": "My-optimization-1",
+    "optimiserType": "protegi",
+    "model": "gpt-4o",
+    "providerLogo": "https://...",
+    "configuration": {
+      "num_gradients": 4,
+      "errors_per_gradient": 4,
+      "prompts_per_gradient": 4,
+      "beam_size": 2,
+      "num_rounds": 8
+    },
+    "parameters": [
+      {
+        "key": "beam_size",
+        "label": "Beam Size",
+        "value": 2,
+        "description": "The number of top prompt candidates retained at each step."
+      },
+      {
+        "key": "num_gradients",
+        "label": "No. of gradients",
+        "value": 4,
+        "description": "The number of gradient descent steps used to optimize the prompt in each iteration."
+      },
+      {
+        "key": "errors_per_gradient",
+        "label": "Error per gradient",
+        "value": 4,
+        "description": "The number of error examples sampled per gradient step."
+      },
+      {
+        "key": "prompts_per_gradient",
+        "label": "Prompt per gradient",
+        "value": 4,
+        "description": "The number of prompt candidates generated per gradient step."
+      },
+      {
+        "key": "num_rounds",
+        "label": "No. of rounds",
+        "value": 8,
+        "description": "The total number of optimization rounds to run."
+      }
+    ],
+    "status": "COMPLETED",
+    "errorMessage": null,
+    "table": [],
+    "columnConfig": []
+  }
+  notes: [
+    "The 'parameters' field provides human-readable labels and descriptions for each optimizer configuration key",
+    "Parameters are derived from the 'configuration' JSONField based on the optimizer type",
+    "Supported optimizer types: random_search, gepa, protegi, bayesian, metaprompt, promptwizard",
+    "The example above shows parameters for the 'protegi' optimizer type",
+    "Response keys are camelCased by the DRF renderer",
+    "Requires authentication and organization access"
+  ]
+}

@@ -1,0 +1,467 @@
+"""Tests for zero-ceremony project-local tool discovery.
+
+Covers the wrapper convention that auto-loads ``.praisonai/tools/*.py`` on
+``praisonai run``, mirroring the existing ``agents/`` and ``commands/``
+discovery. Loading is gated by ``PRAISONAI_ALLOW_LOCAL_TOOLS``.
+"""
+
+from pathlib import Path
+
+import pytest
+
+from praisonai_code.cli.features.custom_definitions import (
+    CustomDefinitionsDiscovery,
+    count_project_tool_files,
+    discover_project_tools,
+    local_tools_enabled,
+)
+
+
+GREET_TOOL = '''\
+def greet(name: str) -> str:
+    """Return a friendly greeting."""
+    return f"Hello, {name}!"
+
+
+def _private_helper():
+    return 1
+'''
+
+DECORATED_TOOL = '''\
+from praisonaiagents import tool
+
+
+@tool
+def add(a: int, b: int) -> int:
+    """Add two numbers."""
+    return a + b
+
+
+def helper():
+    """Plain callable dropped when a @tool exists in the same module."""
+    return "helper"
+'''
+
+NAMED_TOOL = '''\
+from praisonaiagents import tool
+
+
+@tool(name="weather_lookup")
+def weather(city: str) -> str:
+    """Get the weather for a city."""
+    return f"sunny in {city}"
+'''
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    """Create a project with a .praisonai/tools/ dir and cwd into it."""
+    tools_dir = tmp_path / ".praisonai" / "tools"
+    tools_dir.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    # No git root: keep the walk-up bounded to this tmp tree.
+    monkeypatch.setattr(
+        "praisonai_code.cli.features.custom_definitions.get_git_root",
+        lambda: tmp_path,
+    )
+    return tools_dir
+
+
+class TestToolDiscovery:
+    def test_discovers_plain_callable_namespaced(self, project, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        discovery = CustomDefinitionsDiscovery()
+        tools = discovery.list_tools()
+
+        names = {t.name for t in tools}
+        assert "greet.greet" in names
+        # Private helpers are excluded.
+        assert "greet._private_helper" not in names
+        # Namespaced by module filename.
+        greet = discovery.get_tool("greet.greet")
+        assert greet is not None
+        assert greet.source == "project"
+
+    def test_discover_project_tools_returns_callables(self, project, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        callables = discover_project_tools()
+        assert len(callables) == 1
+        assert callables[0]("Ada") == "Hello, Ada!"
+
+    def test_gate_blocks_discovery_when_env_unset(self, project, monkeypatch):
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        assert discover_project_tools() == []
+
+    def test_decorated_tool_preferred_over_plain_helper(self, project, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        (project / "mixed.py").write_text(DECORATED_TOOL)
+
+        discovery = CustomDefinitionsDiscovery()
+        names = {t.name for t in discovery.list_tools()}
+        # The @tool-decorated function wins; the plain helper is dropped.
+        assert "mixed.add" in names
+        assert "mixed.helper" not in names
+
+    def test_underscore_modules_skipped(self, project, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        (project / "_ignored.py").write_text(GREET_TOOL)
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        discovery = CustomDefinitionsDiscovery()
+        names = {t.name for t in discovery.list_tools()}
+        assert "greet.greet" in names
+        assert not any(n.startswith("_ignored") for n in names)
+
+    def test_no_tools_dir_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "praisonai_code.cli.features.custom_definitions.get_git_root",
+            lambda: tmp_path,
+        )
+        assert discover_project_tools() == []
+
+
+class TestLocalToolsEnabled:
+    def test_true_is_enabled(self, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        assert local_tools_enabled() is True
+
+    def test_case_insensitive_true(self, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "TRUE")
+        assert local_tools_enabled() is True
+
+    def test_unset_is_disabled(self, monkeypatch):
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+        assert local_tools_enabled() is False
+
+    @pytest.mark.parametrize("value", ["false", "0", "no", "1", "yes", ""])
+    def test_non_true_values_are_disabled(self, value, monkeypatch):
+        # Mirrors the loader's exact acceptance (lower() == "true"); any other
+        # value must be treated as disabled so the hint/loader never disagree.
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", value)
+        assert local_tools_enabled() is False
+
+
+class TestCountProjectToolFiles:
+    def test_counts_files_without_executing(self, project, monkeypatch):
+        # No opt-in: discovery loads nothing, but the count still sees the file.
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        assert discover_project_tools() == []
+        # (project_count, user_count)
+        assert count_project_tool_files()[0] == 1
+
+    def test_empty_dir_counts_zero(self, project, monkeypatch):
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+        assert count_project_tool_files()[0] == 0
+
+    def test_no_tools_dir_counts_zero(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "praisonai_code.cli.features.custom_definitions.get_git_root",
+            lambda: tmp_path,
+        )
+        assert count_project_tool_files() == (0, 0)
+
+    def test_underscore_files_excluded(self, project, monkeypatch):
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+        (project / "_ignored.py").write_text(GREET_TOOL)
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        assert count_project_tool_files()[0] == 1
+
+
+class TestAutoDiscoverHint:
+    def test_hint_printed_when_files_present_and_opt_in_unset(
+        self, project, monkeypatch
+    ):
+        from praisonai_code.cli.commands.run import _auto_discover_project_tools
+
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        messages = []
+        monkeypatch.setattr(
+            "praisonai_code.cli.commands.run.get_output_controller",
+            lambda: type("O", (), {"print_info": lambda self, m: messages.append(m)})(),
+        )
+
+        result = _auto_discover_project_tools([])
+        assert result == []
+        assert any("PRAISONAI_ALLOW_LOCAL_TOOLS" in m for m in messages)
+        assert any("1 local tool file" in m for m in messages)
+        assert any(".praisonai/tools/" in m for m in messages)
+
+    def test_hint_printed_when_opt_in_is_false(self, project, monkeypatch):
+        # A truthy-but-not-"true" value (false/0) is rejected by the loader, so
+        # the hint must still fire instead of silently loading nothing.
+        from praisonai_code.cli.commands.run import _auto_discover_project_tools
+
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "false")
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        messages = []
+        monkeypatch.setattr(
+            "praisonai_code.cli.commands.run.get_output_controller",
+            lambda: type("O", (), {"print_info": lambda self, m: messages.append(m)})(),
+        )
+
+        result = _auto_discover_project_tools([])
+        assert result == []
+        assert any("local tools are disabled" in m for m in messages)
+
+    def test_no_hint_when_no_files(self, project, monkeypatch):
+        from praisonai_code.cli.commands.run import _auto_discover_project_tools
+
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+
+        messages = []
+        monkeypatch.setattr(
+            "praisonai_code.cli.commands.run.get_output_controller",
+            lambda: type("O", (), {"print_info": lambda self, m: messages.append(m)})(),
+        )
+
+        assert _auto_discover_project_tools([]) == []
+        assert messages == []
+
+    def test_tools_loaded_when_opt_in_set(self, project, monkeypatch):
+        from praisonai_code.cli.commands.run import _auto_discover_project_tools
+
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        result = _auto_discover_project_tools([])
+        assert len(result) == 1
+        assert result[0]("Ada") == "Hello, Ada!"
+
+
+class TestUserGlobalTools:
+    def test_user_global_tools_load_outside_cwd(self, tmp_path, monkeypatch):
+        """User-global ~/.praisonai/tools/*.py must load even though they live
+        outside the project CWD (regression: the safe loader's CWD boundary
+        previously silently dropped them)."""
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+
+        # Separate the "home" tree from the project CWD so the user tool is
+        # genuinely outside the working directory.
+        user_root = tmp_path / "home"
+        (user_root / ".praisonai" / "tools").mkdir(parents=True)
+        (user_root / ".praisonai" / "tools" / "greet.py").write_text(GREET_TOOL)
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        monkeypatch.chdir(project_dir)
+        monkeypatch.setattr(
+            "praisonai_code.cli.features.custom_definitions.get_git_root",
+            lambda: project_dir,
+        )
+        monkeypatch.setattr(
+            CustomDefinitionsDiscovery,
+            "_get_user_dir",
+            lambda self: user_root / ".praisonai",
+        )
+
+        discovery = CustomDefinitionsDiscovery()
+        greet = discovery.get_tool("greet.greet")
+        assert greet is not None
+        assert greet.source == "user"
+        assert greet.callable("Ada") == "Hello, Ada!"
+
+
+class TestCustomAgentToolWiring:
+    """`praisonai run --agent ...` must also auto-load project-local tools,
+    unioned with the frontmatter ``tools:`` list (regression: `_run_custom_agent`
+    previously ignored --tools and never auto-discovered)."""
+
+    def test_run_custom_agent_merges_project_tools(self, project, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        import praisonaiagents
+        from praisonai_code.cli.commands import run as run_mod
+
+        captured = {}
+
+        class _FakeAgent:
+            def __init__(self, **config):
+                captured["config"] = config
+
+            def start(self, prompt):
+                return "done"
+
+        monkeypatch.setattr(praisonaiagents, "Agent", _FakeAgent)
+        # Keep the event bridge and session usage recording inert.
+        monkeypatch.setattr(run_mod, "_record_session_usage", lambda *a, **k: None)
+
+        agent_config = {"name": "assistant", "tools": ["internet_search"]}
+        run_mod._run_custom_agent(agent_config, "hi", no_save=True)
+
+        tools = captured["config"].get("tools", [])
+        # Frontmatter tool name string preserved.
+        assert "internet_search" in tools
+        # Auto-discovered project callable appended.
+        assert any(callable(t) and getattr(t, "__name__", "") == "greet" for t in tools)
+
+    def test_run_custom_agent_no_discovery_without_optin(self, project, monkeypatch):
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        import praisonaiagents
+        from praisonai_code.cli.commands import run as run_mod
+
+        captured = {}
+
+        class _FakeAgent:
+            def __init__(self, **config):
+                captured["config"] = config
+
+            def start(self, prompt):
+                return "done"
+
+        monkeypatch.setattr(praisonaiagents, "Agent", _FakeAgent)
+        monkeypatch.setattr(run_mod, "_record_session_usage", lambda *a, **k: None)
+
+        agent_config = {"name": "assistant", "tools": ["internet_search"]}
+        run_mod._run_custom_agent(agent_config, "hi", no_save=True)
+
+        tools = captured["config"].get("tools", [])
+        assert tools == ["internet_search"]
+
+    def test_run_custom_agent_dedupes_internal_duplicates(self, project, monkeypatch):
+        """Internal duplicates within the resolved extra tools (e.g. overlapping
+        --tools/--toolset) must be de-duplicated by identity, not just against
+        the frontmatter list."""
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+
+        import praisonaiagents
+        from praisonai_code.cli.commands import run as run_mod
+
+        captured = {}
+
+        class _FakeAgent:
+            def __init__(self, **config):
+                captured["config"] = config
+
+            def start(self, prompt):
+                return "done"
+
+        def _dup_tool():
+            return "dup"
+
+        monkeypatch.setattr(praisonaiagents, "Agent", _FakeAgent)
+        monkeypatch.setattr(run_mod, "_record_session_usage", lambda *a, **k: None)
+        # Same callable resolved twice (overlapping sources).
+        monkeypatch.setattr(
+            run_mod, "_resolve_tools_arg", lambda *a, **k: [_dup_tool, _dup_tool]
+        )
+
+        agent_config = {"name": "assistant", "tools": []}
+        run_mod._run_custom_agent(agent_config, "hi", tools="x", no_save=True)
+
+        tools = captured["config"].get("tools", [])
+        assert tools.count(_dup_tool) == 1
+
+
+class TestAgentsCommandsUnaffected:
+    def test_agents_still_discovered_alongside_tools(self, project, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        agents_dir = project.parent / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "helper.md").write_text(
+            "---\nrole: Helper\n---\nYou are a helper.\n"
+        )
+        (project / "greet.py").write_text(GREET_TOOL)
+
+        discovery = CustomDefinitionsDiscovery()
+        assert discovery.get_agent("helper") is not None
+        assert discovery.get_tool("greet.greet") is not None
+
+
+class TestResolveAllFromYamlDiscovery:
+    """The YAML agents-generator path (resolve_all_from_yaml) must also pick up
+    ``.praisonai/tools/*.py`` @tool functions, keyed by their tool name, so a
+    dropped-in tool file is available to YAML-defined agents.
+    """
+
+    def _resolver(self):
+        from praisonai_code.tool_resolver import ToolResolver
+
+        return ToolResolver()
+
+    def test_function_tool_discovered_from_praisonai_tools_dir(
+        self, project, monkeypatch
+    ):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        (project / "mixed.py").write_text(DECORATED_TOOL)
+
+        tools = self._resolver().resolve_all_from_yaml({})
+        # Keyed by the @tool function name, not the module-namespaced name.
+        assert "add" in tools
+        assert tools["add"](a=2, b=3) == 5
+
+    def test_explicit_tool_name_respected(self, project, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        (project / "weather.py").write_text(NAMED_TOOL)
+
+        tools = self._resolver().resolve_all_from_yaml({})
+        assert "weather_lookup" in tools
+        assert "weather" not in tools
+
+    def test_additive_with_yaml_named_tools(self, project, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        (project / "mixed.py").write_text(DECORATED_TOOL)
+
+        config = {
+            "roles": {
+                "r": {"tools": ["duckduckgo"]}
+            }
+        }
+        tools = self._resolver().resolve_all_from_yaml(config)
+        # Folder tool coexists with a YAML-named built-in tool (no XOR).
+        assert "add" in tools
+        assert "duckduckgo" in tools
+
+    def test_gate_blocks_yaml_discovery(self, project, monkeypatch):
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+        (project / "mixed.py").write_text(DECORATED_TOOL)
+
+        tools = self._resolver().resolve_all_from_yaml({})
+        assert "add" not in tools
+
+    def test_gate_short_circuits_before_discovery(self, project, monkeypatch):
+        # When local tools are disabled (default) the resolver must not do the
+        # directory walk-up / git subprocess work at all — it is gated to load
+        # nothing anyway, so paying that cost on every YAML resolution is waste.
+        monkeypatch.delenv("PRAISONAI_ALLOW_LOCAL_TOOLS", raising=False)
+
+        called = {"discover": False}
+
+        def _fail_discovery():
+            called["discover"] = True
+            raise AssertionError("discover_project_tools must not be called")
+
+        monkeypatch.setattr(
+            "praisonai_code.cli.features.custom_definitions.discover_project_tools",
+            _fail_discovery,
+        )
+
+        tools = self._resolver().resolve_all_from_yaml({})
+        assert "add" not in tools
+        assert called["discover"] is False
+
+    def test_no_tools_dir_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PRAISONAI_ALLOW_LOCAL_TOOLS", "true")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "praisonai_code.cli.features.custom_definitions.get_git_root",
+            lambda: tmp_path,
+        )
+        assert self._resolver().resolve_all_from_yaml({}) == {}

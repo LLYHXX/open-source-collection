@@ -1,0 +1,112 @@
+meta {
+  name: Create Experiment - Image
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/experiments/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "dataset_id": "6c5ab82a-7968-4026-8d8b-12706d24a169",
+    "column_id": "b94be88f-8dc9-4ea3-838c-32303caf01e2",
+    "name": "exp 2",
+    "prompt_config": [
+      {
+        "name": "p1",
+        "version": "",
+        "model_type": "image",
+        "messages": [
+          {
+            "role": "system",
+            "content": [{"type": "text", "text": ""}]
+          },
+          {
+            "role": "user",
+            "content": [{"type": "text", "text": "Create image for {{b94be88f-8dc9-4ea3-838c-32303caf01e2}}\n"}]
+          }
+        ],
+        "model": ["256-x-256/dall-e-2", "512-x-512/dall-e-2"],
+        "model_params": {
+          "256-x-256/dall-e-2": {
+            "n": 1,
+            "dropdowns": {
+              "size": "1024x1024"
+            },
+            "providers": "openai",
+            "logo_url": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+          },
+          "512-x-512/dall-e-2": {
+            "n": 1,
+            "dropdowns": {
+              "size": "1024x1024"
+            },
+            "providers": "openai",
+            "logo_url": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+          }
+        },
+        "configuration": {
+          "tool_choice": "auto",
+          "tools": []
+        },
+        "output_format": "image"
+      },
+      {
+        "name": "rp2",
+        "version": "",
+        "model_type": "image",
+        "messages": [
+          {
+            "role": "system",
+            "content": [{"type": "text", "text": ""}]
+          },
+          {
+            "role": "user",
+            "content": [{"type": "text", "text": "Create image for {{b94be88f-8dc9-4ea3-838c-32303caf01e2}}\n"}]
+          }
+        ],
+        "model": ["256-x-256/dall-e-2"],
+        "model_params": {
+          "256-x-256/dall-e-2": {
+            "n": 1,
+            "dropdowns": {
+              "size": "1024x1024"
+            },
+            "providers": "openai",
+            "logo_url": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+          }
+        },
+        "configuration": {
+          "tool_choice": "auto",
+          "tools": []
+        },
+        "output_format": "image"
+      }
+    ],
+    "user_eval_template_ids": [
+      "c6b4dc08-793c-4b2b-87c3-d2cd1082361d"
+    ]
+  }
+}
+
+docs {
+  ## Create Experiment - Image (V1)
+
+  Creates an Image generation experiment. Models are string arrays (e.g. "256-x-256/dall-e-2").
+  model_params include `n` (number of images) and `dropdowns.size`.
+  output_format is "image".
+  This example shows multiple prompt_config entries.
+
+  ### Response
+  ```json
+  {"message": "Experiment created successfully.", "status": 200}
+  ```
+}

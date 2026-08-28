@@ -1,0 +1,72 @@
+meta {
+  name: Update Dataset Cell
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{host}}/agent-playground/graphs/:graph_id/dataset/cells/:cell_id/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  cell_id: {{cell_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "value": "tell me about openai"
+  }
+}
+
+vars:pre-request {
+  graph_id: 8da2b6d9-fded-468d-9cff-821cefa1cecf
+  cell_id: 5a3a68f8-3ef2-469e-9271-0e873bddd5a4
+}
+
+docs {
+  # Update Dataset Cell
+
+  Update the value of a single cell in the dataset.
+
+  ## Path Parameters
+  - `graph_id`: Graph UUID
+  - `cell_id`: Cell UUID
+
+  ## Request Body
+  - `value` (optional, default: ""): The new cell value. Accepts strings, blank, or null.
+
+  ## Response (Success)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "column_id": "column-uuid",
+      "column_name": "prompt",
+      "value": "What is the capital of France?"
+    }
+  }
+  ```
+
+  ## Response (Error - Cell Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Cell not found."
+  }
+  ```
+
+  ## Response (Error - Dataset Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Graph dataset not found."
+  }
+  ```
+}

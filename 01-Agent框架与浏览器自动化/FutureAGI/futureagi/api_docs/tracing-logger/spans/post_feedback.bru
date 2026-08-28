@@ -1,0 +1,24 @@
+meta {
+  name: post_feedback
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{host}}/tracer/observation-span/submit_feedback_action_type/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+   "observation_span_id": "ed45ef8af50c4e05",
+    "action_type": "retune",
+    "custom_eval_config_id": "d6413fb8-e48e-474c-a22d-c7cb08297ba0",
+    "feedback_id":"0c8ae692-3004-4da2-9b23-7575974e3e94"
+  }
+}

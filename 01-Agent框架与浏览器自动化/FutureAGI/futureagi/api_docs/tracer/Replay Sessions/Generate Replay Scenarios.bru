@@ -1,0 +1,42 @@
+meta {
+  name: Generate Replay Scenarios
+  type: http
+  seq: 5
+}
+
+post {
+  url: http://localhost:8000/tracer/replay-session/9ca2308a-5bc3-4821-8c94-11da913c5b0e/generate-scenario/
+  body: json
+  auth: inherit
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+}
+
+body:json {
+  {
+    "agent_name": "Customer Support Agent - 1", // Optional
+    "agent_description": "You are a customer support agent.", // Optional
+    "agent_type": "text", // Optional
+    "scenario_name": "Order Support Scenario",
+    "no_of_rows": 20,
+    "personas": [
+      "4d2e2e5b-43cd-415d-9154-561131f4ebae"
+    ],
+    "custom_columns": [
+      {
+        "name": "user_name",
+        "data_type": "text",
+        "description": "username of the user"
+      }
+    ],
+    "graph": null,
+    "generate_graph": true
+  }
+}
+
+settings {
+  encodeUrl: false
+  timeout: 0
+}

@@ -1,0 +1,58 @@
+eval_id: 85
+name: contains_code
+description: Checks whether the output is valid code or contains expected code snippets.
+criteria: "You are evaluating whether the output contains valid, executable code.\n\n## Criteria\n\n1. Code presence: The\
+  \ output must contain recognizable code in a known programming language.\n   - Pass: A Python function with proper syntax.\n\
+  \   - Fail: Pseudocode or natural language algorithm description.\n\n2. Syntax validity: Code must have correct brackets,\
+  \ keywords, indentation, and language-specific syntax.\n   - Pass: \"def greet(name): return f'Hello, {name}'\"\n   - Fail:\
+  \ \"def greet(name) return Hello {name\" (missing colon, quotes, f-string)\n\n3. Structural completeness: Functions should\
+  \ have bodies, loops should terminate, imports should match usage.\n   - Pass: Complete function that could execute as-is.\n\
+  \   - Fail: Function stub with \"# TODO\" or undefined variables.\n\n## Anti-bias Rules\n\n- DO NOT fail partial code snippets\
+  \ that are syntactically valid for the portion shown.\n- Minor style issues (e.g., missing type hints) should NOT cause\
+  \ failure if the code is functionally correct.\n- A short valid code snippet scores higher than a long block with syntax\
+  \ errors.\n\n## Scoring\n\nReturn 'Passed' if the output contains syntactically valid, structurally complete code that could\
+  \ execute. Return 'Failed' if it contains no code, only pseudocode, or has syntax errors preventing execution.\n\n## Inputs\n\
+  \n<output>{{output}}</output>"
+eval_tags:
+- Code
+- Output Format
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    output: The output to be evaluated
+  param_modalities:
+    output:
+    - TEXT
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether the output contains valid, executable code.\n\n## Criteria\n\n1. Code presence:\
+    \ The output must contain recognizable code in a known programming language.\n   - Pass: A Python function with proper\
+    \ syntax.\n   - Fail: Pseudocode or natural language algorithm description.\n\n2. Syntax validity: Code must have correct\
+    \ brackets, keywords, indentation, and language-specific syntax.\n   - Pass: \"def greet(name): return f'Hello, {name}'\"\
+    \n   - Fail: \"def greet(name) return Hello {name\" (missing colon, quotes, f-string)\n\n3. Structural completeness: Functions\
+    \ should have bodies, loops should terminate, imports should match usage.\n   - Pass: Complete function that could execute\
+    \ as-is.\n   - Fail: Function stub with \"# TODO\" or undefined variables.\n\n## Anti-bias Rules\n\n- DO NOT fail partial\
+    \ code snippets that are syntactically valid for the portion shown.\n- Minor style issues (e.g., missing type hints) should\
+    \ NOT cause failure if the code is functionally correct.\n- A short valid code snippet scores higher than a long block\
+    \ with syntax errors.\n\n## Scoring\n\nReturn 'Passed' if the output contains syntactically valid, structurally complete\
+    \ code that could execute. Return 'Failed' if it contains no code, only pseudocode, or has syntax errors preventing execution.\n\
+    \n## Inputs\n\n<output>{{output}}</output>"

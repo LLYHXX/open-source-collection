@@ -1,0 +1,75 @@
+meta {
+  name: Update column config for eval logs
+  type: http
+  seq: 52
+}
+
+patch {
+  url: {{host}}/model-hub/get-eval-logs
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "eval_id": "c7d96b30-b1e0-4ffa-aa1e-a777273189b3",
+    "column_config": [
+    {
+      "id": "column2",
+      "name": "Criteria",
+      "status": "completed",
+      "isFrozen": null,
+      "isVisible": false,
+      "sourceType": "text"
+    },
+    {
+      "id": "column3",
+      "name": "Tags",
+      "status": "completed",
+      "isFrozen": null,
+      "isVisible": false,
+      "sourceType": "text"
+    },
+    {
+      "id": "column4",
+      "name": "oneliner",
+      "status": "completed",
+      "isFrozen": null,
+      "dataType": "boolean",
+      "isVisible": true,
+      "originType": "evaluation",
+      "outputType": "Pass/Fail",
+      "sourceType": "text"
+    },
+    {
+      "id": "column1",
+      "name": "var",
+      "status": "completed",
+      "isFrozen": null,
+      "dataType": "text",
+      "isVisible": true,
+      "sourceType": "text"
+    },
+    {
+      "id": "column5",
+      "name": "Evaluation ID",
+      "status": "completed",
+      "isFrozen": null,
+      "isVisible": false,
+      "sourceType": "text"
+    },
+    {
+      "id": "column6",
+      "name": "Created At",
+      "status": "completed",
+      "isFrozen": null,
+      "isVisible": true,
+      "sourceType": "text"
+    }
+  ]
+  }
+}

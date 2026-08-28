@@ -1,0 +1,19 @@
+meta {
+  name: column config evals
+  type: http
+  seq: 6
+}
+
+get {
+  url: http://localhost:8000/model-hub/metrics/by-column/?column_id=38f5c3ea-1652-4691-be9b-ddca7151f1f5
+  body: json
+  auth: bearer
+}
+
+params:query {
+  column_id: 38f5c3ea-1652-4691-be9b-ddca7151f1f5
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

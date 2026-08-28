@@ -1,0 +1,27 @@
+meta {
+  name: update project version config
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}/tracer/project-version/update_project_version_config/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_version_id": "0f6ce387-9bfe-44ab-8eee-d72a9a6e6c56",
+    "visibility": {
+      "c6b4c108-5a66-408a-a4d9-646c5209098b": true,
+      "output": true
+    }
+  }
+
+
+}

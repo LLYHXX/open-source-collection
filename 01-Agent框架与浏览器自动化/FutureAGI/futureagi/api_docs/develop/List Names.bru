@@ -1,0 +1,22 @@
+meta {
+  name: List Names
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}/model-hub/develops/get-datasets-names/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "excluded_dataset": [
+    ]
+  }
+}

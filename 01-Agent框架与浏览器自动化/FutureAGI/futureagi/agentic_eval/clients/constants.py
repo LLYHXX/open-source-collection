@@ -1,0 +1,4 @@
+import os
+
+MODEL_SERVING_BASE_URL = os.getenv("MODEL_SERVING_BASE_URL")
+MODEL_SERVING_EMBEDDING_URL = "infer/embedding"

@@ -1,0 +1,59 @@
+eval_id: 83
+name: is_concise
+description: Measures whether the answer is brief and to the point, avoiding redundancy.
+criteria: "You are evaluating whether the output is concise and free from unnecessary verbosity.\n\n## Criteria\n\n1. Redundancy:\
+  \ Check for repeated points restated in different words, or the user's question echoed back before answering.\n   - Pass:\
+  \ Directly answers without restating the question.\n   - Fail: \"You asked about X. X is important. Let me tell you about\
+  \ X.\"\n\n2. Filler phrases: Detect meaningless padding like \"It's important to note that,\" \"In other words,\" \"As a\
+  \ matter of fact.\"\n   - Pass: Clean prose without unnecessary qualifiers.\n   - Fail: Multiple filler phrases per paragraph\
+  \ adding no information.\n\n3. Tangential content: Look for information that doesn't serve the user's query.\n   - Pass:\
+  \ Every sentence contributes to answering the question.\n   - Fail: Includes background information the user didn't ask\
+  \ for.\n\n## Anti-bias Rules\n\n- DO NOT flag thorough technical explanations as verbose; only flag unnecessary padding\
+  \ around useful content.\n- Structured formats (lists, tables) that use space efficiently are NOT verbose.\n- A short focused\
+  \ answer is NOT automatically concise if it contains proportional filler.\n\n## Scoring\n\nReturn 'Passed' if the output\
+  \ communicates efficiently without unnecessary padding or tangents. Return 'Failed' if it is bloated with redundant phrases,\
+  \ repeated points, or irrelevant information.\n\n## Inputs\n\n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Chatbot behaviors
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    output: The output to be evaluated
+  param_modalities:
+    output:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether the output is concise and free from unnecessary verbosity.\n\n## Criteria\n\n1.\
+    \ Redundancy: Check for repeated points restated in different words, or the user's question echoed back before answering.\n\
+    \   - Pass: Directly answers without restating the question.\n   - Fail: \"You asked about X. X is important. Let me tell\
+    \ you about X.\"\n\n2. Filler phrases: Detect meaningless padding like \"It's important to note that,\" \"In other words,\"\
+    \ \"As a matter of fact.\"\n   - Pass: Clean prose without unnecessary qualifiers.\n   - Fail: Multiple filler phrases\
+    \ per paragraph adding no information.\n\n3. Tangential content: Look for information that doesn't serve the user's query.\n\
+    \   - Pass: Every sentence contributes to answering the question.\n   - Fail: Includes background information the user\
+    \ didn't ask for.\n\n## Anti-bias Rules\n\n- DO NOT flag thorough technical explanations as verbose; only flag unnecessary\
+    \ padding around useful content.\n- Structured formats (lists, tables) that use space efficiently are NOT verbose.\n-\
+    \ A short focused answer is NOT automatically concise if it contains proportional filler.\n\n## Scoring\n\nReturn 'Passed'\
+    \ if the output communicates efficiently without unnecessary padding or tangents. Return 'Failed' if it is bloated with\
+    \ redundant phrases, repeated points, or irrelevant information.\n\n## Inputs\n\n<output>{{output}}</output>"

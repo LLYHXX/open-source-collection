@@ -1,0 +1,23 @@
+meta {
+  name: feedback data
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8000/model-hub/feedbackget-feedback-details/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "action_type": "retune",  // or "recalculate_row" or "recalculate_dataset"
+    "user_eval_metric_id": "some-uuid",
+    "row_id": "some-uuid"  // only required for recalculate_row
+  }
+}

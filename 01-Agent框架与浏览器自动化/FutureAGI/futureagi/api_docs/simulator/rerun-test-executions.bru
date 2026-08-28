@@ -1,0 +1,89 @@
+meta {
+  name: Rerun Test Executions
+  type: http
+  seq: 20
+}
+
+post {
+  url: http://localhost:8000/simulate/run-tests/{{run_test_id}}/rerun-test-executions/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "rerun_type": "eval_only",
+    "select_all": true
+  }
+}
+
+docs {
+  name: Rerun Test Executions
+  description: Rerun multiple test executions within a run test. All call executions within each selected test execution are rerun.
+  request: {
+    "method": "POST",
+    "url": "http://localhost:8000/simulate/run-tests/{run_test_id}/rerun-test-executions/",
+    "headers": {
+      "Authorization": "Bearer {token}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "rerun_type": "eval_only | call_and_eval (required)",
+      "test_execution_ids": ["uuid1", "uuid2"] ,
+      "select_all": "boolean (default false)"
+    }
+  }
+  response: {
+    "message": "Bulk test execution rerun initiated successfully (eval_only)",
+    "run_test_id": "uuid",
+    "rerun_type": "eval_only",
+    "total_test_executions": 2,
+    "results": [
+      {
+        "test_execution_id": "uuid",
+        "success_count": 10,
+        "failure_count": 0,
+        "successful_reruns": ["call-exec-uuid-1", "call-exec-uuid-2"],
+        "failed_reruns": []
+      }
+    ],
+    "overall_success_count": 10,
+    "overall_failure_count": 0
+  }
+  error_responses: [
+    {
+      "status": 400,
+      "error": "Invalid request data"
+    },
+    {
+      "status": 400,
+      "error": "No test executions found that can be rerun."
+    },
+    {
+      "status": 404,
+      "error": "Organization not found for the user."
+    },
+    {
+      "status": 404,
+      "error": "Run test not found."
+    },
+    {
+      "status": 500,
+      "error": "Failed to rerun test executions"
+    }
+  ]
+  notes: [
+    "rerun_type must be either 'eval_only' or 'call_and_eval'",
+    "Either 'select_all' must be true or 'test_execution_ids' must be provided",
+    "When select_all=true and test_execution_ids are provided, those IDs are excluded",
+    "eval_only: saves eval snapshot, clears eval data, re-triggers evaluation tasks. Sets status to EVALUATING",
+    "call_and_eval: saves full call snapshot, clears all call data, creates new CreateCallExecution records. Sets status to PENDING",
+    "All call executions within each test execution are rerun",
+    "Test executions with no call executions are skipped in the results",
+    "Requires authentication and organization access"
+  ]
+}

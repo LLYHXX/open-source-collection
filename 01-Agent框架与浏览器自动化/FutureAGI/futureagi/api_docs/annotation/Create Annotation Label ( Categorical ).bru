@@ -1,0 +1,45 @@
+meta {
+  name: Create Annotation Label ( Categorical )
+  type: http
+  seq: 4
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations-labels/
+  body: json
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  {
+    "name": "Lingustic Acceptability - 11",
+    "type": "categorical",
+    "settings": {
+      "rule_prompt": "Given the summary : rate its lingustic acceptability to a native speaker",
+      "options": [
+        {
+          "label": "good"
+        },
+        {
+          "label": "medium"
+        },
+        {
+          "label": "bad"
+        }
+      ],
+      "multi_choice": false,
+      "few_shot": [],
+      "auto_annotate": false,
+      "strategy": "Rag",
+      "query": "Query for RAG",
+      "query_col": "53709116-efe9-40b5-bd4d-c1b2f098cac4"
+    },
+      "project": "3274f1e5-803c-4dae-b26f-a37d36f6a068"
+  }
+}

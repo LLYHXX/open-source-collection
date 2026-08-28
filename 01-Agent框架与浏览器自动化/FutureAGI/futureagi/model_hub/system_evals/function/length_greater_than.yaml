@@ -1,0 +1,37 @@
+eval_id: 41
+name: length_greater_than
+description: Checks if the text length is greater than a specified value
+eval_tags:
+- Output Validation
+- Text
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config:
+    min_length:
+      type: integer
+      default: null
+  config_params_desc:
+    text: The input text to be evaluated
+    min_length: The minimum required length of the text
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        text = kwargs.get("text", output or "")
+        min_length = kwargs.get("min_length")
+        text = str(text)
+        if min_length is None:
+            return {"score": 0.0, "reason": "No min_length provided"}
+        min_length = int(min_length)
+        text_len = len(text)
+        if text_len > min_length:
+            return {"score": 1.0, "reason": f"Text length ({text_len}) is greater than {min_length}"}
+        else:
+            return {"score": 0.0, "reason": f"Text length ({text_len}) is not greater than {min_length}"}

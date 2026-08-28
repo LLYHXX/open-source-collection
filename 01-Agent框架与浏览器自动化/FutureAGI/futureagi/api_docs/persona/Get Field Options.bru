@@ -1,0 +1,85 @@
+meta {
+  name: Get Field Options
+  type: http
+  seq: 9
+}
+
+get {
+  url: http://localhost:8000/simulate/api/personas/field-options/
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  name: Get Field Options
+  description: Get field options/choices for persona creation (dropdown values)
+
+  Response Example:
+  {
+    "status": true,
+    "result": {
+      "gender_choices": [
+        {"value": "male", "label": "Male"},
+        {"value": "female", "label": "Female"},
+        {"value": "other", "label": "Other"}
+      ],
+      "age_group_choices": [
+        {"value": "18-25", "label": "18-25"},
+        {"value": "25-35", "label": "25-35"},
+        {"value": "30-40", "label": "30-40"},
+        {"value": "40-50", "label": "40-50"},
+        {"value": "50+", "label": "50+"}
+      ],
+      "location_choices": [
+        {"value": "United States", "label": "United States"},
+        {"value": "United Kingdom", "label": "United Kingdom"},
+        {"value": "Canada", "label": "Canada"},
+        {"value": "Australia", "label": "Australia"},
+        {"value": "India", "label": "India"}
+      ],
+      "profession_choices": [
+        {"value": "Software Developer", "label": "Software Developer"},
+        {"value": "Manager", "label": "Manager"},
+        {"value": "Customer Support", "label": "Customer Support"},
+        {"value": "Sales", "label": "Sales"},
+        {"value": "Business Owner", "label": "Business Owner"}
+      ],
+      "personality_choices": [
+        {"value": "Analytical", "label": "Analytical"},
+        {"value": "Creative", "label": "Creative"},
+        {"value": "Practical", "label": "Practical"},
+        {"value": "Emotional", "label": "Emotional"}
+      ],
+      "communication_style_choices": [
+        {"value": "Direct", "label": "Direct"},
+        {"value": "Diplomatic", "label": "Diplomatic"},
+        {"value": "Friendly", "label": "Friendly"},
+        {"value": "Formal", "label": "Formal"}
+      ],
+      "accent_choices": [
+        {"value": "American", "label": "American"},
+        {"value": "British", "label": "British"},
+        {"value": "Australian", "label": "Australian"},
+        {"value": "Indian", "label": "Indian"},
+        {"value": "Neutral", "label": "Neutral"}
+      ],
+      "language_choices": [
+        {"value": "English", "label": "English"},
+        {"value": "Spanish", "label": "Spanish"},
+        {"value": "French", "label": "French"},
+        {"value": "German", "label": "German"},
+        {"value": "Chinese", "label": "Chinese"}
+      ],
+      "conversation_speed_choices": [
+        {"value": "0.8", "label": "Slow"},
+        {"value": "1.0", "label": "Normal"},
+        {"value": "1.2", "label": "Fast"}
+      ]
+    }
+  }
+
+  Note: These choices are defined in the Persona model and can be used to populate dropdown menus in the frontend.
+}

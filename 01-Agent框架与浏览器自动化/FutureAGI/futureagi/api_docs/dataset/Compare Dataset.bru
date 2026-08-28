@@ -1,0 +1,32 @@
+meta {
+  name: Compare Dataset
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{host}}/model-hub/datasets/f76d0463-32a7-4c0f-97ad-7be7c9c71945/compare-stats/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_ids": ["19f1c30a-9071-4a29-b319-b720f571d789"],
+    "common_column_names": ["tyu"],
+    "dataset_info": {
+        "f76d0463-32a7-4c0f-97ad-7be7c9c71945": [
+          "71f51ad8-a468-4ad2-bd9e-b94fd4dbb072",
+          "4be215de-0c87-4df9-b453-b6bfdf3bb15d"
+        ],
+        "19f1c30a-9071-4a29-b319-b720f571d789": [
+          "353c6c95-4b94-4f93-ae48-3918505feb2f",
+          "8eed974f-4064-4b58-b26e-5026ee00df25"
+        ]
+      }
+  }
+}

@@ -1,0 +1,17 @@
+meta {
+  name: get Annotaion
+  type: http
+  seq: 1
+}
+
+get {
+  url: http://localhost:8000/model-hub/annotations-labels/1f920701-b9da-48ac-a224-bf01ce3b699d/
+  body: none
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  Cookie: {{xsrf_cookie}}
+}

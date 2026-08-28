@@ -1,0 +1,15 @@
+meta {
+  name: run test
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8000/simulate/run-tests/1f429671-d3bd-4c0f-9cca-36f6d47edfbc/execute/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

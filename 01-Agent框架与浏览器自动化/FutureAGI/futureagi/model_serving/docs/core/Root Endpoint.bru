@@ -1,0 +1,57 @@
+meta {
+  name: Root Endpoint
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/
+  body: none
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  User-Agent: Bruno/1.0
+}
+
+docs {
+  # Root Endpoint
+
+  Returns basic information about the Model Serving API service.
+
+  ## Response
+
+  ```json
+  {
+    "service": "Model Serving API",
+    "version": "1.0.0",
+    "status": "healthy"
+  }
+  ```
+
+  ## Status Codes
+  - `200 OK` - Service is running and healthy
+
+  ## Use Cases
+  - Check if the service is running
+  - Get service version information
+  - Basic connectivity test
+}
+
+tests {
+  test("Status should be 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response should contain service info", function() {
+    const data = res.getBody();
+    expect(data.service).to.equal("Model Serving API");
+    expect(data.version).to.exist;
+    expect(data.status).to.equal("healthy");
+  });
+
+  test("Content-Type should be JSON", function() {
+    expect(res.getHeader("content-type")).to.contain("application/json");
+  });
+}

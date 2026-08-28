@@ -1,0 +1,503 @@
+/** @file CutterDescriptions.h
+ * This file contains every structure description that are used in widgets.
+ * The descriptions are used for the Qt metatypes.
+ */
+#ifndef DESCRIPTIONS_H
+#define DESCRIPTIONS_H
+
+#include "core/CutterCommon.h"
+
+#include <QColor>
+#include <QList>
+#include <QMetaType>
+#include <QSet>
+#include <QString>
+#include <QVariant>
+
+struct FunctionDescription
+{
+    RVA offset;
+    RVA linearSize;
+    RVA nargs;
+    RVA nbbs;
+    RVA nlocals;
+    QString calltype;
+    QString name;
+    RVA edges;
+    RVA stackframe;
+
+    bool contains(RVA addr) const
+    {
+        // TODO: this is not exactly correct in edge cases.
+        // rz_analysis_function_contains() does it right.
+        return addr >= offset && addr < offset + linearSize;
+    }
+};
+
+struct ImportDescription
+{
+    RVA plt;
+    int ordinal;
+    QString bind;
+    QString type;
+    QString name;
+    QString libname;
+};
+
+struct ExportDescription
+{
+    RVA vaddr;
+    RVA paddr;
+    RVA size;
+    QString type;
+    QString name;
+    QString flagName;
+};
+
+struct HeaderDescription
+{
+    RVA vaddr;
+    RVA paddr;
+    QString value;
+    QString name;
+};
+
+struct FlirtDescription
+{
+    QString binName;
+    QString archName;
+    QString archBits;
+    QString baseName;
+    QString shortPath;
+    QString filePath;
+    QString details;
+    QString nModules;
+};
+
+struct TypeDescription
+{
+    QString type;
+    int size;
+    QString format;
+    QString category;
+    QString typeClass;
+};
+
+struct SearchDescription
+{
+    RVA offset;
+    size_t size;
+    QString code;
+    QString data;
+    QString detail;
+};
+
+struct SymbolDescription
+{
+    RVA vaddr;
+    QString bind;
+    QString type;
+    QString name;
+};
+
+struct CommentDescription
+{
+    RVA offset;
+    QString name;
+};
+
+struct RelocDescription
+{
+    RVA vaddr;
+    RVA paddr;
+    QString type;
+    QString name;
+};
+
+struct StringDescription
+{
+    RVA vaddr;
+    QString string;
+    QString type;
+    QString section;
+    quint32 length;
+    quint32 size;
+};
+
+struct FlagspaceDescription
+{
+    QString name;
+};
+
+struct FlagDescription
+{
+    RVA offset;
+    RVA size;
+    QString name;
+    QString realname;
+};
+
+struct SectionDescription
+{
+    RVA vaddr;
+    RVA paddr;
+    RVA size;
+    RVA vsize;
+    QString name;
+    QString perm;
+    QString entropy;
+};
+
+struct SegmentDescription
+{
+    RVA vaddr;
+    RVA paddr;
+    RVA size;
+    RVA vsize;
+    QString name;
+    QString perm;
+};
+
+struct EntrypointDescription
+{
+    RVA vaddr;
+    RVA paddr;
+    RVA baddr;
+    RVA laddr;
+    RVA haddr;
+    QString type;
+};
+
+struct XrefDescription
+{
+    RVA from;
+    QString fromStr;
+    RVA to;
+    QString toStr;
+    QString type;
+};
+
+struct RzBinPluginDescription
+{
+    QString name;
+    QString description;
+    QString license;
+    QString type;
+};
+
+struct RzIOPluginDescription
+{
+    QString name;
+    QString description;
+    QString license;
+    QString permissions;
+    QList<QString> uris;
+};
+
+struct RzCorePluginDescription
+{
+    QString name;
+    QString description;
+    QString license;
+};
+
+struct RzAsmPluginDescription
+{
+    QString name;
+    QString architecture;
+    QString author;
+    QString version;
+    QString cpus;
+    QString description;
+    QString license;
+    QString capabilities;
+    QString bits;
+};
+
+struct DisassemblyLine
+{
+    RVA offset;
+    QString text;
+    RVA arrow;
+};
+
+struct BinClassBaseClassDescription
+{
+    QString name;
+    RVA offset;
+};
+
+struct BinClassMethodDescription
+{
+    QString name;
+    RVA addr = RVA_INVALID;
+    qint64 vtableOffset = -1;
+};
+
+struct BinClassFieldDescription
+{
+    QString name;
+    RVA addr = RVA_INVALID;
+};
+
+struct BinClassDescription
+{
+    QString name;
+    RVA addr = RVA_INVALID;
+    RVA vtableAddr = RVA_INVALID;
+    QList<BinClassBaseClassDescription> baseClasses;
+    QList<BinClassMethodDescription> methods;
+    QList<BinClassFieldDescription> fields;
+};
+
+struct AnalysisMethodDescription
+{
+    QString name;
+    QString realName;
+    RVA addr;
+    qint64 vtableOffset;
+};
+
+struct AnalysisBaseClassDescription
+{
+    QString id;
+    RVA offset;
+    QString className;
+};
+
+struct AnalysisVTableDescription
+{
+    QString id;
+    quint64 offset;
+    quint64 addr;
+};
+
+struct ResourcesDescription
+{
+    QString name;
+    RVA vaddr;
+    quint64 index;
+    QString type;
+    quint64 size;
+    QString lang;
+};
+
+struct VTableDescription
+{
+    RVA addr;
+    QList<BinClassMethodDescription> methods;
+};
+
+struct BlockDescription
+{
+    RVA addr;
+    RVA size;
+    int flags;
+    int functions;
+    int inFunctions;
+    int comments;
+    int symbols;
+    int strings;
+    quint8 rwx;
+};
+
+struct BlockStatistics
+{
+    RVA from;
+    RVA to;
+    RVA blocksize;
+    QList<BlockDescription> blocks;
+};
+
+struct MemoryMapDescription
+{
+    RVA addrStart;
+    RVA addrEnd;
+    QString name;
+    QString fileName;
+    QString type;
+    QString permission;
+};
+
+struct BreakpointDescription
+{
+    enum PositionType : ut8 {
+        Address,
+        Named,
+        Module,
+    };
+
+    RVA addr = 0;
+    qint64 moduleDelta = 0;
+    int index = -1;
+    PositionType type = Address;
+    int size = 0;
+    int permission = 0;
+    QString positionExpression;
+    QString name;
+    QString command;
+    QString condition;
+    bool hw = false;
+    bool trace = false;
+    bool enabled = true;
+};
+
+struct ProcessDescription
+{
+    bool current;
+    int pid;
+    int uid;
+    int ppid;
+    RzDebugPidState status;
+    QString path;
+};
+
+struct ThreadDescription
+{
+    bool current;
+    int pid;
+    int uid;
+    int ppid;
+    RzDebugPidState status;
+    QString path;
+    quint64 pc;
+    quint64 tls;
+};
+
+struct RefDescription
+{
+    QString ref;
+    QColor refColor;
+};
+
+struct VariableDescription
+{
+    RzAnalysisVarStorageType storageType;
+    QString name;
+    QString type;
+    QString value;
+};
+
+struct GlobalDescription
+{
+    RVA addr;
+    QString type;
+    QString name;
+};
+
+struct RegisterRefValueDescription
+{
+    QString name;
+    QString value;
+    QString ref;
+};
+
+struct Chunk
+{
+    RVA offset;
+    QString status;
+    int size;
+};
+
+struct Arena
+{
+    RVA offset;
+    QString type;
+    quint64 top;
+    quint64 lastRemainder;
+    quint64 next;
+    quint64 nextFree;
+    quint64 systemMem;
+    quint64 maxSystemMem;
+};
+
+struct BasefindCoreStatusDescription
+{
+    size_t index;
+    quint32 percentage;
+};
+
+struct BasefindResultDescription
+{
+    RVA candidate;
+    quint32 score;
+};
+
+struct MarkDescription
+{
+    RVA from;
+    RVA to;
+    QString name;
+    QString realname;
+    QString comment;
+    QColor color;
+};
+
+struct BacktraceDescription
+{
+    QString functionName;
+    RVA pc;
+    RVA sp;
+    QString frameSize;
+    QString description;
+};
+
+struct EvaluableVarDescription
+{
+    QString name;
+    QString description;
+    bool readOnly;
+
+    enum Type : ut8 { Bool = 0, Int, String, Interval, Set };
+    Type type;
+
+    QVariant value; ///< Can be either QString, QSet<QString> or RzInterval depending on type
+    QSet<QString> options;
+};
+
+Q_DECLARE_METATYPE(FunctionDescription)
+Q_DECLARE_METATYPE(ImportDescription)
+Q_DECLARE_METATYPE(ExportDescription)
+Q_DECLARE_METATYPE(SymbolDescription)
+Q_DECLARE_METATYPE(CommentDescription)
+Q_DECLARE_METATYPE(RelocDescription)
+Q_DECLARE_METATYPE(StringDescription)
+Q_DECLARE_METATYPE(FlagspaceDescription)
+Q_DECLARE_METATYPE(FlagDescription)
+Q_DECLARE_METATYPE(GlobalDescription)
+Q_DECLARE_METATYPE(XrefDescription)
+Q_DECLARE_METATYPE(EntrypointDescription)
+Q_DECLARE_METATYPE(RzBinPluginDescription)
+Q_DECLARE_METATYPE(RzIOPluginDescription)
+Q_DECLARE_METATYPE(RzCorePluginDescription)
+Q_DECLARE_METATYPE(RzAsmPluginDescription)
+Q_DECLARE_METATYPE(BinClassMethodDescription)
+Q_DECLARE_METATYPE(BinClassFieldDescription)
+Q_DECLARE_METATYPE(BinClassDescription)
+Q_DECLARE_METATYPE(const BinClassDescription *)
+Q_DECLARE_METATYPE(const BinClassMethodDescription *)
+Q_DECLARE_METATYPE(const BinClassFieldDescription *)
+Q_DECLARE_METATYPE(AnalysisBaseClassDescription)
+Q_DECLARE_METATYPE(AnalysisMethodDescription)
+Q_DECLARE_METATYPE(AnalysisVTableDescription)
+Q_DECLARE_METATYPE(ResourcesDescription)
+Q_DECLARE_METATYPE(VTableDescription)
+Q_DECLARE_METATYPE(TypeDescription)
+Q_DECLARE_METATYPE(HeaderDescription)
+Q_DECLARE_METATYPE(FlirtDescription)
+Q_DECLARE_METATYPE(SearchDescription)
+Q_DECLARE_METATYPE(SectionDescription)
+Q_DECLARE_METATYPE(SegmentDescription)
+Q_DECLARE_METATYPE(MemoryMapDescription)
+Q_DECLARE_METATYPE(BreakpointDescription)
+Q_DECLARE_METATYPE(BreakpointDescription::PositionType)
+Q_DECLARE_METATYPE(ProcessDescription)
+Q_DECLARE_METATYPE(RefDescription)
+Q_DECLARE_METATYPE(VariableDescription)
+Q_DECLARE_METATYPE(BasefindCoreStatusDescription)
+Q_DECLARE_METATYPE(BasefindResultDescription)
+Q_DECLARE_METATYPE(MarkDescription)
+Q_DECLARE_METATYPE(BacktraceDescription)
+Q_DECLARE_METATYPE(EvaluableVarDescription)
+
+#endif // DESCRIPTIONS_H

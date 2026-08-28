@@ -1,0 +1,45 @@
+meta {
+  name: get evals api - number less_than_or_equal
+  type: http
+  seq: 71
+}
+
+post {
+  url: {{host}}/model-hub/get-eval-logs
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "evalTemplateId": "9812a98e-9689-43b5-93a8-ba5a763e91aa",
+    "currentPageIndex": 4,
+    "filters": [
+      {
+        "columnId": "column4",
+        "filterConfig": {
+          "filterType": "number",
+          "filterOp": "less_than_or_equal",
+          "filterValue": 32.3
+        }
+      },
+      {
+        "column_id": "column6",
+        "filter_config": {
+          "filter_type": "datetime",
+          "filter_op": "between",
+          "filter_value": [
+            "2025-06-16T20:48:43.000Z",
+            "2025-07-17T18:29:59.000Z"
+          ]
+        }
+      }
+    ],
+    "sort": [],
+    "source": "logs"
+  }
+}

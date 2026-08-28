@@ -1,0 +1,804 @@
+"""
+Authentication command group for PraisonAI CLI.
+
+Provides secure credential management:
+- auth login: Store API keys with validation
+- auth logout: Remove stored credentials  
+- auth list: Show stored providers (keys redacted)
+- auth status: Check credential status and validation
+"""
+
+import os
+import sys
+from typing import Optional
+
+import typer
+
+from ..output.console import get_output_controller
+from ..configuration.credentials import CredentialStore, redact_key, validate_api_key
+
+
+app = typer.Typer(help="Manage API credentials")
+
+
+# Provider id -> tuple of environment variable(s) holding its API key. Used to
+# fold active env-sourced credentials into `auth list`/`status` so users can
+# tell which credential is live (env vs stored).
+#
+# Derived from the canonical PROVIDER_ENV_CATALOGUE so this surface can no
+# longer diverge from key auto-detection, provider inference, and env mapping;
+# adding a provider is a single catalogue edit. ALL of a provider's credential
+# env-vars are retained (not just the canonical first) so providers with
+# multiple spellings (e.g. TOGETHER_API_KEY / TOGETHERAI_API_KEY,
+# FIREWORKS_API_KEY / FIREWORKS_AI_API_KEY) are recognised here exactly as the
+# runtime recognises them — otherwise `auth status` would report "not found"
+# for a credential the runtime happily accepts. Falls back to the historical
+# literal map if the catalogue import is unavailable (offline/degraded),
+# exactly as credentials.py does.
+def _build_provider_env_keys() -> dict:
+    try:
+        from praisonai_code.llm.catalogue import PROVIDER_ENV_CATALOGUE
+
+        return {
+            provider: tuple(env_vars)
+            for provider, (env_vars, _model, _prefix) in PROVIDER_ENV_CATALOGUE.items()
+            if env_vars
+        }
+    except Exception:
+        return {
+            "openai": ("OPENAI_API_KEY",),
+            "anthropic": ("ANTHROPIC_API_KEY",),
+            "google": ("GOOGLE_API_KEY",),
+            "gemini": ("GEMINI_API_KEY",),
+            "groq": ("GROQ_API_KEY",),
+            "openrouter": ("OPENROUTER_API_KEY",),
+            "mistral": ("MISTRAL_API_KEY",),
+            "deepseek": ("DEEPSEEK_API_KEY",),
+            "xai": ("XAI_API_KEY",),
+            "cohere": ("COHERE_API_KEY",),
+            "together": ("TOGETHER_API_KEY", "TOGETHERAI_API_KEY"),
+            "perplexity": ("PERPLEXITYAI_API_KEY",),
+            "fireworks": ("FIREWORKS_API_KEY", "FIREWORKS_AI_API_KEY"),
+        }
+
+
+_PROVIDER_ENV_KEYS = _build_provider_env_keys()
+
+
+def _active_env_var(provider: str) -> Optional[str]:
+    """Return the credential env-var a provider is live from, or ``None``.
+
+    Prefers whichever alias the user actually set so providers with multiple
+    spellings resolve the key in effect; falls back to the canonical (first)
+    env-var name when none is set (used only for display of the expected var).
+    """
+    env_vars = _PROVIDER_ENV_KEYS.get(provider.lower())
+    if not env_vars:
+        return None
+    for var in env_vars:
+        if os.environ.get(var):
+            return var
+    return env_vars[0]
+
+
+def _env_credentials() -> dict[str, tuple[str, str]]:
+    """Return ``{provider: (env_var, api_key)}`` for env-sourced keys present.
+
+    Scans every credential alias a provider declares (not just the canonical
+    first) so a key set under a secondary spelling is still surfaced.
+    """
+    found = {}
+    for provider, env_vars in _PROVIDER_ENV_KEYS.items():
+        for env_var in env_vars:
+            value = os.environ.get(env_var)
+            if value:
+                found[provider] = (env_var, value)
+                break
+    return found
+
+
+def _select_provider_interactively(output) -> Optional[str]:
+    """Catalogue-driven provider picker for when no provider id is supplied.
+
+    Returns the chosen provider id, or ``None`` if selection is unavailable
+    (non-tty / rich missing) so the caller can prompt for a free-form id.
+    """
+    try:
+        from praisonai_code.llm.catalogue import ModelCatalogue
+
+        providers = ModelCatalogue().list_providers()
+    except Exception:
+        providers = []
+
+    ordered = [p for p in ("openai", "anthropic", "google", "ollama") if p in providers]
+    for p in providers:
+        if p not in ordered:
+            ordered.append(p)
+    ordered.append("custom")
+
+    try:
+        from rich.prompt import Prompt
+    except Exception:
+        return None
+
+    output.console.print("[bold]Choose your LLM provider:[/bold]")
+    choices = {}
+    for idx, pid in enumerate(ordered, start=1):
+        choices[str(idx)] = pid
+        label = "Other/custom" if pid == "custom" else pid
+        output.console.print(f"  {idx}) {label}")
+
+    selected = Prompt.ask("Select provider", choices=list(choices.keys()), default="1")
+    pid = choices[selected]
+    if pid == "custom":
+        return Prompt.ask("Enter provider id").strip() or None
+    return pid
+
+
+def _print_key_url_hint(provider: str, output) -> None:
+    """Print a one-line 'Get your key' hint for well-known providers."""
+    try:
+        from praisonai_code.llm.catalogue import key_url_for_provider
+
+        url = key_url_for_provider(provider)
+    except Exception:
+        url = None
+    if url:
+        output.print_info(f"Get your key: {url}")
+
+
+def _format_expiry(cred) -> str:
+    """Format an OAuth credential's expiry for display ('(n/a)' for keys)."""
+    if not getattr(cred, "auth_method", "apikey") == "oauth":
+        return "(n/a)"
+    if not cred.expires_at:
+        return "(no expiry)"
+    import time as _time
+    remaining = cred.expires_at - _time.time()
+    if remaining <= 0:
+        return "expired"
+    mins = int(remaining // 60)
+    if mins >= 60:
+        return f"{mins // 60}h {mins % 60}m"
+    return f"{mins}m" if mins else "<1m"
+
+
+def _validate_with_live_call(provider: str, api_key: str, base_url: Optional[str] = None) -> tuple[bool, str]:
+    """
+    Validate API key with a cheap live call to the provider.
+    
+    Args:
+        provider: Provider name
+        api_key: API key to validate
+        base_url: Optional base URL
+        
+    Returns:
+        Tuple of (is_valid, message)
+    """
+    try:
+        if provider.lower() == "openai":
+            # Use a cheap OpenAI API call to validate
+            import openai
+            client = openai.OpenAI(
+                api_key=api_key,
+                base_url=base_url or "https://api.openai.com/v1"
+            )
+            
+            # Try to list models (cheap operation)
+            client.models.list()
+            return True, "API key verified"
+            
+        elif provider.lower() == "anthropic":
+            # Live validation would require a billable request; skip it.
+            return True, "Format valid (live test skipped for Anthropic)"
+            
+        elif provider.lower() in ("google", "gemini"):
+            # For Google/Gemini, format validation only
+            return True, "Format valid (live test not implemented)"
+            
+        else:
+            # Unknown provider - skip live validation
+            return True, "Format valid (live test not available)"
+            
+    except ImportError:
+        return True, "Format valid (provider SDK not installed for live test)"
+    except Exception as e:
+        return False, f"API key invalid: {str(e)}"
+
+
+def _run_oauth_login(
+    provider: str,
+    output,
+    base_url,
+    model,
+    no_browser: bool,
+    overrides: Optional[dict] = None,
+) -> None:
+    """Run the browser/device-code OAuth flow and store the resulting tokens."""
+    from ..configuration.oauth import run_oauth_login
+
+    def _on_prompt(uri: Optional[str], user_code: Optional[str]) -> None:
+        if user_code:
+            output.print_info(
+                f"To sign in, visit {uri} and enter code: {user_code}"
+            )
+        elif uri:
+            output.print_info(f"Opening browser to authorize... If it doesn't open, visit:\n{uri}")
+
+    try:
+        config, tokens = run_oauth_login(
+            provider,
+            overrides=overrides,
+            open_browser=not no_browser,
+            on_prompt=_on_prompt,
+        )
+    except ValueError as e:
+        output.print_error(str(e))
+        raise typer.Exit(1)
+    except Exception as e:
+        output.print_error(f"OAuth login failed: {e}")
+        raise typer.Exit(1)
+
+    if not tokens.get("access_token"):
+        output.print_error("OAuth flow did not return an access token")
+        raise typer.Exit(1)
+
+    try:
+        store = CredentialStore()
+        store.store_oauth_credential(
+            provider=provider,
+            access_token=tokens["access_token"],
+            refresh_token=tokens.get("refresh_token"),
+            expires_at=tokens.get("expires_at"),
+            token_url=config.token_url,
+            client_id=config.client_id,
+            scope=tokens.get("scope") or config.scope,
+            base_url=base_url,
+            model=model,
+        )
+    except Exception as e:
+        output.print_error(f"Failed to store credentials: {e}")
+        raise typer.Exit(1)
+
+    if output.is_json_mode:
+        # Emit a single JSON document; ``print_success`` would emit a second.
+        output.print_json({
+            "provider": provider,
+            "status": "stored",
+            "auth_method": "oauth",
+            "expires_at": tokens.get("expires_at"),
+        })
+    else:
+        output.print_success(f"Signed in to {provider} via OAuth")
+
+
+@app.command("login")
+def auth_login(
+    provider: Optional[str] = typer.Argument(None, help="Provider name (e.g., openai, anthropic); prompts a picker if omitted"),
+    method: str = typer.Option("auto", "--method", help="Auth method: auto, apikey, or oauth"),
+    key: Optional[str] = typer.Option(None, "--key", help="API key (will prompt if not provided)"),
+    key_stdin: bool = typer.Option(False, "--key-stdin", help="Read API key from stdin"),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Custom base URL"),
+    model: Optional[str] = typer.Option(None, "--model", help="Default model for this provider"),
+    skip_validation: bool = typer.Option(False, "--skip-validation", help="Skip API key validation"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not auto-open the browser for OAuth"),
+    client_id: Optional[str] = typer.Option(None, "--client-id", help="OAuth client id (overrides the built-in provider entry)"),
+    token_url: Optional[str] = typer.Option(None, "--token-url", help="OAuth token endpoint (for providers not in the built-in registry)"),
+    device_authorization_url: Optional[str] = typer.Option(None, "--device-authorization-url", help="OAuth device-code endpoint (RFC 8628)"),
+    authorization_url: Optional[str] = typer.Option(None, "--authorization-url", help="OAuth authorization endpoint (RFC 7636 PKCE)"),
+    scope: Optional[str] = typer.Option(None, "--scope", help="OAuth scope(s) to request"),
+):
+    """
+    Store API credentials for a provider.
+    
+    Examples:
+        praisonai auth login openai
+        praisonai auth login openai --key sk-...
+        echo "sk-..." | praisonai auth login openai --key-stdin
+        praisonai auth login github --method oauth --client-id <app-id>
+    """
+    output = get_output_controller()
+
+    # Provider is optional: when omitted, present a catalogue-driven picker so
+    # users don't need to know the exact provider id up front. The positional
+    # argument still works for scripts.
+    if not provider:
+        provider = _select_provider_interactively(output)
+        if not provider:
+            output.print_error("A provider is required")
+            raise typer.Exit(1)
+
+    # Assemble any OAuth endpoint overrides supplied on the command line. These
+    # let users sign in to a built-in provider that needs an app client id, or
+    # to a provider not in the registry (e.g. a self-hosted gateway).
+    oauth_overrides = {
+        "client_id": client_id,
+        "token_url": token_url,
+        "device_authorization_url": device_authorization_url,
+        "authorization_url": authorization_url,
+        "scope": scope,
+    }
+    oauth_overrides = {k: v for k, v in oauth_overrides.items() if v is not None}
+
+    # Decide between OAuth and API-key login. ``auto`` selects OAuth only when
+    # the provider has an OAuth config AND no key was supplied; otherwise it
+    # falls back to the API-key path (unchanged behaviour).
+    method = (method or "auto").lower()
+    if method not in {"auto", "apikey", "oauth"}:
+        output.print_error("Invalid auth method. Use: auto, apikey, or oauth")
+        raise typer.Exit(1)
+    if method == "oauth":
+        _run_oauth_login(provider, output, base_url, model, no_browser, oauth_overrides)
+        return
+    if method == "auto" and not key and not key_stdin:
+        try:
+            from ..configuration.oauth import provider_supports_oauth, provider_requires_client_id
+            if provider_supports_oauth(provider, oauth_overrides):
+                # Don't silently start an OAuth flow that will immediately fail
+                # for lack of a client id; fall through to API-key login unless
+                # the user explicitly supplied one.
+                if not provider_requires_client_id(provider, oauth_overrides):
+                    _run_oauth_login(provider, output, base_url, model, no_browser, oauth_overrides)
+                    return
+                # Known OAuth provider but no client id yet: surface the OAuth
+                # path so the user isn't left wondering why they're being asked
+                # for an API key, then continue to the API-key fallback below.
+                output.print_info(
+                    f"{provider} supports OAuth sign-in. To use it, re-run with: "
+                    f"praisonai auth login {provider} --method oauth "
+                    f"--client-id <your-oauth-app-client-id>"
+                )
+        except Exception:
+            # Fall through to API-key login on any OAuth detection error.
+            pass
+
+    # Get API key
+    api_key = None
+    
+    if key_stdin:
+        # Read from stdin
+        try:
+            api_key = sys.stdin.read().strip()
+        except KeyboardInterrupt:
+            output.print_error("Cancelled")
+            raise typer.Exit(1)
+    elif key:
+        # Use provided key
+        api_key = key
+    else:
+        # Prompt for key
+        _print_key_url_hint(provider, output)
+        try:
+            api_key = typer.prompt(
+                f"Enter API key for {provider}",
+                hide_input=True
+            )
+        except KeyboardInterrupt:
+            output.print_error("Cancelled")
+            raise typer.Exit(1)
+    
+    if not api_key:
+        output.print_error("No API key provided")
+        raise typer.Exit(1)
+    
+    # Validate API key format
+    if not skip_validation:
+        format_valid, format_msg = validate_api_key(provider, api_key)
+        if not format_valid:
+            output.print_error(f"Invalid API key format: {format_msg}")
+            raise typer.Exit(1)
+        
+        # Try live validation for some providers
+        live_valid, live_msg = _validate_with_live_call(provider, api_key, base_url)
+        if not live_valid:
+            output.print_error(f"API key validation failed: {live_msg}")
+            if not typer.confirm("Store anyway?"):
+                raise typer.Exit(1)
+        else:
+            output.print_success(f"API key validated: {live_msg}")
+    
+    # Store credential
+    try:
+        store = CredentialStore()
+        store.store_credential(
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            model=model
+        )
+        
+        output.print_success(f"Stored credentials for {provider}")
+        
+        if output.is_json_mode:
+            output.print_json({
+                "provider": provider,
+                "status": "stored",
+                "key_redacted": redact_key(api_key)
+            })
+        else:
+            output.print_info(f"Key stored: {redact_key(api_key)}")
+            
+    except Exception as e:
+        output.print_error(f"Failed to store credentials: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("logout")
+def auth_logout(
+    provider: Optional[str] = typer.Argument(None, help="Provider name to remove"),
+    all_providers: bool = typer.Option(False, "--all", help="Remove all stored credentials"),
+):
+    """
+    Remove stored credentials.
+    
+    Examples:
+        praisonai auth logout openai
+        praisonai auth logout --all
+    """
+    output = get_output_controller()
+    
+    try:
+        store = CredentialStore()
+        
+        if all_providers:
+            # Remove all credentials
+            if not typer.confirm("Remove ALL stored credentials?"):
+                output.print_info("Cancelled")
+                return
+            
+            store.clear_all()
+            output.print_success("Removed all stored credentials")
+            
+            if output.is_json_mode:
+                output.print_json({"status": "all_removed"})
+                
+        else:
+            # Remove specific provider
+            if provider is None:
+                output.print_error("Provider name is required when not using --all")
+                output.print_info("Use 'praisonai auth logout <provider>' or 'praisonai auth logout --all'")
+                raise typer.Exit(1)
+            
+            if not store.has_credential(provider):
+                output.print_warning(f"No credentials found for {provider}")
+                raise typer.Exit(1)
+            
+            if store.remove_credential(provider):
+                output.print_success(f"Removed credentials for {provider}")
+                
+                if output.is_json_mode:
+                    output.print_json({
+                        "provider": provider,
+                        "status": "removed"
+                    })
+            else:
+                output.print_error(f"Failed to remove credentials for {provider}")
+                raise typer.Exit(1)
+                
+    except Exception as e:
+        output.print_error(f"Failed to remove credentials: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("list")
+def auth_list():
+    """
+    List all stored providers (API keys are redacted).
+    
+    Example:
+        praisonai auth list
+    """
+    output = get_output_controller()
+    
+    try:
+        store = CredentialStore()
+        providers = store.list_providers()
+
+        # Zero-disk mode: credentials come from PRAISONAI_AUTH_CONTENT in memory
+        # and nothing is read from or written to disk. Surface it so the source
+        # is not silently invisible.
+        stored_source = "env (in-memory)" if store.is_in_memory else "stored"
+
+        # Get detailed info for each stored provider.
+        provider_info = []
+        stored_names = set()
+        for provider_name in providers:
+            cred = store.get_credential(provider_name)
+            if cred:
+                stored_names.add(provider_name.lower())
+                provider_info.append({
+                    "provider": provider_name,
+                    "auth_method": cred.auth_method,
+                    "source": stored_source,
+                    "env_var": None,
+                    "key_redacted": redact_key(cred.api_key),
+                    "base_url": cred.base_url,
+                    "model": cred.model,
+                    "expires_at": cred.expires_at,
+                    "expires": _format_expiry(cred),
+                })
+
+        # Fold in active environment-variable keys (redacted) so the live
+        # credential is unambiguous. An env key is ALWAYS surfaced when present
+        # — even if the provider also has a stored key — because the env value
+        # overrides the stored one at runtime, so hiding it would point users at
+        # the wrong secret when they inspect or rotate credentials.
+        for provider_name, (env_var, value) in _env_credentials().items():
+            provider_info.append({
+                "provider": provider_name,
+                "auth_method": "apikey",
+                "source": "env",
+                "env_var": env_var,
+                "key_redacted": redact_key(value),
+                "base_url": None,
+                "model": None,
+                "expires_at": None,
+                "expires": "(n/a)",
+                "overrides_stored": provider_name in stored_names,
+            })
+
+        if not provider_info:
+            output.print_info("No stored credentials")
+            if output.is_json_mode:
+                output.print_json({"providers": []})
+            return
+
+        if output.is_json_mode:
+            output.print_json({"providers": provider_info})
+        else:
+            # Create table
+            headers = ["Provider", "Method", "Source", "Secret", "Expires", "Base URL", "Model"]
+            rows = []
+            for info in provider_info:
+                source = info["source"]
+                if source == "env" and info.get("env_var"):
+                    source = f"env ({info['env_var']})"
+                    if info.get("overrides_stored"):
+                        source += " [live, overrides stored]"
+                rows.append([
+                    info["provider"],
+                    info["auth_method"],
+                    source,
+                    info["key_redacted"],
+                    info["expires"],
+                    info["base_url"] or "(default)",
+                    info["model"] or "(none)"
+                ])
+            
+            output.print_table(headers, rows, title="Credentials")
+            
+    except Exception as e:
+        output.print_error(f"Failed to list credentials: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("status")
+def auth_status(
+    provider: Optional[str] = typer.Argument(None, help="Check specific provider (optional)"),
+    validate: bool = typer.Option(False, "--validate", help="Perform live API validation"),
+):
+    """
+    Check credential status and validation.
+    
+    Examples:
+        praisonai auth status
+        praisonai auth status openai
+        praisonai auth status openai --validate
+    """
+    output = get_output_controller()
+    
+    try:
+        store = CredentialStore()
+        
+        if provider:
+            # Check specific provider
+            cred = store.get_credential(provider)
+            if not cred:
+                # Fall back to an active environment-variable key so the user
+                # can tell the credential is live from the env, not just missing
+                # from the store. Scans every alias the provider declares so a
+                # secondary spelling (e.g. TOGETHERAI_API_KEY) is still found.
+                env_var = _active_env_var(provider)
+                env_value = os.environ.get(env_var) if env_var else None
+                if env_value:
+                    format_valid, format_msg = validate_api_key(provider, env_value)
+                    status_info = {
+                        "provider": provider,
+                        "status": "found",
+                        "auth_method": "apikey",
+                        "source": "env",
+                        "env_var": env_var,
+                        "key_redacted": redact_key(env_value),
+                        "format_valid": format_valid,
+                        "format_message": format_msg,
+                        "base_url": None,
+                        "model": None,
+                        "expires_at": None,
+                        "expires": "(n/a)",
+                    }
+                    if output.is_json_mode:
+                        output.print_json(status_info)
+                    else:
+                        output.print_panel(
+                            f"Provider: {provider}\n"
+                            f"Method: apikey\n"
+                            f"Source: env ({env_var})\n"
+                            f"Secret: {redact_key(env_value)}\n"
+                            f"Format: {'✅' if format_valid else '❌'} {format_msg}",
+                            title=f"Credentials Status: {provider}"
+                        )
+                    return
+
+                output.print_warning(f"No credentials found for {provider}")
+                if output.is_json_mode:
+                    output.print_json({
+                        "provider": provider,
+                        "status": "not_found"
+                    })
+                raise typer.Exit(1)
+            
+            # A live env var overrides the stored credential at runtime. When
+            # both exist, validate/report the env key (the credential actually
+            # in effect) so status never claims the wrong secret is active.
+            # Uses the alias the user actually set so secondary spellings win.
+            env_var = _active_env_var(provider)
+            env_value = os.environ.get(env_var) if env_var else None
+            active_from_env = bool(env_value) and not cred.is_oauth()
+            # Zero-disk mode: the store itself is sourced from
+            # PRAISONAI_AUTH_CONTENT in memory; label it so the source is clear.
+            stored_source = "env (in-memory)" if store.is_in_memory else "stored"
+
+            if cred.is_oauth():
+                format_valid, format_msg = True, "OAuth token"
+                secret = cred.api_key
+                source = stored_source
+            elif active_from_env:
+                format_valid, format_msg = validate_api_key(provider, env_value)
+                secret = env_value
+                source = f"env ({env_var})"
+            else:
+                format_valid, format_msg = validate_api_key(provider, cred.api_key)
+                secret = cred.api_key
+                source = stored_source
+
+            status_info = {
+                "provider": provider,
+                "status": "found",
+                "auth_method": cred.auth_method,
+                "source": source,
+                "env_var": env_var if active_from_env else None,
+                "overrides_stored": active_from_env,
+                "key_redacted": redact_key(secret),
+                "format_valid": format_valid,
+                "format_message": format_msg,
+                "base_url": cred.base_url,
+                "model": cred.model,
+                "expires_at": cred.expires_at,
+                "expires": _format_expiry(cred),
+            }
+            
+            # Live validation if requested
+            if validate:
+                if cred.is_oauth():
+                    # Freshly-refreshed token so we don't validate a stale mirror.
+                    live_secret = store.get_valid_token(provider)
+                else:
+                    live_secret = secret
+                live_valid, live_msg = _validate_with_live_call(provider, live_secret, cred.base_url)
+                status_info["live_valid"] = live_valid
+                status_info["live_message"] = live_msg
+            
+            if output.is_json_mode:
+                output.print_json(status_info)
+            else:
+                output.print_panel(
+                    f"Provider: {provider}\n"
+                    f"Method: {cred.auth_method}\n"
+                    f"Source: {source}\n"
+                    + ("Note: env var overrides stored key at runtime\n" if active_from_env else "") +
+                    f"Secret: {redact_key(secret)}\n"
+                    + (f"Expires: {_format_expiry(cred)}\n" if cred.is_oauth() else "") +
+                    f"Format: {'✅' if format_valid else '❌'} {format_msg}\n"
+                    + (f"Live Test: {'✅' if status_info.get('live_valid') else '❌'} {status_info.get('live_message', 'Not tested')}\n" if validate else "") +
+                    f"Base URL: {cred.base_url or '(default)'}\n"
+                    f"Model: {cred.model or '(none)'}",
+                    title=f"Credentials Status: {provider}"
+                )
+                
+        else:
+            # Check all providers
+            providers = store.list_providers()
+            # Zero-disk mode label so the in-memory source is visible.
+            stored_source = "env (in-memory)" if store.is_in_memory else "stored"
+
+            all_status = []
+            stored_names = set()
+            for provider_name in providers:
+                cred = store.get_credential(provider_name)
+                if cred:
+                    stored_names.add(provider_name.lower())
+                    if cred.is_oauth():
+                        format_valid, format_msg = True, "OAuth token"
+                    else:
+                        format_valid, format_msg = validate_api_key(provider_name, cred.api_key)
+                    
+                    status = {
+                        "provider": provider_name,
+                        "auth_method": cred.auth_method,
+                        "source": stored_source,
+                        "key_redacted": redact_key(cred.api_key),
+                        "format_valid": format_valid,
+                        "format_message": format_msg,
+                        "expires_at": cred.expires_at,
+                        "expires": _format_expiry(cred),
+                    }
+                    
+                    if validate:
+                        live_secret = (
+                            store.get_valid_token(provider_name)
+                            if cred.is_oauth()
+                            else cred.api_key
+                        )
+                        live_valid, live_msg = _validate_with_live_call(provider_name, live_secret, cred.base_url)
+                        status["live_valid"] = live_valid
+                        status["live_message"] = live_msg
+                    
+                    all_status.append(status)
+
+            # Fold in active env-var keys (redacted), marked env-sourced. Always
+            # surfaced even when the provider also has a stored key, since the
+            # env value is the credential in effect at runtime.
+            for provider_name, (env_var, value) in _env_credentials().items():
+                format_valid, format_msg = validate_api_key(provider_name, value)
+                source = f"env ({env_var})"
+                if provider_name in stored_names:
+                    source += " [live, overrides stored]"
+                status = {
+                    "provider": provider_name,
+                    "auth_method": "apikey",
+                    "source": source,
+                    "key_redacted": redact_key(value),
+                    "format_valid": format_valid,
+                    "format_message": format_msg,
+                    "expires_at": None,
+                    "expires": "(n/a)",
+                }
+                if validate:
+                    live_valid, live_msg = _validate_with_live_call(provider_name, value, None)
+                    status["live_valid"] = live_valid
+                    status["live_message"] = live_msg
+                all_status.append(status)
+
+            if not all_status:
+                output.print_info("No stored credentials")
+                if output.is_json_mode:
+                    output.print_json({"providers": []})
+                return
+
+            if output.is_json_mode:
+                output.print_json({"providers": all_status})
+            else:
+                # Create table
+                headers = ["Provider", "Method", "Source", "Secret", "Expires", "Format"]
+                if validate:
+                    headers.append("Live Test")
+                
+                rows = []
+                for status in all_status:
+                    row = [
+                        status["provider"],
+                        status["auth_method"],
+                        status.get("source", "stored"),
+                        status["key_redacted"],
+                        status["expires"],
+                        "✅" if status["format_valid"] else "❌"
+                    ]
+                    if validate:
+                        row.append("✅" if status.get("live_valid") else "❌")
+                    rows.append(row)
+                
+                output.print_table(headers, rows, title="Credentials Status")
+                
+    except Exception as e:
+        output.print_error(f"Failed to check status: {e}")
+        raise typer.Exit(1)

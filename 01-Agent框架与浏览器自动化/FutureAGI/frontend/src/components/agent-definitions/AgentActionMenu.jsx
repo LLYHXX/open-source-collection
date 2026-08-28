@@ -1,0 +1,82 @@
+import {
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
+  Box,
+  IconButton,
+} from "@mui/material";
+import React, { useState } from "react";
+import PropTypes from "prop-types";
+import SvgColor from "../svg-color";
+import Iconify from "../iconify";
+
+export const AgentActionMenu = ({ agent, onDelete }) => {
+  const [anchorEl, setAnchorEl] = useState(null);
+  const open = Boolean(anchorEl);
+
+  const handleClick = (event) => {
+    event.stopPropagation();
+    setAnchorEl(event.currentTarget);
+  };
+
+  const handleClose = () => {
+    setAnchorEl(null);
+  };
+
+  const handleDelete = () => {
+    onDelete?.(agent);
+    handleClose();
+  };
+
+  return (
+    <>
+      <Box height={"100%"} display={"flex"} alignItems={"center"}>
+        <IconButton size="small" onClick={handleClick}>
+          <Iconify icon={"ri:more-fill"} width={22} height={22} />
+        </IconButton>
+      </Box>
+      <Menu
+        anchorEl={anchorEl}
+        open={open}
+        onClose={handleClose}
+        PaperProps={{
+          sx: {
+            minWidth: 100,
+            p: 0.5,
+            borderRadius: "4px !important",
+          },
+        }}
+        transformOrigin={{ horizontal: "right", vertical: "top" }}
+        anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
+      >
+        <MenuItem
+          onClick={handleDelete}
+          sx={{ color: "error.main", px: 1.25, py: 0.75 }}
+        >
+          <ListItemIcon sx={{ minWidth: "unset", mr: 1 }}>
+            <SvgColor
+              src="/assets/icons/ic_delete.svg"
+              sx={{
+                height: 20,
+                width: 20,
+              }}
+            />
+          </ListItemIcon>
+          <ListItemText
+            primary="Delete"
+            primaryTypographyProps={{
+              fontSize: 13,
+              fontWeight: 400,
+            }}
+          />
+        </MenuItem>
+      </Menu>
+    </>
+  );
+};
+
+AgentActionMenu.propTypes = {
+  agent: PropTypes.object,
+  onDelete: PropTypes.func,
+};

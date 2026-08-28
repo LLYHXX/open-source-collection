@@ -1,0 +1,499 @@
+"""Tools for executing Agent Skills scripts.
+
+This module provides tools for running scripts bundled with Agent Skills.
+Skills are modular packages that extend agent capabilities through SKILL.md
+files and optional scripts.
+
+Usage:
+    from praisonaiagents.tools import run_skill_script
+    result = run_skill_script("./my-skill/scripts/skill.py", "./data.csv")
+"""
+
+import subprocess
+import os
+import logging
+from ..approval import require_approval
+
+
+class SkillTools:
+    """Tools for executing Agent Skills scripts and managing skills."""
+    
+    def __init__(self, working_directory: str = None, workspace=None):
+        """Initialize SkillTools.
+        
+        Args:
+            working_directory: Base directory for resolving relative paths.
+                              Defaults to current working directory.
+            workspace: Optional Workspace instance for path containment
+        """
+        self._working_directory = working_directory or os.getcwd()
+        self._workspace = workspace
+        self._skill_manager = None
+    
+    @property
+    def working_directory(self) -> str:
+        """Get the working directory for path resolution."""
+        return self._working_directory
+    
+    @property
+    def skill_manager(self):
+        """Lazily initialize skill manager."""
+        if self._skill_manager is None:
+            from ..skills import SkillManager
+            self._skill_manager = SkillManager()
+        return self._skill_manager
+    
+    @working_directory.setter
+    def working_directory(self, value: str):
+        """Set the working directory for path resolution."""
+        self._working_directory = value
+    
+    @require_approval(risk_level="critical")
+    def run_skill_script(
+        self,
+        script_path: str,
+        args: str = "",
+        timeout: int = 60
+    ) -> str:
+        """
+        Execute a skill script from a skill's scripts/ directory.
+        
+        Args:
+            script_path: Path to the script file (e.g., ./csv-analyzer/scripts/skill.py)
+            args: Arguments to pass to the script (e.g., file path to analyze)
+            timeout: Maximum execution time in seconds (default: 60)
+            
+        Returns:
+            The output from running the script, or error message if failed
+        """
+        try:
+            # Resolve the script path
+            script_path = os.path.expanduser(script_path)
+            if not os.path.isabs(script_path):
+                script_path = os.path.join(self._working_directory, script_path)
+            script_path = os.path.abspath(script_path)
+
+            root = os.path.realpath(self._working_directory)
+            try:
+                if os.path.commonpath([script_path, root]) != root:
+                    return f"Error: Script path outside working directory: {script_path}"
+            except ValueError:
+                return f"Error: Script path outside working directory: {script_path}"
+            
+            if not os.path.exists(script_path):
+                return f"Error: Script not found at {script_path}"
+            
+            # Resolve args paths relative to working directory
+            resolved_args = []
+            if args:
+                for arg in args.split():
+                    # Skip flags
+                    if arg.startswith('-'):
+                        resolved_args.append(arg)
+                        continue
+                    
+                    # Try to resolve as a path relative to working directory
+                    potential_path = os.path.join(self._working_directory, arg)
+                    if os.path.exists(potential_path):
+                        resolved_args.append(os.path.abspath(potential_path))
+                    elif os.path.isabs(arg) and os.path.exists(arg):
+                        # Already absolute and exists
+                        resolved_args.append(arg)
+                    else:
+                        # Keep original arg if path doesn't exist
+                        resolved_args.append(arg)
+            
+            # Determine how to run the script based on extension
+            ext = os.path.splitext(script_path)[1].lower()
+            
+            if ext == '.py':
+                cmd = ['python', script_path] + resolved_args
+            elif ext == '.sh':
+                cmd = ['bash', script_path] + resolved_args
+            elif ext == '.js':
+                cmd = ['node', script_path] + resolved_args
+            else:
+                # Try to run directly
+                cmd = [script_path] + resolved_args
+            
+            logging.debug(f"Running skill script: {' '.join(cmd)}")
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=self._working_directory
+            )
+            
+            output = result.stdout
+            if result.stderr:
+                output += f"\nStderr: {result.stderr}"
+            if result.returncode != 0:
+                output += f"\nExit code: {result.returncode}"
+            
+            return output if output else "Script executed successfully (no output)"
+            
+        except subprocess.TimeoutExpired:
+            return f"Error: Script execution timed out after {timeout} seconds"
+        except FileNotFoundError as e:
+            return f"Error: Could not find interpreter or script: {str(e)}"
+        except PermissionError as e:
+            return f"Error: Permission denied: {str(e)}"
+        except Exception as e:
+            return f"Error executing script: {str(e)}"
+    
+    @require_approval(risk_level="low")
+    def read_skill_file(
+        self,
+        skill_path: str,
+        file_path: str,
+        encoding: str = 'utf-8'
+    ) -> str:
+        """
+        Read a file from a skill directory.
+        
+        Args:
+            skill_path: Path to the skill directory (e.g., ./csv-analyzer)
+            file_path: Relative path within the skill (e.g., SKILL.md, scripts/skill.py)
+            encoding: File encoding (default: utf-8)
+            
+        Returns:
+            File contents or error message
+        """
+        try:
+            # Resolve skill path
+            skill_path = os.path.expanduser(skill_path)
+            if not os.path.isabs(skill_path):
+                skill_path = os.path.join(self._working_directory, skill_path)
+            skill_path = os.path.abspath(skill_path)
+            
+            working_dir = os.path.abspath(self._working_directory)
+            if os.path.commonpath([skill_path, working_dir]) != working_dir:
+                return f"Error: Workspace boundary violation - skill directory escapes workspace"
+            
+            if not os.path.exists(skill_path):
+                return f"Error: Skill directory not found at {skill_path}"
+            
+            if not os.path.isdir(skill_path):
+                return f"Error: {skill_path} is not a directory"
+            
+            # Resolve file path within skill
+            full_path = os.path.join(skill_path, file_path)
+            full_path = os.path.abspath(full_path)
+            
+            # Security check: ensure file is within skill directory
+            if os.path.commonpath([full_path, skill_path]) != skill_path:
+                return f"Error: Path traversal detected - {file_path} is outside skill directory"
+            
+            if not os.path.exists(full_path):
+                return f"Error: File not found at {full_path}"
+            
+            with open(full_path, 'r', encoding=encoding) as f:
+                return f.read()
+                
+        except UnicodeDecodeError as e:
+            return f"Error: Could not decode file with {encoding} encoding: {str(e)}"
+        except PermissionError as e:
+            return f"Error: Permission denied reading file: {str(e)}"
+        except Exception as e:
+            return f"Error reading skill file: {str(e)}"
+    
+    def list_skill_scripts(self, skill_path: str) -> str:
+        """
+        List available scripts in a skill's scripts/ directory.
+        
+        Args:
+            skill_path: Path to the skill directory
+            
+        Returns:
+            JSON string with list of scripts or error message
+        """
+        import json
+        
+        try:
+            # Resolve skill path
+            skill_path = os.path.expanduser(skill_path)
+            if not os.path.isabs(skill_path):
+                skill_path = os.path.join(self._working_directory, skill_path)
+            skill_path = os.path.abspath(skill_path)
+            
+            if not os.path.exists(skill_path):
+                return f"Error: Skill directory not found at {skill_path}"
+            
+            scripts_dir = os.path.join(skill_path, "scripts")
+            if not os.path.exists(scripts_dir):
+                return json.dumps({"scripts": [], "message": "No scripts/ directory found"})
+            
+            scripts = []
+            for item in os.listdir(scripts_dir):
+                item_path = os.path.join(scripts_dir, item)
+                if os.path.isfile(item_path):
+                    ext = os.path.splitext(item)[1].lower()
+                    if ext in ['.py', '.sh', '.js', '.rb', '.pl']:
+                        scripts.append({
+                            "name": item,
+                            "path": os.path.join("scripts", item),
+                            "type": ext[1:]  # Remove the dot
+                        })
+            
+            return json.dumps({"scripts": scripts}, indent=2)
+            
+        except Exception as e:
+            return f"Error listing skill scripts: {str(e)}"
+    
+    @require_approval(risk_level="low")
+    def skill_manage(self, action: str, name: str = "", *, 
+                    content=None, category=None, file_path=None,
+                    file_content=None, old_string=None,
+                    new_string=None, replace_all=False,
+                    propose=None) -> str:
+        """Hermes-compatible skill management tool.
+        
+        Mutating actions (create, edit, patch, delete, write_file, remove_file)
+        are *staged for human approval by default* (safe-by-default). The model
+        receives a ``{"status": "pending", "id": ...}`` response and a human
+        approves via the ``approve``/``reject`` actions (or the gateway
+        ``/skills`` commands). Pass ``propose=False`` to write directly in
+        trusted/local contexts.
+        
+        Actions: create, edit, patch, delete, write_file, remove_file,
+                 pending, approve, reject
+        
+        Args:
+            action: Action to perform
+            name: Skill name (or pending id for approve/reject)
+            content: Skill content (for create/edit)
+            category: Skill category (for create)
+            file_path: File path within skill (for patch/write_file/remove_file)
+            file_content: File content (for write_file)
+            old_string: String to find (for patch)
+            new_string: Replacement string (for patch)
+            replace_all: Replace all occurrences (for patch)
+            propose: Override the staging policy. If None, uses the manager's
+                write-approval default; True stages for approval; False writes
+                directly.
+            
+        Returns:
+            JSON string with result
+        """
+        import json
+        
+        try:
+            self.skill_manager.discover()  # Ensure skills are discovered
+            
+            if action == "create":
+                if not content:
+                    return json.dumps({"success": False, "error": "Content required for create action"})
+                result = self.skill_manager.create_skill(name, content, category, propose=propose)
+                
+            elif action == "edit":
+                if not content:
+                    return json.dumps({"success": False, "error": "Content required for edit action"})
+                result = self.skill_manager.edit_skill(name, content, propose=propose)
+                
+            elif action == "patch":
+                if not old_string or new_string is None:
+                    return json.dumps({"success": False, "error": "old_string and new_string required for patch action"})
+                result = self.skill_manager.patch_skill(name, old_string, new_string, file_path, replace_all, propose=propose)
+                
+            elif action == "delete":
+                result = self.skill_manager.delete_skill(name, propose=propose)
+                
+            elif action == "write_file":
+                if not file_path or file_content is None:
+                    return json.dumps({"success": False, "error": "file_path and file_content required for write_file action"})
+                result = self.skill_manager.write_skill_file(name, file_path, file_content, propose=propose)
+                
+            elif action == "remove_file":
+                if not file_path:
+                    return json.dumps({"success": False, "error": "file_path required for remove_file action"})
+                result = self.skill_manager.remove_skill_file(name, file_path, propose=propose)
+                
+            elif action == "pending":
+                result = {"success": True, "pending": self.skill_manager.list_pending()}
+                
+            elif action == "approve":
+                if not name:
+                    return json.dumps({"success": False, "error": "id or name required for approve action"})
+                result = self.skill_manager.approve(name)
+                
+            elif action == "reject":
+                if not name:
+                    return json.dumps({"success": False, "error": "id or name required for reject action"})
+                result = self.skill_manager.reject(name)
+                
+            else:
+                return json.dumps({"success": False, "error": f"Unknown action: {action}"})
+            
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"success": False, "error": f"Error in skill_manage: {str(e)}"}, indent=2)
+    
+    def skills_list(self) -> str:
+        """List all available skills.
+        
+        Returns:
+            JSON string with skills list
+        """
+        import json
+        
+        try:
+            self.skill_manager.discover()
+            skills = []
+            for skill in self.skill_manager.skills:
+                skills.append({
+                    "name": skill.properties.name,
+                    "description": getattr(skill.properties, 'description', ''),
+                    "version": getattr(skill.properties, 'version', ''),
+                    "category": getattr(skill.properties, 'category', ''),
+                    "path": str(skill.properties.path) if skill.properties.path else None,
+                    "activated": skill.is_activated
+                })
+            
+            return json.dumps({"skills": skills}, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Error listing skills: {str(e)}"}, indent=2)
+    
+    def skill_view(self, name: str) -> str:
+        """View details and content of a specific skill.
+        
+        Args:
+            name: Skill name to view
+            
+        Returns:
+            JSON string with skill details
+        """
+        import json
+        
+        try:
+            self.skill_manager.discover()
+            skill = self.skill_manager.get_skill(name)
+            if not skill:
+                return json.dumps({"error": f"Skill '{name}' not found"}, indent=2)
+            
+            # Get skill instructions
+            instructions = self.skill_manager.get_instructions(name)
+            
+            skill_info = {
+                "name": skill.properties.name,
+                "description": getattr(skill.properties, 'description', ''),
+                "version": getattr(skill.properties, 'version', ''),
+                "category": getattr(skill.properties, 'category', ''),
+                "author": getattr(skill.properties, 'author', ''),
+                "path": str(skill.properties.path) if skill.properties.path else None,
+                "activated": skill.is_activated,
+                "instructions": instructions,
+                "metadata": skill.metadata.__dict__ if skill.metadata else {}
+            }
+            
+            return json.dumps(skill_info, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Error viewing skill: {str(e)}"}, indent=2)
+
+
+# Create default instance for direct function access
+_skill_tools = SkillTools()
+
+@require_approval(risk_level="critical")
+def run_skill_script(script_path: str, args: str = "", timeout: int = 60) -> str:
+    """
+    Execute a skill script from a skill's scripts/ directory.
+    
+    Args:
+        script_path: Path to the script file (e.g., ./csv-analyzer/scripts/script.py)
+        args: Arguments to pass to the script (e.g., file path to analyze)
+        timeout: Maximum execution time in seconds (default: 60)
+        
+    Returns:
+        The output from running the script, or error message if failed
+    """
+    return _skill_tools.run_skill_script(script_path, args, timeout)
+
+
+@require_approval(risk_level="low")
+def read_skill_file(skill_path: str, file_path: str, encoding: str = 'utf-8') -> str:
+    """
+    Read a file from a skill directory.
+    
+    Args:
+        skill_path: Path to the skill directory (e.g., ./csv-analyzer)
+        file_path: Relative path within the skill (e.g., SKILL.md, scripts/script.py)
+        encoding: File encoding (default: utf-8)
+        
+    Returns:
+        File contents or error message
+    """
+    return _skill_tools.read_skill_file(skill_path, file_path, encoding)
+
+
+def list_skill_scripts(skill_path: str) -> str:
+    """
+    List available scripts in a skill's scripts/ directory.
+    
+    Args:
+        skill_path: Path to the skill directory
+        
+    Returns:
+        JSON string with list of scripts or error message
+    """
+    return _skill_tools.list_skill_scripts(skill_path)
+
+
+@require_approval(risk_level="low")
+def skill_manage(action: str, name: str = "", **kwargs) -> str:
+    """Skill management tool (hermes-compatible API).
+    
+    Actions: create, edit, patch, delete, write_file, remove_file,
+             pending, approve, reject
+    
+    Args:
+        action: Action to perform
+        name: Skill name (or pending id for approve/reject; omit for pending)
+        **kwargs: Additional parameters for the action
+        
+    Returns:
+        JSON string with result
+    """
+    return _skill_tools.skill_manage(action, name, **kwargs)
+
+
+def skills_list() -> str:
+    """List all available skills.
+    
+    Returns:
+        JSON string with skills list
+    """
+    return _skill_tools.skills_list()
+
+
+def skill_view(name: str) -> str:
+    """View details and content of a specific skill.
+    
+    Args:
+        name: Skill name to view
+        
+    Returns:
+        JSON string with skill details
+    """
+    return _skill_tools.skill_view(name)
+
+
+def create_skill_tools(working_directory: str = None, workspace=None) -> SkillTools:
+    """
+    Create a SkillTools instance with a specific working directory and workspace.
+    
+    This is useful when you need to resolve paths relative to a specific
+    directory rather than the current working directory.
+    
+    Args:
+        working_directory: Base directory for resolving relative paths
+        workspace: Optional Workspace instance for path containment
+        
+    Returns:
+        SkillTools instance
+    """
+    return SkillTools(working_directory, workspace)

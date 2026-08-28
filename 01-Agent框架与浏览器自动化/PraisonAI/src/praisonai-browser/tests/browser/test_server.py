@@ -1,0 +1,490 @@
+"""Tests for browser server."""
+
+import pytest
+from unittest.mock import Mock, patch, AsyncMock
+import json
+
+
+class TestBrowserServerInit:
+    """Tests for BrowserServer initialization."""
+    
+    def test_server_initialization(self):
+        """Test server initializes with defaults."""
+        from praisonai_browser.server import BrowserServer
+        
+        server = BrowserServer()
+        
+        assert server.host == "127.0.0.1"
+        assert server.port == 8765
+        assert server.model == "gpt-4o-mini"
+        assert server.max_steps == 20
+        assert server.verbose is False
+    
+    def test_server_custom_config(self):
+        """Test server with custom configuration."""
+        from praisonai_browser.server import BrowserServer
+        
+        server = BrowserServer(
+            host="127.0.0.1",
+            port=9999,
+            model="gpt-4o",
+            max_steps=10,
+            verbose=True,
+        )
+        
+        assert server.host == "127.0.0.1"
+        assert server.port == 9999
+        assert server.model == "gpt-4o"
+        assert server.max_steps == 10
+        assert server.verbose is True
+
+
+class TestClientConnection:
+    """Tests for ClientConnection dataclass."""
+    
+    def test_client_connection_creation(self):
+        """Test creating a client connection."""
+        from praisonai_browser.server import ClientConnection
+        
+        mock_ws = Mock()
+        conn = ClientConnection(
+            websocket=mock_ws,
+            session_id="test123",
+            connected_at=123456.789,
+        )
+        
+        assert conn.websocket == mock_ws
+        assert conn.session_id == "test123"
+        assert conn.connected_at == 123456.789
+    
+    def test_client_connection_defaults(self):
+        """Test client connection default values."""
+        from praisonai_browser.server import ClientConnection
+        
+        mock_ws = Mock()
+        conn = ClientConnection(websocket=mock_ws)
+        
+        assert conn.session_id is None
+        assert conn.connected_at == 0.0
+
+
+class TestServerAppCreation:
+    """Tests for FastAPI app creation."""
+    
+    def test_get_app_creates_fastapi(self):
+        """Test that _get_app creates FastAPI instance."""
+        from praisonai_browser.server import BrowserServer
+        
+        server = BrowserServer()
+        app = server._get_app()
+        
+        assert app is not None
+        assert hasattr(app, "add_route")
+    
+    def test_get_app_singleton(self):
+        """Test that _get_app returns same instance."""
+        from praisonai_browser.server import BrowserServer
+        
+        server = BrowserServer()
+        app1 = server._get_app()
+        app2 = server._get_app()
+        
+        assert app1 is app2
+    
+    def test_health_endpoint_exists(self):
+        """Test health endpoint is registered."""
+        from praisonai_browser.server import BrowserServer
+        
+        server = BrowserServer()
+        app = server._get_app()
+        
+        routes = [r.path for r in app.routes]
+        assert "/health" in routes
+
+
+class TestMessageProcessing:
+    """Tests for message processing logic."""
+    
+    @pytest.mark.asyncio
+    async def test_process_ping_message(self):
+        """Test ping message returns pong."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock())
+        
+        response = await server._process_message({"type": "ping"}, conn)
+        
+        assert response == {"type": "pong"}
+    
+    @pytest.mark.asyncio
+    async def test_process_unknown_message(self):
+        """Test unknown message type returns error."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock())
+        
+        response = await server._process_message({"type": "unknown"}, conn)
+        
+        assert response["type"] == "error"
+        assert "unknown" in response["error"].lower()
+    
+    @pytest.mark.asyncio
+    async def test_process_start_session_missing_goal(self):
+        """Test start session without goal returns error."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock())
+        
+        response = await server._process_message(
+            {"type": "start_session", "goal": ""},
+            conn
+        )
+        
+        assert response["type"] == "error"
+        assert response["code"] == "MISSING_GOAL"
+    
+    @pytest.mark.asyncio
+    async def test_process_stop_session(self):
+        """Test stopping a session."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock(), session_id="test123")
+        
+        response = await server._process_message(
+            {"type": "stop_session"},
+            conn
+        )
+        
+        assert response["type"] == "status"
+        assert response["status"] == "stopped"
+    
+    @pytest.mark.asyncio
+    async def test_process_observation_no_session(self):
+        """Test observation without active session returns error."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock())
+        
+        response = await server._process_message(
+            {"type": "observation", "task": "Test"},
+            conn
+        )
+        
+        assert response["type"] == "error"
+        assert response["code"] == "NO_SESSION"
+
+
+class TestServerStartStop:
+    """Tests for server start/stop functionality."""
+    
+    def test_stop_clears_state(self):
+        """Test that stop() clears connections and agents."""
+        from praisonai_browser.server import BrowserServer
+        
+        server = BrowserServer()
+        server._agents["test1"] = Mock()
+        server._connections["conn1"] = Mock()
+        
+        server.stop()
+        
+        assert len(server._agents) == 0
+        assert len(server._connections) == 0
+        assert server._running is False
+
+
+class TestStartSession:
+    """Tests for session start handling."""
+    
+    @pytest.mark.asyncio
+    async def test_handle_start_session_success(self):
+        """Test successful session start."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock(), is_cli=True)
+        # An available extension connection is required to accept the session
+        ext = ClientConnection(websocket=AsyncMock())
+        server._connections["ext"] = ext
+        
+        message = {
+            "type": "start_session",
+            "goal": "Find restaurants",
+            "model": "gpt-4o",
+        }
+        
+        response = await server._handle_start_session(message, conn)
+        
+        assert response["type"] == "status"
+        assert response["status"] == "running"
+        assert response.get("start_automation_sent") is True
+        assert "session_id" in response
+        assert conn.session_id is not None
+        
+        # Cleanup
+        if server._sessions:
+            server._sessions.close()
+    
+    @pytest.mark.asyncio
+    async def test_handle_start_session_creates_agent(self):
+        """Test that start session creates an agent."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock(), is_cli=True)
+        ext = ClientConnection(websocket=AsyncMock())
+        server._connections["ext"] = ext
+        
+        await server._handle_start_session(
+            {"type": "start_session", "goal": "Test"},
+            conn
+        )
+        
+        assert conn.session_id in server._agents
+        
+        # Cleanup
+        if server._sessions:
+            server._sessions.close()
+    
+    @pytest.mark.asyncio
+    async def test_handle_start_session_no_extension(self):
+        """Test start session with no extension connected returns error."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock(), is_cli=True)
+        # Register the CLI caller as the only connection.
+        server._connections["cli"] = conn
+        
+        response = await server._handle_start_session(
+            {"type": "start_session", "goal": "Test"},
+            conn
+        )
+        
+        assert response["type"] == "error"
+        assert response["code"] == "NO_EXTENSION"
+        
+        if server._sessions:
+            server._sessions.close()
+    
+    @pytest.mark.asyncio
+    async def test_handle_start_session_extension_busy(self):
+        """Test concurrent session is rejected when extension is busy."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock(), is_cli=True)
+        busy_ext = ClientConnection(
+            websocket=AsyncMock(), is_extension=True, session_id="existing"
+        )
+        server._connections["ext"] = busy_ext
+        
+        response = await server._handle_start_session(
+            {"type": "start_session", "goal": "Test"},
+            conn
+        )
+        
+        assert response["type"] == "error"
+        assert response["code"] == "EXTENSION_IN_USE"
+        
+        if server._sessions:
+            server._sessions.close()
+    
+    @pytest.mark.asyncio
+    async def test_start_session_reports_extension_delivery(self):
+        """When an extension is available, start_automation_sent is True."""
+        from unittest.mock import AsyncMock
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock(), is_cli=True)
+        ext_ws = Mock()
+        ext_ws.send_text = AsyncMock()
+        ext = ClientConnection(websocket=ext_ws, is_extension=True)
+        server._connections["cli"] = conn
+        server._connections["ext"] = ext
+        
+        response = await server._handle_start_session(
+            {"type": "start_session", "goal": "Test"},
+            conn
+        )
+        
+        assert response["start_automation_sent"] is True
+        ext_ws.send_text.assert_awaited()
+        
+        if server._sessions:
+            server._sessions.close()
+    
+    @pytest.mark.asyncio
+    async def test_handle_start_session_side_panel_self(self):
+        """Side panel (extension) starting its own session must not self-exclude."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        # The extension itself is the caller and the only connection.
+        ext = ClientConnection(websocket=AsyncMock(), is_cli=False)
+        server._connections["ext"] = ext
+        
+        response = await server._handle_start_session(
+            {"type": "start_session", "goal": "Test"},
+            ext
+        )
+        
+        assert response["type"] == "status"
+        assert response["status"] == "running"
+        assert response.get("start_automation_sent") is True
+        # The delivery loop claims the extension connection.
+        assert ext.session_id is not None
+        ext.websocket.send_text.assert_awaited()
+        
+        if server._sessions:
+            server._sessions.close()
+    
+    @pytest.mark.asyncio
+    async def test_start_session_skips_non_extension_peer(self):
+        """A non-extension peer must not receive start_automation."""
+        from unittest.mock import AsyncMock
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock(), is_cli=True)
+        # A second CLI-like peer (not an extension) registered BEFORE the ext.
+        peer_ws = Mock()
+        peer_ws.send_text = AsyncMock()
+        peer_ws.send_json = AsyncMock()
+        peer = ClientConnection(websocket=peer_ws, is_extension=False, is_cli=True)
+        ext_ws = Mock()
+        ext_ws.send_text = AsyncMock()
+        ext = ClientConnection(websocket=ext_ws, is_extension=True)
+        server._connections["cli"] = conn
+        server._connections["peer"] = peer
+        server._connections["ext"] = ext
+        
+        response = await server._handle_start_session(
+            {"type": "start_session", "goal": "Test"},
+            conn
+        )
+        
+        assert response["start_automation_sent"] is True
+        ext_ws.send_text.assert_awaited()
+        peer_ws.send_text.assert_not_awaited()
+        peer_ws.send_json.assert_not_awaited()
+        
+        if server._sessions:
+            server._sessions.close()
+    
+    @pytest.mark.asyncio
+    async def test_handle_start_session_ignores_idle_cli(self):
+        """Delivery must never target an idle CLI connection."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        caller = ClientConnection(websocket=Mock(), is_cli=True)
+        idle_cli = ClientConnection(websocket=AsyncMock(), is_cli=True)
+        server._connections["idle_cli"] = idle_cli
+        
+        response = await server._handle_start_session(
+            {"type": "start_session", "goal": "Test"},
+            caller
+        )
+        
+        # No extension exists, so the idle CLI must not be treated as one.
+        assert response["type"] == "error"
+        assert response["code"] == "NO_EXTENSION"
+        idle_cli.websocket.send_text.assert_not_called()
+
+
+class TestHealthEndpoint:
+    """Tests for the /health endpoint fields."""
+    
+    @pytest.mark.asyncio
+    async def test_health_reports_extension_connections(self):
+        """/health distinguishes extension connections from CLI connections."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        server._connections["cli"] = ClientConnection(websocket=Mock(), is_extension=False)
+        server._connections["ext"] = ClientConnection(websocket=Mock(), is_extension=True)
+        
+        app = server._get_app()
+        # Locate the registered /health route handler and call it directly to
+        # avoid a hard test dependency on an HTTP client (httpx).
+        health = next(
+            r.endpoint for r in app.routes if getattr(r, "path", None) == "/health"
+        )
+        data = await health()
+        
+        assert data["connections"] == 2
+        assert data["extension_connections"] == 1
+
+
+class TestCancelSession:
+    """Tests for cancel_session routing and cleanup."""
+    
+    @pytest.mark.asyncio
+    async def test_cancel_session_routes_to_stop(self):
+        """cancel_session must route through stop handling and return stopped."""
+        from praisonai_browser.server import BrowserServer, ClientConnection
+        
+        server = BrowserServer()
+        conn = ClientConnection(websocket=Mock(), session_id="abc123")
+        server._connections["c1"] = conn
+        
+        response = await server._process_message(
+            {"type": "cancel_session"},
+            conn
+        )
+        
+        assert response["type"] == "status"
+        assert response["status"] == "stopped"
+        assert conn.session_id is None
+    
+    def test_cancelled_status_records_ended_at(self, tmp_path):
+        """update_session must stamp ended_at for cancelled sessions too."""
+        from praisonai_browser.sessions import SessionManager
+        
+        db_path = tmp_path / "sessions.db"
+        manager = SessionManager(str(db_path))
+        try:
+            session = manager.create_session("Test goal")
+            sid = session["session_id"]
+            
+            manager.update_session(sid, status="cancelled")
+            
+            fetched = manager.get_session(sid)
+            assert fetched["status"] == "cancelled"
+            assert fetched["ended_at"] is not None
+        finally:
+            manager.close()
+
+
+class TestIntegration:
+    """Integration tests for server components."""
+    
+    def test_server_session_agent_integration(self, tmp_path):
+        """Test server creates session and agent correctly."""
+        from praisonai_browser.server import BrowserServer
+        from praisonai_browser.sessions import SessionManager
+        from praisonai_browser.agent import BrowserAgent
+        
+        server = BrowserServer(model="gpt-4o")
+        
+        # Verify all components can be imported and initialized
+        assert server.model == "gpt-4o"
+        
+        # Test session manager
+        db_path = tmp_path / "sessions.db"
+        manager = SessionManager(str(db_path))
+        try:
+            session = manager.create_session("Test goal")
+            assert session["status"] == "running"
+        finally:
+            manager.close()
+        
+        # Test agent
+        agent = BrowserAgent(model="gpt-4o")
+        assert agent.model == "gpt-4o"

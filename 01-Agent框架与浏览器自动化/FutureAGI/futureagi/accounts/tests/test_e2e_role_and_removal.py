@@ -1,0 +1,1602 @@
+"""
+E2E tests for role updates and member removal in the Django RBAC system.
+
+Covers:
+- Org-level role updates (Owner, Admin, Member, Viewer actors)
+- Workspace-level role updates
+- Org member removal (permission matrix)
+- Post-removal state verification
+- Workspace member removal
+
+"""
+
+import pytest
+from rest_framework import status
+
+from accounts.models.organization import Organization
+from accounts.models.organization_invite import InviteStatus, OrganizationInvite
+from accounts.models.organization_membership import OrganizationMembership
+from accounts.models.user import User
+from accounts.models.workspace import Workspace, WorkspaceMembership
+from tfc.constants.levels import Level
+from tfc.middleware.workspace_context import set_workspace_context
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _owner_membership(user, organization):
+    """Ensure the owner user has an OrganizationMembership."""
+    OrganizationMembership.objects.get_or_create(
+        user=user,
+        organization=organization,
+        defaults={
+            "role": "Owner",
+            "level": Level.OWNER,
+            "is_active": True,
+        },
+    )
+
+
+# Track WorkspaceAwareAPIClient instances created by _make_client so the
+# autouse fixture below can tear down their injected APIView.initial patch
+# after each test. Without this cleanup, the patch leaks into every
+# subsequent test in the pytest process.
+_created_clients: list = []
+
+
+@pytest.fixture(autouse=True)
+def _teardown_workspace_injection():
+    yield
+    while _created_clients:
+        client = _created_clients.pop()
+        try:
+            client.stop_workspace_injection()
+        except Exception:
+            pass
+
+
+def _make_user(organization, email, role_str, level, password="pass123"):
+    """Create a user with the given org role and membership."""
+    set_workspace_context(organization=organization)
+    u = User.objects.create_user(
+        email=email,
+        password=password,
+        name=f"{role_str} User",
+        organization=organization,
+        organization_role=role_str,
+    )
+    OrganizationMembership.objects.create(
+        user=u,
+        organization=organization,
+        role=role_str,
+        level=level,
+        is_active=True,
+    )
+    return u
+
+
+def _make_client(user, workspace):
+    """Create an authenticated API client for the given user.
+
+    The client is registered with ``_created_clients`` so the autouse
+    teardown fixture can stop its injected ``APIView.initial`` patch after
+    the test completes (otherwise the patch leaks process-wide and
+    contaminates subsequent tests).
+    """
+    from conftest import WorkspaceAwareAPIClient
+
+    c = WorkspaceAwareAPIClient()
+    c.force_authenticate(user=user)
+    c.set_workspace(workspace)
+    _created_clients.append(c)
+    return c
+
+
+def _add_ws_membership(user, workspace, organization, ws_level):
+    """Add a workspace membership for the user."""
+    org_mem = OrganizationMembership.objects.get(
+        user=user,
+        organization=organization,
+        is_active=True,
+    )
+    ws_mem, _ = WorkspaceMembership.objects.get_or_create(
+        workspace=workspace,
+        user=user,
+        defaults={
+            "role": Level.to_ws_string(ws_level),
+            "level": ws_level,
+            "organization_membership": org_mem,
+            "is_active": True,
+        },
+    )
+    if ws_mem.level != ws_level:
+        ws_mem.level = ws_level
+        ws_mem.role = Level.to_ws_string(ws_level)
+        ws_mem.save(update_fields=["level", "role"])
+    return ws_mem
+
+
+# ---------------------------------------------------------------------------
+# Helper URLs
+# ---------------------------------------------------------------------------
+
+ORG_ROLE_URL = "/accounts/organization/members/role/"
+ORG_REMOVE_URL = "/accounts/organization/members/remove/"
+
+
+def _ws_role_url(workspace_id):
+    return f"/accounts/workspace/{workspace_id}/members/role/"
+
+
+def _ws_remove_url(workspace_id):
+    return f"/accounts/workspace/{workspace_id}/members/remove/"
+
+
+# ===================================================================
+# TestOwnerRoleUpdates
+# ===================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.api
+class TestOwnerRoleUpdates:
+    """Owner changing org roles -- ALL should ALLOW."""
+
+    def _update_role(self, auth_client, target_user, new_level):
+        return auth_client.post(
+            ORG_ROLE_URL,
+            {"user_id": str(target_user.id), "org_level": new_level},
+            format="json",
+        )
+
+    def _assert_org_level(self, target_user, organization, expected_level):
+        membership = OrganizationMembership.objects.get(
+            user=target_user, organization=organization
+        )
+        assert membership.level == expected_level
+
+    # -- Admin target --
+
+    def test_owner_changes_admin_to_owner(self, auth_client, organization, workspace):
+        target = _make_user(organization, "admin1@futureagi.com", "Admin", Level.ADMIN)
+        resp = self._update_role(auth_client, target, Level.OWNER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.OWNER)
+
+    def test_owner_changes_admin_to_member(self, auth_client, organization, workspace):
+        target = _make_user(organization, "admin2@futureagi.com", "Admin", Level.ADMIN)
+        resp = self._update_role(auth_client, target, Level.MEMBER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.MEMBER)
+
+    def test_owner_changes_admin_to_viewer(self, auth_client, organization, workspace):
+        target = _make_user(organization, "admin3@futureagi.com", "Admin", Level.ADMIN)
+        resp = self._update_role(auth_client, target, Level.VIEWER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.VIEWER)
+
+    # -- Member target --
+
+    def test_owner_changes_member_to_admin(self, auth_client, organization, workspace):
+        target = _make_user(organization, "mem1@futureagi.com", "Member", Level.MEMBER)
+        resp = self._update_role(auth_client, target, Level.ADMIN)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.ADMIN)
+
+    def test_owner_changes_member_to_owner(self, auth_client, organization, workspace):
+        target = _make_user(organization, "mem2@futureagi.com", "Member", Level.MEMBER)
+        resp = self._update_role(auth_client, target, Level.OWNER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.OWNER)
+
+    def test_owner_changes_member_to_viewer(self, auth_client, organization, workspace):
+        target = _make_user(organization, "mem3@futureagi.com", "Member", Level.MEMBER)
+        resp = self._update_role(auth_client, target, Level.VIEWER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.VIEWER)
+
+    # -- Viewer target --
+
+    def test_owner_changes_viewer_to_member(self, auth_client, organization, workspace):
+        target = _make_user(organization, "view1@futureagi.com", "Viewer", Level.VIEWER)
+        resp = self._update_role(auth_client, target, Level.MEMBER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.MEMBER)
+
+    def test_owner_changes_viewer_to_admin(self, auth_client, organization, workspace):
+        target = _make_user(organization, "view2@futureagi.com", "Viewer", Level.VIEWER)
+        resp = self._update_role(auth_client, target, Level.ADMIN)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.ADMIN)
+
+    def test_owner_changes_viewer_to_owner(self, auth_client, organization, workspace):
+        target = _make_user(organization, "view3@futureagi.com", "Viewer", Level.VIEWER)
+        resp = self._update_role(auth_client, target, Level.OWNER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.OWNER)
+
+    # -- Owner target --
+
+    def test_owner_changes_owner_to_admin(self, auth_client, organization, workspace):
+        target = _make_user(organization, "own1@futureagi.com", "Owner", Level.OWNER)
+        resp = self._update_role(auth_client, target, Level.ADMIN)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.ADMIN)
+
+    def test_owner_changes_owner_to_member(self, auth_client, organization, workspace):
+        target = _make_user(organization, "own2@futureagi.com", "Owner", Level.OWNER)
+        resp = self._update_role(auth_client, target, Level.MEMBER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.MEMBER)
+
+    def test_owner_changes_owner_to_viewer(self, auth_client, organization, workspace):
+        target = _make_user(organization, "own3@futureagi.com", "Owner", Level.OWNER)
+        resp = self._update_role(auth_client, target, Level.VIEWER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.VIEWER)
+
+
+# ===================================================================
+# TestAdminRoleUpdates
+# ===================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.api
+class TestAdminRoleUpdates:
+    """Admin changing org roles -- mix of ALLOW and DENY."""
+
+    @pytest.fixture
+    def admin_user(self, organization, workspace):
+        u = _make_user(organization, "actor-admin@futureagi.com", "Admin", Level.ADMIN)
+        return u
+
+    @pytest.fixture
+    def admin_client(self, admin_user, workspace):
+        return _make_client(admin_user, workspace)
+
+    def _update_role(self, client, target_user, new_level):
+        return client.post(
+            ORG_ROLE_URL,
+            {"user_id": str(target_user.id), "org_level": new_level},
+            format="json",
+        )
+
+    def _assert_org_level(self, target_user, organization, expected_level):
+        membership = OrganizationMembership.objects.get(
+            user=target_user, organization=organization
+        )
+        assert membership.level == expected_level
+
+    # ALLOW: Admin manages Member (8 > 3) and target stays below admin
+
+    def test_admin_changes_member_to_viewer(
+        self, admin_client, organization, workspace
+    ):
+        target = _make_user(organization, "m2v@futureagi.com", "Member", Level.MEMBER)
+        resp = self._update_role(admin_client, target, Level.VIEWER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.VIEWER)
+
+    def test_admin_changes_viewer_to_member(
+        self, admin_client, organization, workspace
+    ):
+        target = _make_user(organization, "v2m@futureagi.com", "Viewer", Level.VIEWER)
+        resp = self._update_role(admin_client, target, Level.MEMBER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.MEMBER)
+
+    # ALLOW: Admin may assign their own level to lower-level members.
+
+    def test_admin_can_promote_member_to_admin(
+        self, admin_client, organization, workspace
+    ):
+        target = _make_user(organization, "m2a@futureagi.com", "Member", Level.MEMBER)
+        resp = self._update_role(admin_client, target, Level.ADMIN)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.ADMIN)
+
+    def test_admin_can_promote_viewer_to_admin(
+        self, admin_client, organization, workspace
+    ):
+        target = _make_user(organization, "v2a@futureagi.com", "Viewer", Level.VIEWER)
+        resp = self._update_role(admin_client, target, Level.ADMIN)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_org_level(target, organization, Level.ADMIN)
+
+    # DENY: escalation -- can't promote above own level
+
+    def test_admin_cannot_promote_member_to_owner(
+        self, admin_client, organization, workspace
+    ):
+        target = _make_user(organization, "m2o@futureagi.com", "Member", Level.MEMBER)
+        resp = self._update_role(admin_client, target, Level.OWNER)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+
+    def test_admin_cannot_promote_viewer_to_owner(
+        self, admin_client, organization, workspace
+    ):
+        target = _make_user(organization, "v2o@futureagi.com", "Viewer", Level.VIEWER)
+        resp = self._update_role(admin_client, target, Level.OWNER)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+
+    # DENY: can't manage higher level (Owner)
+
+    def test_admin_cannot_change_owner_role(
+        self, admin_client, organization, workspace
+    ):
+        target = _make_user(organization, "o2any@futureagi.com", "Owner", Level.OWNER)
+        resp = self._update_role(admin_client, target, Level.MEMBER)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+
+    # DENY: can't manage same level (Admin)
+
+    def test_admin_cannot_change_admin_role(
+        self, admin_client, organization, workspace
+    ):
+        target = _make_user(organization, "a2any@futureagi.com", "Admin", Level.ADMIN)
+        resp = self._update_role(admin_client, target, Level.MEMBER)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+
+
+# ===================================================================
+# TestMemberViewerRoleUpdates
+# ===================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.api
+class TestMemberViewerRoleUpdates:
+    """Member and Viewer actors -- ALL DENY (403)."""
+
+    def test_member_cannot_update_any_role(self, organization, workspace):
+        actor = _make_user(
+            organization, "actor-mem@futureagi.com", "Member", Level.MEMBER
+        )
+        target = _make_user(
+            organization, "target-v@futureagi.com", "Viewer", Level.VIEWER
+        )
+        client = _make_client(actor, workspace)
+        resp = client.post(
+            ORG_ROLE_URL,
+            {"user_id": str(target.id), "org_level": Level.MEMBER},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+    def test_member_cannot_update_viewer_to_admin(self, organization, workspace):
+        actor = _make_user(
+            organization, "actor-mem2@futureagi.com", "Member", Level.MEMBER
+        )
+        target = _make_user(
+            organization, "target-v2@futureagi.com", "Viewer", Level.VIEWER
+        )
+        client = _make_client(actor, workspace)
+        resp = client.post(
+            ORG_ROLE_URL,
+            {"user_id": str(target.id), "org_level": Level.ADMIN},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+    def test_viewer_cannot_update_any_role(self, organization, workspace):
+        actor = _make_user(
+            organization, "actor-view@futureagi.com", "Viewer", Level.VIEWER
+        )
+        target = _make_user(
+            organization, "target-m@futureagi.com", "Member", Level.MEMBER
+        )
+        client = _make_client(actor, workspace)
+        resp = client.post(
+            ORG_ROLE_URL,
+            {"user_id": str(target.id), "org_level": Level.VIEWER},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+    def test_viewer_cannot_update_viewer_to_owner(self, organization, workspace):
+        actor = _make_user(
+            organization, "actor-view2@futureagi.com", "Viewer", Level.VIEWER
+        )
+        target = _make_user(
+            organization, "target-v3@futureagi.com", "Viewer", Level.VIEWER
+        )
+        client = _make_client(actor, workspace)
+        resp = client.post(
+            ORG_ROLE_URL,
+            {"user_id": str(target.id), "org_level": Level.OWNER},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+
+# ===================================================================
+# TestWorkspaceRoleUpdates
+# ===================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.api
+class TestWorkspaceRoleUpdates:
+    """Workspace-level role updates."""
+
+    def _update_ws_role(self, client, workspace, target_user, new_level):
+        return client.post(
+            _ws_role_url(workspace.id),
+            {"user_id": str(target_user.id), "ws_level": new_level},
+            format="json",
+        )
+
+    def _assert_ws_level(self, target_user, workspace, expected_level):
+        membership = WorkspaceMembership.objects.get(
+            user=target_user, workspace=workspace
+        )
+        assert membership.level == expected_level
+
+    # ALLOW: Org Owner changes WS roles
+
+    def test_org_owner_changes_ws_member_to_ws_admin(
+        self, auth_client, organization, workspace
+    ):
+        target = _make_user(organization, "wsm1@futureagi.com", "Member", Level.MEMBER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        resp = self._update_ws_role(
+            auth_client, workspace, target, Level.WORKSPACE_ADMIN
+        )
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_ws_level(target, workspace, Level.WORKSPACE_ADMIN)
+
+    def test_org_owner_changes_ws_viewer_to_ws_member(
+        self, auth_client, organization, workspace
+    ):
+        target = _make_user(organization, "wsv1@futureagi.com", "Viewer", Level.VIEWER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_VIEWER)
+        resp = self._update_ws_role(
+            auth_client, workspace, target, Level.WORKSPACE_MEMBER
+        )
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_ws_level(target, workspace, Level.WORKSPACE_MEMBER)
+
+    # ALLOW: Org Admin changes WS roles
+
+    def test_org_admin_changes_ws_viewer_to_ws_member(self, organization, workspace):
+        admin = _make_user(organization, "wsadmin1@futureagi.com", "Admin", Level.ADMIN)
+        target = _make_user(organization, "wsv2@futureagi.com", "Viewer", Level.VIEWER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_VIEWER)
+        client = _make_client(admin, workspace)
+        resp = self._update_ws_role(client, workspace, target, Level.WORKSPACE_MEMBER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_ws_level(target, workspace, Level.WORKSPACE_MEMBER)
+        client.stop_workspace_injection()
+
+    def test_org_admin_changes_ws_member_to_ws_viewer(self, organization, workspace):
+        admin = _make_user(organization, "wsadmin2@futureagi.com", "Admin", Level.ADMIN)
+        target = _make_user(organization, "wsm2@futureagi.com", "Member", Level.MEMBER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        client = _make_client(admin, workspace)
+        resp = self._update_ws_role(client, workspace, target, Level.WORKSPACE_VIEWER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_ws_level(target, workspace, Level.WORKSPACE_VIEWER)
+        client.stop_workspace_injection()
+
+    # ALLOW: WS Admin (non-org-admin) changes WS roles
+
+    def test_ws_admin_changes_ws_member_to_ws_viewer(self, organization, workspace):
+        ws_admin = _make_user(
+            organization, "wsonly-admin@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(ws_admin, workspace, organization, Level.WORKSPACE_ADMIN)
+        target = _make_user(organization, "wsm3@futureagi.com", "Member", Level.MEMBER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        client = _make_client(ws_admin, workspace)
+        resp = self._update_ws_role(client, workspace, target, Level.WORKSPACE_VIEWER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_ws_level(target, workspace, Level.WORKSPACE_VIEWER)
+        client.stop_workspace_injection()
+
+    def test_ws_admin_changes_ws_viewer_to_ws_member(self, organization, workspace):
+        ws_admin = _make_user(
+            organization, "wsonly-admin2@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(ws_admin, workspace, organization, Level.WORKSPACE_ADMIN)
+        target = _make_user(organization, "wsv3@futureagi.com", "Viewer", Level.VIEWER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_VIEWER)
+        client = _make_client(ws_admin, workspace)
+        resp = self._update_ws_role(client, workspace, target, Level.WORKSPACE_MEMBER)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        self._assert_ws_level(target, workspace, Level.WORKSPACE_MEMBER)
+        client.stop_workspace_injection()
+
+    # DENY: WS Member cannot change roles
+
+    def test_ws_member_cannot_change_roles(self, organization, workspace):
+        ws_member = _make_user(
+            organization, "wsmem-actor@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(ws_member, workspace, organization, Level.WORKSPACE_MEMBER)
+        target = _make_user(organization, "wsv4@futureagi.com", "Viewer", Level.VIEWER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_VIEWER)
+        client = _make_client(ws_member, workspace)
+        resp = self._update_ws_role(client, workspace, target, Level.WORKSPACE_MEMBER)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+    # DENY: WS Viewer cannot change roles
+
+    def test_ws_viewer_cannot_change_roles(self, organization, workspace):
+        ws_viewer = _make_user(
+            organization, "wsview-actor@futureagi.com", "Viewer", Level.VIEWER
+        )
+        _add_ws_membership(ws_viewer, workspace, organization, Level.WORKSPACE_VIEWER)
+        target = _make_user(organization, "wsm4@futureagi.com", "Member", Level.MEMBER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        client = _make_client(ws_viewer, workspace)
+        resp = self._update_ws_role(client, workspace, target, Level.WORKSPACE_ADMIN)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+    # DENY: Cannot change Org Admin's WS role (auto-access)
+
+    def test_cannot_change_org_admin_ws_role(
+        self, auth_client, organization, workspace
+    ):
+        admin = _make_user(
+            organization, "orgadmin-ws@futureagi.com", "Admin", Level.ADMIN
+        )
+        resp = self._update_ws_role(
+            auth_client, workspace, admin, Level.WORKSPACE_VIEWER
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST, resp.json()
+
+
+# ===================================================================
+# TestOrgMemberRemoval
+# ===================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.api
+class TestOrgMemberRemoval:
+    """Org member removal permission matrix."""
+
+    def _remove(self, client, target_user):
+        return client.delete(
+            ORG_REMOVE_URL,
+            {"user_id": str(target_user.id)},
+            format="json",
+        )
+
+    # ALLOW: Owner removes any role
+
+    def test_owner_removes_owner(self, auth_client, organization, workspace):
+        """Owner removes another Owner (second owner exists)."""
+        target = _make_user(organization, "own-rm@futureagi.com", "Owner", Level.OWNER)
+        resp = self._remove(auth_client, target)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+
+    def test_owner_removes_admin(self, auth_client, organization, workspace):
+        target = _make_user(organization, "adm-rm@futureagi.com", "Admin", Level.ADMIN)
+        resp = self._remove(auth_client, target)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+
+    def test_owner_removes_member(self, auth_client, organization, workspace):
+        target = _make_user(
+            organization, "mem-rm@futureagi.com", "Member", Level.MEMBER
+        )
+        resp = self._remove(auth_client, target)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+
+    def test_owner_removes_viewer(self, auth_client, organization, workspace):
+        target = _make_user(
+            organization, "view-rm@futureagi.com", "Viewer", Level.VIEWER
+        )
+        resp = self._remove(auth_client, target)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+
+    # ALLOW: Admin removes lower roles
+
+    def test_admin_removes_member(self, organization, workspace):
+        admin = _make_user(
+            organization, "adm-actor-rm@futureagi.com", "Admin", Level.ADMIN
+        )
+        target = _make_user(
+            organization, "mem-rm2@futureagi.com", "Member", Level.MEMBER
+        )
+        client = _make_client(admin, workspace)
+        resp = self._remove(client, target)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        client.stop_workspace_injection()
+
+    def test_admin_removes_viewer(self, organization, workspace):
+        admin = _make_user(
+            organization, "adm-actor-rm2@futureagi.com", "Admin", Level.ADMIN
+        )
+        target = _make_user(
+            organization, "view-rm2@futureagi.com", "Viewer", Level.VIEWER
+        )
+        client = _make_client(admin, workspace)
+        resp = self._remove(client, target)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        client.stop_workspace_injection()
+
+    # DENY: Admin cannot remove same or higher level
+
+    def test_admin_cannot_remove_admin(self, organization, workspace):
+        admin_actor = _make_user(
+            organization, "adm-a-rm@futureagi.com", "Admin", Level.ADMIN
+        )
+        admin_target = _make_user(
+            organization, "adm-t-rm@futureagi.com", "Admin", Level.ADMIN
+        )
+        client = _make_client(admin_actor, workspace)
+        resp = self._remove(client, admin_target)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+    def test_admin_cannot_remove_owner(self, organization, workspace):
+        admin = _make_user(
+            organization, "adm-rm-own@futureagi.com", "Admin", Level.ADMIN
+        )
+        owner_target = _make_user(
+            organization, "own-rm-tgt@futureagi.com", "Owner", Level.OWNER
+        )
+        client = _make_client(admin, workspace)
+        resp = self._remove(client, owner_target)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+    # DENY: Member / Viewer cannot remove anyone
+
+    def test_member_cannot_remove_anyone(self, organization, workspace):
+        member = _make_user(
+            organization, "mem-actor-rm@futureagi.com", "Member", Level.MEMBER
+        )
+        target = _make_user(
+            organization, "view-rm-tgt@futureagi.com", "Viewer", Level.VIEWER
+        )
+        client = _make_client(member, workspace)
+        resp = self._remove(client, target)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+    def test_viewer_cannot_remove_anyone(self, organization, workspace):
+        viewer = _make_user(
+            organization, "view-actor-rm@futureagi.com", "Viewer", Level.VIEWER
+        )
+        target = _make_user(
+            organization, "mem-rm-tgt@futureagi.com", "Member", Level.MEMBER
+        )
+        client = _make_client(viewer, workspace)
+        resp = self._remove(client, target)
+        assert resp.status_code == status.HTTP_403_FORBIDDEN, resp.json()
+        client.stop_workspace_injection()
+
+    # Edge: last owner guard
+
+    def test_cannot_remove_last_owner(self, auth_client, user):
+        """Cannot remove the sole owner."""
+        resp = auth_client.delete(
+            ORG_REMOVE_URL,
+            {"user_id": str(user.id)},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST, resp.json()
+
+    # Edge: non-existent user
+
+    def test_remove_nonexistent_user(self, auth_client):
+        resp = auth_client.delete(
+            ORG_REMOVE_URL,
+            {"user_id": "00000000-0000-0000-0000-000000000000"},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST, resp.json()
+
+
+# ===================================================================
+# TestPostRemovalState
+# ===================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.api
+class TestPostRemovalState:
+    """Verify state after org member removal."""
+
+    @pytest.fixture
+    def member_user(self, organization, workspace, user):
+        target = _make_user(
+            organization, "post-rm@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        return target
+
+    def _remove(self, auth_client, target):
+        resp = auth_client.delete(
+            ORG_REMOVE_URL,
+            {"user_id": str(target.id)},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        return resp
+
+    def test_org_membership_deactivated(self, auth_client, member_user, organization):
+        self._remove(auth_client, member_user)
+        org_mem = OrganizationMembership.objects.get(
+            user=member_user,
+            organization=organization,
+        )
+        assert org_mem.is_active is False
+
+    def test_ws_memberships_cascade_deactivated(
+        self, auth_client, member_user, organization, workspace
+    ):
+        self._remove(auth_client, member_user)
+        ws_mems = WorkspaceMembership.objects.filter(
+            user=member_user,
+            workspace__organization=organization,
+        )
+        for ws_mem in ws_mems:
+            assert ws_mem.is_active is False
+
+    def test_removed_user_can_login_requires_org_setup(
+        self, auth_client, member_user, api_client
+    ):
+        self._remove(auth_client, member_user)
+        resp = api_client.post(
+            "/accounts/token/",
+            {"email": member_user.email, "password": "pass123"},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json().get("requires_org_setup") is True
+
+    def test_removed_user_can_create_new_org(
+        self, auth_client, member_user, api_client
+    ):
+        self._remove(auth_client, member_user)
+        login = api_client.post(
+            "/accounts/token/",
+            {"email": member_user.email, "password": "pass123"},
+            format="json",
+        )
+        token = login.json()["access"]
+        api_client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        resp = api_client.post(
+            "/accounts/organizations/create/",
+            {"organization_name": "Post Removal Org"},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_201_CREATED, resp.json()
+
+    def test_member_list_shows_deactivated_status(
+        self, auth_client, member_user, organization
+    ):
+        self._remove(auth_client, member_user)
+        resp = auth_client.get("/accounts/organization/members/")
+        assert resp.status_code == status.HTTP_200_OK
+        results = resp.json().get("result", {}).get("results", [])
+        entry = next(
+            (r for r in results if r.get("email") == member_user.email),
+            None,
+        )
+        assert entry is not None
+        assert entry["status"] == "Deactivated"
+
+    def test_reinvite_restores_membership(
+        self, auth_client, member_user, organization, workspace
+    ):
+        self._remove(auth_client, member_user)
+        resp = auth_client.post(
+            "/accounts/organization/invite/",
+            {
+                "emails": [member_user.email],
+                "org_level": Level.MEMBER,
+                "workspace_access": [
+                    {
+                        "workspace_id": str(workspace.id),
+                        "level": Level.WORKSPACE_VIEWER,
+                    }
+                ],
+            },
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        org_mem = OrganizationMembership.objects.get(
+            user=member_user,
+            organization=organization,
+        )
+        assert org_mem.is_active is True
+
+    def test_user_organization_membership_deactivated_after_removal(
+        self, auth_client, member_user, organization
+    ):
+        self._remove(auth_client, member_user)
+        assert not OrganizationMembership.objects.filter(
+            user=member_user, organization=organization, is_active=True
+        ).exists()
+
+
+# ===================================================================
+# TestWorkspaceMemberRemoval
+# ===================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.api
+class TestWorkspaceMemberRemoval:
+    """Workspace member removal tests."""
+
+    def _ws_remove(self, client, workspace, target_user):
+        return client.delete(
+            _ws_remove_url(workspace.id),
+            {"user_id": str(target_user.id)},
+            format="json",
+        )
+
+    # ALLOW: Org Owner removes WS member (target has >1 workspace)
+
+    def test_org_owner_removes_ws_member(
+        self, auth_client, organization, workspace, user
+    ):
+        # Target must have a second workspace so removal from the first is allowed
+        ws2 = Workspace.objects.create(
+            name="WS RM1 Second",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+        target = _make_user(organization, "wsrm1@futureagi.com", "Member", Level.MEMBER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(target, ws2, organization, Level.WORKSPACE_MEMBER)
+        resp = self._ws_remove(auth_client, workspace, target)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+
+    # ALLOW: WS Admin removes WS Member (target has >1 workspace)
+
+    def test_ws_admin_removes_ws_member(self, organization, workspace, user):
+        ws2 = Workspace.objects.create(
+            name="WS RM2 Second",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+        ws_admin = _make_user(
+            organization, "ws-adm-rm@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(ws_admin, workspace, organization, Level.WORKSPACE_ADMIN)
+        target = _make_user(organization, "wsrm2@futureagi.com", "Member", Level.MEMBER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(target, ws2, organization, Level.WORKSPACE_MEMBER)
+        client = _make_client(ws_admin, workspace)
+        resp = self._ws_remove(client, workspace, target)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        client.stop_workspace_injection()
+
+    # ALLOW: WS Admin removes WS Viewer (target has >1 workspace)
+
+    def test_ws_admin_removes_ws_viewer(self, organization, workspace, user):
+        ws2 = Workspace.objects.create(
+            name="WS RM3 Second",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+        ws_admin = _make_user(
+            organization, "ws-adm-rm2@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(ws_admin, workspace, organization, Level.WORKSPACE_ADMIN)
+        target = _make_user(organization, "wsrm3@futureagi.com", "Viewer", Level.VIEWER)
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_VIEWER)
+        _add_ws_membership(target, ws2, organization, Level.WORKSPACE_VIEWER)
+        client = _make_client(ws_admin, workspace)
+        resp = self._ws_remove(client, workspace, target)
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        client.stop_workspace_injection()
+
+    # DENY: Cannot remove member from their ONLY workspace
+
+    def test_cannot_remove_from_last_workspace(
+        self, auth_client, organization, workspace
+    ):
+        target = _make_user(
+            organization, "wsrm-last@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        resp = self._ws_remove(auth_client, workspace, target)
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST, resp.json()
+        assert "only workspace" in resp.json()["result"].lower()
+
+    # DENY: Cannot remove Org Admin from WS (auto-access)
+
+    def test_cannot_remove_org_admin_from_ws(
+        self, auth_client, organization, workspace
+    ):
+        admin = _make_user(
+            organization, "orgadm-wsrm@futureagi.com", "Admin", Level.ADMIN
+        )
+        resp = self._ws_remove(auth_client, workspace, admin)
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST, resp.json()
+
+    # DENY: Cannot remove self from WS
+
+    def test_cannot_remove_self_from_ws(self, auth_client, user, workspace):
+        resp = self._ws_remove(auth_client, workspace, user)
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST, resp.json()
+
+
+# ===================================================================
+# TestOrgRoleUpdateWorkspaceAccess
+# ===================================================================
+#
+# Org-level role update endpoint takes a ``workspace_access`` list that
+# describes the *complete* desired set of workspaces for the target user.
+# Anything not in the list must be revoked — otherwise a downgrade leaves
+# stale memberships behind and the user retains access they shouldn't.
+#
+# Reported repro: a Viewer with access to ws1+ws2 got a role update with
+# ``workspace_access=[ws1]`` and a 200 response, but ws2 access stuck around
+# because the revoke step never happened. These tests pin the contract.
+
+
+@pytest.mark.integration
+@pytest.mark.api
+class TestOrgRoleUpdateWorkspaceAccess:
+    """Workspace revocation semantics on ``MemberRoleUpdateAPIView``."""
+
+    @pytest.fixture
+    def second_workspace(self, organization, user):
+        return Workspace.objects.create(
+            name="WS Access Second",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+
+    def _update_role(self, client, payload):
+        return client.post(ORG_ROLE_URL, payload, format="json")
+
+    def _ws_member_ids(self, target_user, organization, only_active=True):
+        qs = WorkspaceMembership.all_objects.filter(
+            user=target_user,
+            workspace__organization=organization,
+        )
+        if only_active:
+            qs = qs.filter(is_active=True, deleted=False)
+        return set(qs.values_list("workspace_id", flat=True))
+
+    # The headline bug: workspace_access list excludes ws2 → ws2 must be revoked.
+
+    def test_role_update_revokes_workspaces_not_in_access_list(
+        self, auth_client, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsacc-revoke@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        resp = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.VIEWER,
+                "workspace_access": [
+                    {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_VIEWER}
+                ],
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        active = self._ws_member_ids(target, organization)
+        assert workspace.id in active
+        assert second_workspace.id not in active
+
+        # Granted workspace is at the new level.
+        ws1_mem = WorkspaceMembership.all_objects.get(
+            user=target, workspace=workspace, is_active=True
+        )
+        assert ws1_mem.level == Level.WORKSPACE_VIEWER
+
+        # Revoked workspace is soft-deleted, not hard-deleted (audit trail intact).
+        ws2_mem = WorkspaceMembership.all_objects.get(
+            user=target, workspace=second_workspace
+        )
+        assert ws2_mem.is_active is False
+        assert ws2_mem.deleted is True
+
+    # Empty workspace_access list → revoke everything.
+
+    def test_empty_workspace_access_revokes_all_explicit_memberships(
+        self, auth_client, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsacc-empty@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        resp = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.VIEWER,
+                "workspace_access": [],
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        active = self._ws_member_ids(target, organization)
+        assert active == set()
+
+    # Omitting the key entirely must NOT mass-revoke — only the targeted
+    # workspace gets touched. This is the "old behavior must still work" case.
+
+    def test_omitting_workspace_access_does_not_revoke_other_memberships(
+        self, auth_client, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsacc-omit@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        # Use only the single-workspace path: ws_level + workspace_id, no
+        # workspace_access key, no org_level.
+        resp = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "ws_level": Level.WORKSPACE_VIEWER,
+                "workspace_id": str(workspace.id),
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        active = self._ws_member_ids(target, organization)
+        # Both workspaces still active. Only the level of the targeted
+        # workspace changed; ws2 untouched.
+        assert workspace.id in active
+        assert second_workspace.id in active
+        ws1_mem = WorkspaceMembership.all_objects.get(user=target, workspace=workspace)
+        assert ws1_mem.level == Level.WORKSPACE_VIEWER
+
+    # Downgrade from Admin (auto-access in every workspace) to Member with a
+    # narrowed workspace_access list — implicit memberships in the omitted
+    # workspaces must be revoked.
+
+    def test_demote_admin_to_member_revokes_implicit_workspaces(
+        self, auth_client, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsacc-demote@futureagi.com", "Admin", Level.ADMIN
+        )
+        # Admins get explicit memberships in every workspace via the
+        # promotion path; simulate that state.
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_ADMIN)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_ADMIN
+        )
+
+        resp = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.MEMBER,
+                "workspace_access": [
+                    {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_MEMBER}
+                ],
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        active = self._ws_member_ids(target, organization)
+        assert workspace.id in active
+        assert second_workspace.id not in active
+        ws1_mem = WorkspaceMembership.all_objects.get(
+            user=target, workspace=workspace, is_active=True
+        )
+        assert ws1_mem.level == Level.WORKSPACE_MEMBER
+
+    # When the request targets one workspace via ws_level/workspace_id AND
+    # lists a *different* workspace in workspace_access, Block 1's revoke step
+    # would naively kill the ws_level target, only for Block 2 to resurrect it
+    # on the same transaction. The fix treats the ws_level target as part of
+    # the desired set so both end up active (no spurious revoke + resurrect).
+    # Callers who genuinely want to drop a workspace must leave it out of both
+    # fields.
+
+    def test_ws_level_target_outside_workspace_access_is_preserved(
+        self, auth_client, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsacc-overlap@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        resp = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.VIEWER,
+                # Block 2 targets ``workspace`` …
+                "ws_level": Level.WORKSPACE_MEMBER,
+                "workspace_id": str(workspace.id),
+                # … but only ``second_workspace`` is listed in workspace_access.
+                "workspace_access": [
+                    {
+                        "workspace_id": str(second_workspace.id),
+                        "level": Level.WORKSPACE_MEMBER,
+                    }
+                ],
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        active = self._ws_member_ids(target, organization)
+        # Both stay active: the ws_level target is implicitly part of the
+        # desired set, so the revoke step skips it.
+        assert workspace.id in active
+        assert second_workspace.id in active
+        # Revoke counter should not report a kill on the ws_level target.
+        assert resp.json()["result"]["changes"].get("revoked_workspaces", 0) == 0
+
+    # End-to-end: after a role update that revokes a workspace, that workspace
+    # must not appear in the user's ``workspaces[]`` array in the org member
+    # list response. This is the exact symptom that triggered the bug report.
+
+    def test_revoked_workspace_disappears_from_member_list(
+        self, auth_client, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsacc-list@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        update = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.VIEWER,
+                "workspace_access": [
+                    {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_VIEWER}
+                ],
+            },
+        )
+        assert update.status_code == status.HTTP_200_OK, update.json()
+
+        listing = auth_client.get(
+            "/accounts/organization/members/?page=1&limit=20",
+            format="json",
+        )
+        assert listing.status_code == status.HTTP_200_OK, listing.json()
+        results = listing.json()["result"]["results"]
+        entry = next((r for r in results if r["email"] == target.email), None)
+        assert entry is not None
+        ws_ids = {ws["workspace_id"] for ws in entry.get("workspaces", [])}
+        assert str(workspace.id) in ws_ids
+        assert str(second_workspace.id) not in ws_ids
+
+    # Invalid input: workspace_access must not reference a workspace from a
+    # different organization. Without this guard, the endpoint would silently
+    # create a WorkspaceMembership row pointing at a foreign workspace — a
+    # privilege-boundary violation. Should be rejected at the boundary, not
+    # absorbed into a wrong-write.
+
+    def test_workspace_access_with_foreign_org_workspace_is_rejected(
+        self, auth_client, organization, workspace
+    ):
+        # A workspace in a different organization.
+        other_org = Organization.objects.create(name="Other Test Org")
+        other_org_creator = _make_user(
+            other_org, "wsacc-otherorg-owner@futureagi.com", "Owner", Level.OWNER
+        )
+        foreign_workspace = Workspace.objects.create(
+            name="Foreign Workspace",
+            organization=other_org,
+            is_active=True,
+            created_by=other_org_creator,
+        )
+
+        target = _make_user(
+            organization, "wsacc-foreign@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+
+        resp = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.VIEWER,
+                "workspace_access": [
+                    {
+                        "workspace_id": str(foreign_workspace.id),
+                        "level": Level.WORKSPACE_VIEWER,
+                    },
+                ],
+            },
+        )
+
+        # The boundary must refuse this and not write a row.
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST, resp.json()
+        assert not WorkspaceMembership.all_objects.filter(
+            user=target, workspace=foreign_workspace
+        ).exists()
+        # And the actor's own workspace must be untouched — partial commit
+        # would be the worst possible failure mode.
+        active = self._ws_member_ids(target, organization)
+        assert workspace.id in active
+
+    # Idempotency: replaying the same role-update payload must produce the
+    # same final state and no spurious revocations on the second call. This
+    # pins the "exclude already-soft-deleted rows" guard in the revoke filter
+    # — without it, the second call would re-tick deleted_at and pollute the
+    # audit log.
+
+    def test_role_update_is_idempotent_on_replay(
+        self, auth_client, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsacc-idem@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        payload = {
+            "user_id": str(target.id),
+            "org_level": Level.VIEWER,
+            "workspace_access": [
+                {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_VIEWER}
+            ],
+        }
+
+        first = self._update_role(auth_client, payload)
+        assert first.status_code == status.HTTP_200_OK, first.json()
+        assert first.json()["result"]["changes"].get("revoked_workspaces") == 1, (
+            first.json()
+        )
+
+        # Replay the exact same payload.
+        second = self._update_role(auth_client, payload)
+        assert second.status_code == status.HTTP_200_OK, second.json()
+
+        # Final state is unchanged.
+        active = self._ws_member_ids(target, organization)
+        assert workspace.id in active
+        assert second_workspace.id not in active
+
+        # No spurious revoke on the replay — second_workspace was already
+        # revoked, so the revoke filter must skip it.
+        assert second.json()["result"]["changes"].get("revoked_workspaces", 0) == 0, (
+            second.json()
+        )
+
+    # Authz scope: the org-wide revoke is new in this PR and must not let an org
+    # member who is merely a workspace admin strip a user out of workspaces they
+    # don't administer. A workspace admin can only revoke within their own
+    # workspace; org-level revokes belong to org admins/owners.
+
+    def test_workspace_admin_member_cannot_revoke_outside_their_scope(
+        self, organization, workspace, second_workspace
+    ):
+        # Actor: org MEMBER, workspace admin in ``workspace`` only.
+        actor = _make_user(
+            organization, "wsacc-actor-wsadmin@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(actor, workspace, organization, Level.WORKSPACE_ADMIN)
+        actor_client = _make_client(actor, workspace)
+
+        # Target: org VIEWER (manageable by the member actor) in both workspaces.
+        target = _make_user(
+            organization, "wsacc-target-scope@futureagi.com", "Viewer", Level.VIEWER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        # workspace_access omits second_workspace — a naive org-wide revoke would
+        # strip the target out of it, but the actor doesn't administer it.
+        resp = self._update_role(
+            actor_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.VIEWER,
+                "workspace_access": [
+                    {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_VIEWER}
+                ],
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        active = self._ws_member_ids(target, organization)
+        # second_workspace is outside the actor's admin scope → preserved.
+        assert workspace.id in active
+        assert second_workspace.id in active
+        assert resp.json()["result"]["changes"].get("revoked_workspaces", 0) == 0
+
+    # Positive side of the same rule: within the workspace the actor administers,
+    # the revoke is allowed.
+
+    def test_workspace_admin_member_can_revoke_within_their_scope(
+        self, organization, workspace, second_workspace
+    ):
+        actor = _make_user(
+            organization, "wsacc-actor-wsadmin2@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(actor, workspace, organization, Level.WORKSPACE_ADMIN)
+        actor_client = _make_client(actor, workspace)
+
+        target = _make_user(
+            organization, "wsacc-target-scope2@futureagi.com", "Viewer", Level.VIEWER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        # Empty list → revoke everything, but scoped to the actor's workspace.
+        resp = self._update_role(
+            actor_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.VIEWER,
+                "workspace_access": [],
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        active = self._ws_member_ids(target, organization)
+        # The actor's own workspace is revoked; the one they don't manage stays.
+        assert workspace.id not in active
+        assert second_workspace.id in active
+        assert resp.json()["result"]["changes"].get("revoked_workspaces", 0) == 1
+
+    # Authz: the direct ws_level + workspace_id path must org-validate the
+    # workspace too. Without it an org admin/owner could write a membership into
+    # a workspace outside their org by posting a foreign workspace UUID here —
+    # the same privilege boundary workspace_access already enforces.
+
+    def test_ws_level_with_foreign_org_workspace_is_rejected(
+        self, auth_client, organization, workspace
+    ):
+        other_org = Organization.objects.create(name="Other Test Org Direct")
+        other_owner = _make_user(
+            other_org, "wslvl-otherorg-owner@futureagi.com", "Owner", Level.OWNER
+        )
+        foreign_workspace = Workspace.objects.create(
+            name="Foreign Workspace Direct",
+            organization=other_org,
+            is_active=True,
+            created_by=other_owner,
+        )
+
+        target = _make_user(
+            organization, "wslvl-foreign@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+
+        resp = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "ws_level": Level.WORKSPACE_VIEWER,
+                "workspace_id": str(foreign_workspace.id),
+            },
+        )
+
+        # Rejected at the boundary; no cross-org row written.
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST, resp.json()
+        assert not WorkspaceMembership._base_manager.filter(
+            user=target, workspace=foreign_workspace
+        ).exists()
+        # The actor's own (in-org) workspace is untouched — no partial commit.
+        assert workspace.id in self._ws_member_ids(target, organization)
+
+    # A cross-workspace edit must not 500. The request context is the default
+    # workspace (A) but the edit targets second_workspace (B). The workspace-
+    # scoped manager hid B's existing membership, so update_or_create tried to
+    # INSERT a duplicate (workspace, user) and raised IntegrityError. An
+    # unscoped manager finds the row and updates it.
+
+    def test_cross_workspace_context_ws_level_edit_updates_not_500(
+        self, auth_client, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsctx-cross@futureagi.com", "Member", Level.MEMBER
+        )
+        # Membership lives in B; auth_client's context is the default workspace A.
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        resp = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "ws_level": Level.WORKSPACE_VIEWER,
+                "workspace_id": str(second_workspace.id),
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        # Existing B row updated in place — not duplicated.
+        rows = WorkspaceMembership._base_manager.filter(
+            user=target, workspace=second_workspace
+        )
+        assert rows.count() == 1
+        assert rows.first().level == Level.WORKSPACE_VIEWER
+
+    # Revocation must stick on the invite path too. A member with a pending
+    # invite that still lists the revoked workspace would have it re-granted by
+    # OrganizationInvite.accept(); the role update must rewrite the invite's
+    # workspace_access to the new authoritative set.
+
+    def test_role_update_rewrites_pending_invite_workspace_access(
+        self, auth_client, user, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsinvite-revoke@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        # A stale pending invite still granting BOTH workspaces on accept.
+        invite = OrganizationInvite.objects.create(
+            organization=organization,
+            target_email=target.email,
+            level=Level.MEMBER,
+            workspace_access=[
+                {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_MEMBER},
+                {
+                    "workspace_id": str(second_workspace.id),
+                    "level": Level.WORKSPACE_MEMBER,
+                },
+            ],
+            invited_by=user,
+            status=InviteStatus.PENDING,
+        )
+
+        resp = self._update_role(
+            auth_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.VIEWER,
+                "workspace_access": [
+                    {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_VIEWER}
+                ],
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        invite.refresh_from_db()
+        invite_ws_ids = {entry["workspace_id"] for entry in invite.workspace_access}
+        # The revoked workspace is gone from the invite, so accept() can't
+        # resurrect it; the kept workspace remains.
+        assert str(workspace.id) in invite_ws_ids
+        assert str(second_workspace.id) not in invite_ws_ids
+        # Level offer is updated to the new org level too.
+        assert invite.level == Level.VIEWER
+
+    # Promote-to-admin must rewrite a pending invite to grant *every* workspace
+    # on accept, mirroring _promote_to_workspace_admin_everywhere on the active
+    # path — otherwise an accepted admin invite would under-grant.
+
+    def test_promote_to_admin_grants_all_workspaces_on_pending_invite(
+        self, auth_client, user, organization, workspace, second_workspace
+    ):
+        target = _make_user(
+            organization, "wsinvite-admin@futureagi.com", "Member", Level.MEMBER
+        )
+        # Stale invite listing only one workspace.
+        invite = OrganizationInvite.objects.create(
+            organization=organization,
+            target_email=target.email,
+            level=Level.MEMBER,
+            workspace_access=[
+                {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_MEMBER}
+            ],
+            invited_by=user,
+            status=InviteStatus.PENDING,
+        )
+
+        resp = self._update_role(
+            auth_client,
+            {"user_id": str(target.id), "org_level": Level.ADMIN},
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        invite.refresh_from_db()
+        invite_ws_ids = {entry["workspace_id"] for entry in invite.workspace_access}
+        # Every org workspace is granted at admin level.
+        assert invite_ws_ids == {str(workspace.id), str(second_workspace.id)}
+        assert all(
+            entry["level"] == Level.WORKSPACE_ADMIN for entry in invite.workspace_access
+        )
+        assert invite.level == Level.ADMIN
+
+    # The invite rewrite must honor the actor's revoke scope, exactly like the
+    # active-membership revoke: a workspace-admin org-member dropping a workspace
+    # they don't administer must NOT have it stripped from the pending invite
+    # (it would otherwise vanish on accept — an out-of-scope revocation).
+
+    def test_scoped_actor_preserves_out_of_scope_workspace_on_invite(
+        self, organization, workspace, second_workspace
+    ):
+        # Actor: org MEMBER, workspace admin in ``workspace`` (A) only.
+        actor = _make_user(
+            organization, "wsinvite-actor-wsadmin@futureagi.com", "Member", Level.MEMBER
+        )
+        _add_ws_membership(actor, workspace, organization, Level.WORKSPACE_ADMIN)
+        actor_client = _make_client(actor, workspace)
+
+        # Target: org VIEWER (manageable by the member actor), active in A and B.
+        target = _make_user(
+            organization, "wsinvite-target-scope@futureagi.com", "Viewer", Level.VIEWER
+        )
+        _add_ws_membership(target, workspace, organization, Level.WORKSPACE_MEMBER)
+        _add_ws_membership(
+            target, second_workspace, organization, Level.WORKSPACE_MEMBER
+        )
+
+        # Pending invite currently grants BOTH workspaces.
+        invite = OrganizationInvite.objects.create(
+            organization=organization,
+            target_email=target.email,
+            level=Level.VIEWER,
+            workspace_access=[
+                {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_MEMBER},
+                {
+                    "workspace_id": str(second_workspace.id),
+                    "level": Level.WORKSPACE_MEMBER,
+                },
+            ],
+            invited_by=actor,
+            status=InviteStatus.PENDING,
+        )
+
+        # Desired set omits B; the actor doesn't administer B, so B must survive
+        # on both the active membership and the invite.
+        resp = self._update_role(
+            actor_client,
+            {
+                "user_id": str(target.id),
+                "org_level": Level.VIEWER,
+                "workspace_access": [
+                    {"workspace_id": str(workspace.id), "level": Level.WORKSPACE_VIEWER}
+                ],
+            },
+        )
+
+        assert resp.status_code == status.HTTP_200_OK, resp.json()
+        # Active membership: B preserved (outside the actor's revoke scope).
+        active = self._ws_member_ids(target, organization)
+        assert second_workspace.id in active
+        # Invite: B preserved too, so accept() won't silently drop it.
+        invite.refresh_from_db()
+        invite_ws_ids = {entry["workspace_id"] for entry in invite.workspace_access}
+        assert str(workspace.id) in invite_ws_ids
+        assert str(second_workspace.id) in invite_ws_ids

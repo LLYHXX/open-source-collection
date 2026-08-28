@@ -1,0 +1,21 @@
+meta {
+  name: List Monitors
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}/tracer/user-alerts/list_monitors/?page_number=0&page_size=10&search_text
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page_number: 0
+  page_size: 10
+  search_text:
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

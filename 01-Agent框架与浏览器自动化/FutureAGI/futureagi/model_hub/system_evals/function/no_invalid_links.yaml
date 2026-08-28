@@ -1,0 +1,44 @@
+eval_id: 42
+name: no_invalid_links
+description: Checks if the text contains no invalid URLs
+eval_tags:
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    text: The input text to be evaluated for invalid links
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import re
+        import urllib.request
+        text = kwargs.get("text", output or "")
+        text = str(text)
+        pattern = r"(?!.*@)(?:https?://)?(?:www\.)?\S+\.\S+"
+        links = re.findall(pattern, text)
+        if not links:
+            return {"score": 1.0, "reason": "No links found in output, so none are invalid"}
+        invalid_links = []
+        for link in links:
+            url = link
+            if not url.startswith(("http://", "https://")):
+                url = "http://" + url
+            try:
+                req = urllib.request.Request(url, method='HEAD')
+                resp = urllib.request.urlopen(req, timeout=5)
+                if resp.status != 200:
+                    invalid_links.append(f"{url} (status {resp.status})")
+            except Exception as e:
+                invalid_links.append(f"{url} (unreachable: {str(e)})")
+        if invalid_links:
+            return {"score": 0.0, "reason": f"Found invalid links: {', '.join(invalid_links)}"}
+        return {"score": 1.0, "reason": f"All {len(links)} link(s) are valid"}

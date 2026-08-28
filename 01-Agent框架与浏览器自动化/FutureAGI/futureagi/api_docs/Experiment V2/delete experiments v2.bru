@@ -1,0 +1,45 @@
+meta {
+  name: delete experiments v2
+  type: http
+  seq: 9
+}
+
+delete {
+  url: http://localhost:8000/model-hub/experiments/v2/delete/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "experiment_ids": [
+      "uuid-experiment-1",
+      "uuid-experiment-2"
+    ]
+  }
+}
+
+docs {
+  ## Delete Experiments V2
+
+  Soft-deletes experiments with full cleanup:
+  cancels running workflows, soft-deletes EDT records and columns.
+
+  ### Request Body
+  - `experiment_ids` — Array of experiment UUIDs to delete
+
+  ### Response
+  ```json
+  {
+    "message": {
+      "message": "2 experiments deleted successfully",
+      "deleted_count": 2
+    },
+    "status": 200
+  }
+  ```
+}

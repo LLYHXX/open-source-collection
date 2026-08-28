@@ -1,0 +1,20 @@
+meta {
+  name: Get Right Answer - Results
+  type: http
+  seq: 3
+}
+
+get {
+  url: http://localhost:8000/model-hub/optimize-dataset/get-right-ans-results/?optim_id=daa49a89-355e-41c9-ad53-5abbb95a4f35
+  body: none
+  auth: none
+}
+
+params:query {
+  optim_id: daa49a89-355e-41c9-ad53-5abbb95a4f35
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}

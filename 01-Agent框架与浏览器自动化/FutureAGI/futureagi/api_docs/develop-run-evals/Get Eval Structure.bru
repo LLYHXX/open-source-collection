@@ -1,0 +1,28 @@
+meta {
+  name: Get Eval Structure
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/model-hub/develops/2ac35407-faca-431e-a810-3c45e059ebdb/get_eval_structure/66a88504-9ee9-454b-a0a0-93c9dc2f9e96/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "eval_type" : "previously_configured",
+    "examples" : {
+      "description" : "eval_type can be one of preset/previously_configured/user"
+    }
+  }
+}
+
+docs {
+  this api
+}

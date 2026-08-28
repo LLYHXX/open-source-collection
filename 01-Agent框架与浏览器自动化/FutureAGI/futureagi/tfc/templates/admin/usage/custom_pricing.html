@@ -1,0 +1,439 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Custom Pricing Manager{% endblock %}
+
+{% block content %}
+<style>
+  .cp-container { max-width: 1000px; margin: 0 auto; }
+  .cp-section { background: var(--body-bg, #fff); border: 1px solid var(--hairline-color, #ddd); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+  .cp-section h3 { margin-top: 0; border-bottom: 1px solid var(--hairline-color, #ddd); padding-bottom: 10px; }
+  .cp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .cp-field { margin-bottom: 12px; }
+  .cp-field label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.85em; color: var(--body-quiet-color, #666); }
+  .cp-field input, .cp-field select { width: 100%; padding: 10px; border: 1px solid var(--border-color, #ccc); border-radius: 4px; font-size: 0.9em; box-sizing: border-box; min-height: 40px; }
+  .cp-btn { padding: 10px 24px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 0.9em; }
+  .cp-btn-primary { background: #417690; color: #fff; }
+  .cp-btn-primary:hover { background: #205067; }
+  .cp-btn-sm { padding: 6px 14px; font-size: 0.8em; }
+  .cp-btn-create { background: #28a745; color: #fff; padding: 14px 32px; font-size: 1em; width: 100%; }
+  .cp-btn-create:hover { background: #218838; }
+  .cp-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .cp-table th, .cp-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--hairline-color, #ddd); font-size: 0.85em; }
+  .cp-table th { font-weight: 600; color: var(--body-quiet-color, #666); }
+  .cp-msg { padding: 10px 16px; border-radius: 4px; margin-bottom: 16px; font-size: 0.9em; }
+  .cp-msg-success { background: #dfd; border: 1px solid #afa; }
+  .cp-msg-error { background: #fdd; border: 1px solid #faa; }
+  .cp-warning { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px 16px; margin-bottom: 20px; font-size: 0.85em; color: #856404; }
+  .cp-x { background: none; border: none; color: #ba2121; cursor: pointer; font-size: 1.2em; font-weight: bold; padding: 2px 8px; }
+  .cp-x:hover { color: #8b0000; }
+  .cp-tier-row { display: grid; grid-template-columns: 1fr 1fr 1fr 40px; gap: 8px; align-items: end; margin-bottom: 8px; }
+  .cp-ent-row { display: grid; grid-template-columns: 2fr 1fr 40px; gap: 8px; align-items: end; margin-bottom: 8px; }
+  #loading { display: none; color: var(--body-quiet-color, #666); font-style: italic; }
+</style>
+
+<div class="cp-container">
+  <h2>Custom Pricing Manager</h2>
+  <div id="message"></div>
+  <div id="loading">Loading...</div>
+
+  <!-- Org Selector -->
+  <div class="cp-section">
+    <h3>Select Organization</h3>
+    <div class="cp-field">
+      <label>Organization</label>
+      <select id="org-id" onchange="loadOrg()">
+        <option value="">-- Select an organization --</option>
+      </select>
+    </div>
+    <button class="cp-btn cp-btn-primary" onclick="loadOrg()">Load</button>
+  </div>
+
+  <!-- Current Status -->
+  <div class="cp-section" id="status-section" style="display:none">
+    <h3>Current Status</h3>
+    <div class="cp-grid">
+      <div><strong>Plan:</strong> <span id="s-plan">-</span></div>
+      <div><strong>Annual Fee:</strong> $<span id="s-fee">0</span></div>
+      <div><strong>Billing Cycle:</strong> <span id="s-cycle">Monthly</span></div>
+      <div><strong>Stripe Sub:</strong> <span id="s-stripe">None</span></div>
+      <div><strong>Contract End:</strong> <span id="s-contract-end">-</span></div>
+    </div>
+  </div>
+
+  <!-- Platform Fee & Contract -->
+  <div class="cp-section" id="fee-section" style="display:none">
+    <h3>Platform Fee &amp; Contract</h3>
+    <div class="cp-grid">
+      <div class="cp-field">
+        <label>Annual Platform Fee ($)</label>
+        <input type="number" id="platform-fee" step="0.01" placeholder="18000.00" value="0">
+      </div>
+      <div class="cp-field">
+        <label>Billing Cycle</label>
+        <select id="platform-fee-billing-cycle">
+          <option value="1">Monthly (12 payments/year)</option>
+          <option value="3">Quarterly (4 payments/year)</option>
+          <option value="6">Semi-Annual (2 payments/year)</option>
+          <option value="12">Annual (1 payment/year)</option>
+        </select>
+      </div>
+      <div class="cp-field">
+        <label>Contract End Date</label>
+        <input type="date" id="contract-end-date">
+      </div>
+      <div class="cp-field">
+        <label>Subscription Start Date <span style="font-weight:400;color:var(--body-quiet-color,#666)">(only for backdated contracts)</span></label>
+        <input type="date" id="start-date">
+      </div>
+    </div>
+    <div style="margin-top:8px; font-size:0.8em; color:var(--body-quiet-color,#666); line-height:1.5">
+      <strong>Note:</strong> Metered usage is always anchored to the 1st of next month. Set <em>Subscription Start Date</em> only if the customer has already paid out-of-band for a past period — Stripe will anchor the platform-fee renewal to the next anniversary instead of charging immediately.
+    </div>
+    <div id="per-charge-preview" style="margin-top:8px; font-size:0.85em; color:var(--body-quiet-color,#666);">
+      Per-charge amount: $0.00
+    </div>
+  </div>
+
+  <!-- Entitlements -->
+  <div class="cp-section" id="ent-section" style="display:none">
+    <h3>Entitlement Overrides</h3>
+    <div style="font-size:0.8em; color:var(--body-quiet-color,#666); margin-bottom:8px; line-height:1.5">
+      <strong>Skip <code>free_*</code> entries.</strong> Free allowances are auto-derived from the leading <code>$0</code> band of each pricing tier below — any <code>free_*</code> entitlement you add here will be overwritten on save.
+    </div>
+    <table class="cp-table" id="ent-table">
+      <thead><tr><th>Feature</th><th>Value</th><th></th></tr></thead>
+      <tbody id="ent-body"></tbody>
+    </table>
+    <div class="cp-ent-row" style="margin-top:12px">
+      <div class="cp-field" style="margin:0">
+        <label>Feature Key</label>
+        <select id="new-ent-feature">
+          <option value="">-- Select feature --</option>
+        </select>
+      </div>
+      <div class="cp-field" style="margin:0">
+        <label>Value (int or true/false)</label>
+        <input type="text" id="new-ent-value" placeholder="-1, 50, true, false">
+      </div>
+      <div><button class="cp-btn cp-btn-primary cp-btn-sm" onclick="addEntitlementLocal()">Add</button></div>
+    </div>
+  </div>
+
+  <!-- Pricing Tiers -->
+  <div class="cp-section" id="pricing-section" style="display:none">
+    <h3>Custom Pricing Tiers</h3>
+    <div style="font-size:0.8em; color:var(--body-quiet-color,#666); margin-bottom:8px; line-height:1.5">
+      <strong>Leading <code>$0</code> tier sets the free allowance.</strong> Per dimension, the first tier must be <code>tier_start=0, price_per_unit=0</code> with <code>tier_end</code> = quantity included free. Subsequent tiers stack on top with their own prices.<br>
+      Display unit is fixed by the dimension (e.g. <em>ai_credits</em> = credits) and not editable here.
+    </div>
+    <table class="cp-table" id="pricing-table">
+      <thead><tr><th>Dimension</th><th>Range</th><th>$/Unit</th><th></th></tr></thead>
+      <tbody id="pricing-body"></tbody>
+    </table>
+    <div style="margin-top:16px; border-top:1px solid var(--hairline-color,#ddd); padding-top:12px">
+      <strong>Add Tier</strong>
+      <div class="cp-tier-row" style="margin-top:8px">
+        <div class="cp-field" style="margin:0">
+          <label>Dimension</label>
+          <select id="new-tier-dim">
+            <option value="storage">Storage</option>
+            <option value="ai_credits">AI Credits</option>
+            <option value="gateway_requests">Gateway Requests</option>
+            <option value="gateway_cache_hits">Gateway Cache Hits</option>
+            <option value="text_sim_tokens">Text Sim Tokens</option>
+            <option value="voice_sim_minutes">Voice Sim Minutes</option>
+            <option value="tracing_events">Tracing Events</option>
+          </select>
+        </div>
+        <div class="cp-field" style="margin:0">
+          <label>Tier Start</label>
+          <input type="number" id="new-tier-start" placeholder="0" value="0">
+        </div>
+        <div class="cp-field" style="margin:0">
+          <label>Tier End (blank=unlimited)</label>
+          <input type="number" id="new-tier-end" placeholder="">
+        </div>
+        <div></div>
+      </div>
+      <div class="cp-tier-row">
+        <div class="cp-field" style="margin:0">
+          <label>Price per Unit ($)</label>
+          <input type="number" id="new-tier-price" step="0.000001" placeholder="0.01">
+        </div>
+        <div></div>
+        <div></div>
+        <div><button class="cp-btn cp-btn-primary cp-btn-sm" onclick="addTierLocal()">Add</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Warning + Create/Update Button -->
+  <div id="create-section" style="display:none">
+    <div class="cp-warning" id="create-warning">
+      <strong>Important:</strong> Once a custom plan is created in Stripe, the pricing cannot be modified.
+      Only create a custom plan once the specifics are thoroughly discussed with the client.
+      Entitlements and limits can be updated anytime, but Stripe prices are immutable.
+    </div>
+    <div class="cp-warning" id="update-warning" style="display:none">
+      <strong>Note:</strong> Updating will create new Stripe prices and swap them immediately on the existing subscription.
+      The customer will be prorated for the remainder of the current billing period.
+    </div>
+    <button class="cp-btn cp-btn-create" id="submit-btn" onclick="createCustomPlan()">
+      Create Custom Plan &amp; Stripe Subscription
+    </button>
+  </div>
+</div>
+
+<script>
+// Session auth only — no API key needed for admin pages
+const ORG_CHOICES = {{ org_choices_json|safe }};
+const FEATURE_KEYS = {{ feature_keys_json|safe }};
+
+// Local state — collected before final submit
+let localEntitlements = {};
+let localTiers = [];
+
+// Populate dropdowns
+(function() {
+  const sel = document.getElementById("org-id");
+  ORG_CHOICES.forEach(o => {
+    const opt = document.createElement("option");
+    opt.value = o.id;
+    opt.textContent = o.label + " (" + o.id.substring(0, 8) + "...)";
+    sel.appendChild(opt);
+  });
+  const fSel = document.getElementById("new-ent-feature");
+  // Hide free_* keys — they're auto-derived from leading $0 pricing tier.
+  FEATURE_KEYS.filter(f => !f.startsWith("free_")).forEach(f => {
+    const opt = document.createElement("option");
+    opt.value = f;
+    opt.textContent = f;
+    fSel.appendChild(opt);
+  });
+})();
+
+function getCookie(name) {
+  const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+  return v ? v.pop() : '';
+}
+
+function headers() {
+  const h = {"Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken")};
+  return h;
+}
+
+function showMsg(text, type) {
+  const el = document.getElementById("message");
+  el.className = "cp-msg cp-msg-" + type;
+  el.textContent = text;
+  el.style.display = "block";
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  setTimeout(() => el.style.display = "none", type === "error" ? 15000 : 8000);
+}
+
+function orgId() { return document.getElementById("org-id").value.trim(); }
+
+async function loadOrg() {
+  const id = orgId();
+  if (!id) return;
+
+  document.getElementById("loading").style.display = "block";
+  try {
+    const res = await fetch(`/usage/admin/custom-plan/?organization_id=${id}`, {headers: headers()});
+    const data = await res.json();
+    if (!data.status) { showMsg(data.result || "Failed to load", "error"); return; }
+
+    const r = data.result;
+    document.getElementById("s-plan").textContent = r.plan || "-";
+    document.getElementById("s-fee").textContent = r.platform_fee != null ? r.platform_fee : 0;
+    const cycleLabels = {1: "Monthly", 3: "Quarterly", 6: "Semi-Annual", 12: "Annual"};
+    const cycle = r.platform_fee_billing_cycle || 1;
+    document.getElementById("s-cycle").textContent = cycleLabels[cycle] || `Every ${cycle} months`;
+    document.getElementById("s-stripe").textContent = r.stripe_subscription_id || "None";
+    document.getElementById("s-contract-end").textContent = r.contract_end_date || "-";
+
+    document.getElementById("platform-fee").value = r.platform_fee || 0;
+    document.getElementById("platform-fee-billing-cycle").value = cycle;
+    document.getElementById("contract-end-date").value = r.contract_end_date || "";
+    updatePerChargePreview();
+
+    // Show sections
+    ["status-section", "fee-section", "ent-section", "pricing-section", "create-section"].forEach(
+      s => document.getElementById(s).style.display = ""
+    );
+
+    // Toggle button text and warning based on existing subscription
+    const isUpdate = r.has_stripe_subscription && r.is_custom;
+    const btn = document.getElementById("submit-btn");
+    btn.textContent = isUpdate ? "Update Custom Plan & Stripe Subscription" : "Create Custom Plan & Stripe Subscription";
+    document.getElementById("create-warning").style.display = isUpdate ? "none" : "";
+    document.getElementById("update-warning").style.display = isUpdate ? "" : "none";
+
+    // Load existing entitlements into local state
+    localEntitlements = {};
+    if (r.entitlements) {
+      r.entitlements.forEach(e => {
+        const val = e.value_int !== null && e.value_int !== undefined ? e.value_int : e.value_bool;
+        localEntitlements[e.feature] = val;
+      });
+    }
+    renderEntitlements();
+
+    // Load existing tiers into local state. display_unit comes back from
+    // the server (sourced from billing.yaml) so we keep it for UI display
+    // only; we never include it in POST/PUT payloads since the server
+    // re-derives it on save.
+    localTiers = [];
+    if (r.pricing) {
+      r.pricing.forEach(p => {
+        localTiers.push({
+          dimension: p.dimension,
+          tier_start: p.tier_start,
+          tier_end: p.tier_end,
+          price_per_unit: p.price_per_unit,
+          display_unit: p.display_unit || ""
+        });
+      });
+    }
+    renderTiers();
+
+  } catch(e) { showMsg("Error: " + e.message, "error"); }
+  finally { document.getElementById("loading").style.display = "none"; }
+}
+
+function renderEntitlements() {
+  const tbody = document.getElementById("ent-body");
+  const entries = Object.entries(localEntitlements);
+  if (!entries.length) {
+    tbody.innerHTML = '<tr><td colspan="3" style="color:var(--body-quiet-color,#666)">No per-org overrides. Using plan defaults.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = entries.map(([feature, val]) =>
+    `<tr><td>${feature}</td><td>${val}</td><td><button class="cp-x" onclick="removeEntitlement('${feature}')">&times;</button></td></tr>`
+  ).join("");
+}
+
+function renderTiers() {
+  const tbody = document.getElementById("pricing-body");
+  if (!localTiers.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--body-quiet-color,#666)">No custom pricing. Using default tiers.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = localTiers.map((t, idx) => {
+    const end = t.tier_end != null ? parseFloat(t.tier_end).toLocaleString() : "+";
+    return `<tr><td>${t.dimension}</td><td>${parseFloat(t.tier_start).toLocaleString()} - ${end} ${t.display_unit}</td><td>$${t.price_per_unit}</td><td><button class="cp-x" onclick="removeTier(${idx})">&times;</button></td></tr>`;
+  }).join("");
+}
+
+function addEntitlementLocal() {
+  const feature = document.getElementById("new-ent-feature").value;
+  const raw = document.getElementById("new-ent-value").value.trim();
+  if (!feature || !raw) return showMsg("Feature and value required", "error");
+  if (feature.startsWith("free_")) {
+    return showMsg("free_* entitlements are auto-derived from pricing tiers — set the leading $0 tier instead", "error");
+  }
+
+  if (raw === "true") localEntitlements[feature] = true;
+  else if (raw === "false") localEntitlements[feature] = false;
+  else localEntitlements[feature] = parseInt(raw);
+
+  document.getElementById("new-ent-value").value = "";
+  renderEntitlements();
+}
+
+function removeEntitlement(feature) {
+  delete localEntitlements[feature];
+  renderEntitlements();
+}
+
+function addTierLocal() {
+  const dim = document.getElementById("new-tier-dim").value;
+  const start = document.getElementById("new-tier-start").value;
+  const end = document.getElementById("new-tier-end").value;
+  const price = document.getElementById("new-tier-price").value;
+  if (start === "" || price === "") return showMsg("Start and price required", "error");
+
+  localTiers.push({
+    dimension: dim,
+    tier_start: parseFloat(start),
+    tier_end: end !== "" ? parseFloat(end) : null,
+    price_per_unit: parseFloat(price),
+    display_unit: ""
+  });
+  renderTiers();
+}
+
+function removeTier(idx) {
+  localTiers.splice(idx, 1);
+  renderTiers();
+}
+
+async function createCustomPlan() {
+  const id = orgId();
+  if (!id) return showMsg("Select an organization", "error");
+  if (!confirm("This will create a custom plan and Stripe subscription. This cannot be easily modified. Continue?")) return;
+
+  const fee = parseFloat(document.getElementById("platform-fee").value) || 0;
+  const billingCycle = parseInt(document.getElementById("platform-fee-billing-cycle").value) || 1;
+  const contractEnd = document.getElementById("contract-end-date").value || null;
+  const startDate = document.getElementById("start-date").value || null;
+
+  // Group tiers by dimension. display_unit is intentionally omitted —
+  // the server re-derives it from billing.yaml on save.
+  const pricing = {};
+  localTiers.forEach(t => {
+    if (!pricing[t.dimension]) pricing[t.dimension] = [];
+    pricing[t.dimension].push({
+      tier_start: t.tier_start,
+      tier_end: t.tier_end,
+      price_per_unit: t.price_per_unit
+    });
+  });
+
+  // Strip free_* entitlements client-side too — server auto-derives them,
+  // but stripping here keeps the network payload honest.
+  const cleanedEntitlements = {};
+  Object.entries(localEntitlements).forEach(([k, v]) => {
+    if (!k.startsWith("free_")) cleanedEntitlements[k] = v;
+  });
+
+  try {
+    const res = await fetch("/usage/admin/custom-plan/", {
+      method: "POST", headers: headers(),
+      body: JSON.stringify({
+        organization_id: id,
+        platform_fee: fee,
+        platform_fee_billing_cycle: billingCycle,
+        contract_end_date: contractEnd,
+        start_date: startDate,
+        entitlements: cleanedEntitlements,
+        pricing: pricing
+      })
+    });
+    const data = await res.json();
+    if (data.status) {
+      const msg = data.result?.stripe_error
+        ? `Custom plan saved but Stripe failed: ${data.result.stripe_error}`
+        : "Custom plan saved and Stripe subscription updated successfully!";
+      showMsg(msg, data.result?.stripe_error ? "error" : "success");
+      setTimeout(() => loadOrg(), 1500);
+    } else {
+      showMsg(data.result || "Failed to create custom plan", "error");
+    }
+  } catch(e) { showMsg("Error: " + e.message, "error"); }
+}
+
+function updatePerChargePreview() {
+  const fee = parseFloat(document.getElementById("platform-fee").value) || 0;
+  const cycle = parseInt(document.getElementById("platform-fee-billing-cycle").value) || 1;
+  const perCharge = cycle > 0 ? (fee * cycle / 12) : 0;
+  const payments = cycle > 0 ? Math.floor(12 / cycle) : 0;
+  document.getElementById("per-charge-preview").textContent =
+    `Per-charge amount: $${perCharge.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} × ${payments} payments/year = $${fee.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+}
+
+document.getElementById("platform-fee").addEventListener("input", updatePerChargePreview);
+document.getElementById("platform-fee-billing-cycle").addEventListener("change", updatePerChargePreview);
+</script>
+{% endblock %}

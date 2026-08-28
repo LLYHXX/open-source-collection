@@ -1,0 +1,152 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "praisonaiagents"
+version = "1.7.2"
+description = "Praison AI agents for completing complex tasks with Self Reflection Agents"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name="Mervin Praison" }
+]
+dependencies = [
+    "pydantic>=2.10.0",
+    "rich",
+    "openai>=1.68.2",
+    "posthog>=3.0.0",
+    "PyYAML>=6.0",
+    "aiohttp>=3.8.0"
+]
+
+[project.optional-dependencies]
+# Isolated code execution backends (docker, sandlock, ssh, novita, e2b, modal,
+# daytona) used by Agent(tools_run_on=...) and execute_code(run_in=...).
+#
+# praisonai-sandbox depends on praisonaiagents, so this extra closes a cycle.
+# That is deliberate and safe here: it is an *optional* edge, so nothing
+# installing plain praisonaiagents ever walks it, and pip resolves the pair
+# without pinning either to the other's version. Do not promote it to a
+# hard dependency, which would make the cycle mandatory.
+sandbox = [
+    "praisonai-sandbox>=0.0.13",
+]
+
+mcp = [
+    "mcp>=1.20.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "websockets>=12.0"
+]
+
+memory = [
+    "chromadb>=1.0.0",
+    "litellm>=1.83.14",
+]
+
+knowledge = [
+    "mem0ai>=0.1.0",
+    "chromadb>=1.0.0",
+    "markitdown[all]>=0.1.0",
+    "chonkie>=1.0.2"
+]
+
+# Graph memory support (includes Mem0 with graph capabilities)
+graph = [
+    "mem0ai[graph]>=0.1.0",
+    "chromadb>=1.0.0"
+]
+
+# Add LLM dependencies
+llm = [
+    "litellm>=1.83.14",
+    "pydantic>=2.10.0"
+]
+
+# Add API dependencies
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0"
+]
+
+# AgentOS dependencies (alias for api + auth for deployment)
+os = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "PyJWT>=2.8.0"
+]
+
+# Telemetry dependencies
+telemetry = [
+    "posthog>=3.0.0"
+]
+
+# MongoDB dependencies
+mongodb = [
+    "pymongo>=4.6.3",
+    "motor>=3.4.0"
+]
+
+# Dakera decay-weighted memory server
+dakera = [
+    "dakera>=0.12.8",
+]
+
+# Authentication dependencies
+auth = [
+    "PyJWT>=2.8.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-jose[cryptography]>=3.3.0",
+    "python-multipart>=0.0.6"
+]
+
+# Autonomy mode dependencies (code intelligence tools)
+autonomy = [
+    "ast-grep-cli>=0.30.0"
+]
+
+# Web search (DuckDuckGo — zero-config, no API key required)
+search = [
+    "ddgs>=9.0.0",
+]
+
+# Web crawling (Crawl4AI + Playwright browser)
+# NOTE: After installing this extra, run: playwright install chromium
+crawl = [
+    "crawl4ai>=0.4.0",
+    "playwright>=1.47.0",
+]
+
+# Declarative agent UI (Google A2UI SDK — lazy loaded)
+a2ui = [
+    "a2ui-agent-sdk>=0.2.1",
+    "a2a-sdk>=0.3.0,<1.0.0",
+]
+
+# Declarative agent UI (Google A2UI SDK — lazy loaded)
+all = [
+    "praisonaiagents[memory]",
+    "praisonaiagents[sandbox]",
+    "praisonaiagents[knowledge]",
+    "praisonaiagents[graph]",
+    "praisonaiagents[llm]",
+    "praisonaiagents[mcp]",
+    "praisonaiagents[api]",
+    "praisonaiagents[telemetry]",
+    "praisonaiagents[mongodb]",
+    "praisonaiagents[auth]",
+    "praisonaiagents[search]",
+    "praisonaiagents[crawl]",
+    "praisonaiagents[autonomy]",
+    "praisonaiagents[os]",
+    "praisonaiagents[a2ui]",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["praisonaiagents*"]
+exclude = ["praisonaiagents*.tests", "praisonaiagents*.tests.*"]
+
+[project.entry-points."praisonai.runtimes"]
+praisonai = "praisonaiagents.runtime.builtin:PraisonAIRuntime"

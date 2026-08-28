@@ -1,0 +1,63 @@
+meta {
+  name: Get Test Execution KPIs
+  type: http
+  seq: 16
+}
+
+get {
+  url: http://localhost:8000/simulate/test-executions/{{test_execution_id}}/kpis/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+docs {
+  name: Get Test Execution KPIs
+  description: Get KPI metrics for a specific test execution. Returns aggregated metrics including scores, call stats, voice conversation metrics, and chat metrics.
+  request: {
+    "method": "GET",
+    "url": "http://localhost:8000/simulate/test-executions/{test_execution_id}/kpis/",
+    "headers": {
+      "Authorization": "Bearer {token}"
+    }
+  }
+  response: {
+    "totalCalls": 10,
+    "avgScore": 4.2,
+    "avgResponse": 350,
+    "callsAttempted": 10,
+    "connectedCalls": 8,
+    "callsConnectedPercentage": 80.0,
+    "scenarioGraphs": {},
+    "agentType": "VOICE",
+    "avgAgentLatency": 120,
+    "avgUserInterruptionCount": 1.5,
+    "avgUserInterruptionRate": 0.12,
+    "avgUserWpm": 140,
+    "avgBotWpm": 160,
+    "avgTalkRatio": 0.55,
+    "avgAiInterruptionCount": 0.8,
+    "avgAiInterruptionRate": 0.06,
+    "avgStopTimeAfterInterruption": 0.4,
+    "agentTalkPercentage": 55.0,
+    "customerTalkPercentage": 45.0,
+    "avgTotalTokens": 0,
+    "avgInputTokens": 0,
+    "avgOutputTokens": 0,
+    "avgChatLatencyMs": 0,
+    "avgTurnCount": 0,
+    "avgCsatScore": 0,
+    "failedCalls": 2,
+    "totalDuration": 1234
+  }
+  notes: [
+    "totalDuration is the sum of duration_seconds across all call executions (voice simulations only, 0 for chat)",
+    "All voice conversation metrics (avgAgentLatency, avgUserWpm, etc.) are 0 for chat simulations",
+    "All chat metrics (avgTotalTokens, avgInputTokens, etc.) are 0 for voice simulations",
+    "Response keys are camelCased by the DRF renderer",
+    "Requires authentication and organization access"
+  ]
+}

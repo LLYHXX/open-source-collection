@@ -1,0 +1,80 @@
+eval_id: 106
+name: levenshtein_similarity
+description: Measures the number of edits (insertions, deletions, or substitutions) to transform generated text to reference
+  text. It is case-insensitive, punctuation-insensitive, and returns a normalized similarity.
+criteria: Measures the edit distance between the generated and reference text.
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config:
+    case_insensitive:
+      type: boolean
+      default: true
+    remove_punctuation:
+      type: boolean
+      default: true
+  config_params_desc:
+    output: The generated/output text
+    expected: The expected/reference text
+    case_insensitive: Whether to lowercase before comparing (default true)
+    remove_punctuation: Whether to remove punctuation before comparing (default true)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        # Pure-Python Levenshtein distance (dynamic programming), no external package.
+        import string
+        pred = kwargs.get("output", output if output is not None else "")
+        ref = kwargs.get("expected", expected if expected is not None else "")
+        case_insensitive = kwargs.get("case_insensitive", True)
+        remove_punctuation = kwargs.get("remove_punctuation", True)
+
+        def _preprocess(text):
+            if not isinstance(text, str):
+                text = str(text) if text is not None else ""
+            if case_insensitive:
+                text = text.lower()
+            if remove_punctuation:
+                text = text.translate(str.maketrans('', '', string.punctuation))
+            return text
+
+        def _levenshtein(a, b):
+            # Space-efficient row-based DP.
+            if a == b:
+                return 0
+            if not a:
+                return len(b)
+            if not b:
+                return len(a)
+            prev = list(range(len(b) + 1))
+            for i, ca in enumerate(a, start=1):
+                curr = [i] + [0] * len(b)
+                for j, cb in enumerate(b, start=1):
+                    cost = 0 if ca == cb else 1
+                    curr[j] = min(
+                        curr[j - 1] + 1,        # insertion
+                        prev[j] + 1,            # deletion
+                        prev[j - 1] + cost,     # substitution
+                    )
+                prev = curr
+            return prev[-1]
+
+        pred_proc = _preprocess(pred)
+        ref_proc = _preprocess(ref)
+        max_len = max(len(pred_proc), len(ref_proc), 1)
+        distance = _levenshtein(pred_proc, ref_proc)
+        similarity = 1.0 - (distance / max_len)
+        return {
+            "score": float(similarity),
+            "reason": f"Levenshtein Distance: {distance}, Similarity: {similarity:.3f}",
+        }

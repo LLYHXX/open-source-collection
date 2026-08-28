@@ -1,0 +1,32 @@
+meta {
+  name: List KB Test1
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/model-hub/knowledge-base/list/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "search": "1",
+    "page_number": 0,
+    "page_size": 10
+  }
+}
+
+docs {
+  Tested api for listing kbs for first time user screen.
+  Response:
+  {
+    "status": true,
+    "result": {}
+  }
+}

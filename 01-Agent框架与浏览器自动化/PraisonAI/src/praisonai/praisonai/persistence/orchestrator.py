@@ -1,0 +1,754 @@
+"""
+PersistenceOrchestrator - higher-level façade over the persistence layer.
+
+Hooks into agent lifecycle to provide automatic conversation persistence,
+knowledge retrieval, and state management.
+
+This class is a thin façade: the store-write side of the lifecycle hooks
+(persisting messages, updating session metadata at agent end) is delegated to
+:class:`praisonai.db.adapter.PraisonAIDB` — the single owner of that logic and
+the live path core routes to via ``MemoryConfig(db=...)``. The orchestrator adds
+its own resume-aware ``on_agent_start`` return contract, an LRU session cache,
+and the knowledge/state/context helpers on top.
+"""
+
+import asyncio
+import logging
+import os
+import time
+import threading
+import uuid
+import inspect
+from collections import OrderedDict
+from copy import deepcopy
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+from .conversation.base import ConversationStore, AsyncConversationStore, ConversationSession, ConversationMessage
+from .knowledge.base import KnowledgeStore, KnowledgeDocument
+from .state.base import StateStore
+from .config import PersistenceConfig
+from .factory import create_stores_from_config
+
+if TYPE_CHECKING:
+    pass
+
+logger = logging.getLogger(__name__)
+
+
+class PersistenceOrchestrator:
+    """
+    Central coordinator for all persistence operations.
+    
+    Lives in wrapper layer, hooks into agent lifecycle to provide:
+    - Automatic session loading/creation at agent start
+    - Message persistence during conversation
+    - Session metadata updates at agent end
+    - Knowledge retrieval for RAG
+    - State caching
+    
+    Example:
+        orchestrator = PersistenceOrchestrator(
+            conversation_store=PostgresConversationStore(...),
+            knowledge_store=QdrantKnowledgeStore(...),
+            state_store=RedisStateStore(...),
+        )
+        
+        # Hook into agent lifecycle
+        history = orchestrator.on_agent_start(agent, session_id="sess-123")
+        # ... agent runs ...
+        orchestrator.on_message(session_id, user_message)
+        orchestrator.on_message(session_id, assistant_message)
+        orchestrator.on_agent_end(agent, session_id)
+    """
+    
+    def __init__(
+        self,
+        conversation_store: Optional[ConversationStore] = None,
+        knowledge_store: Optional[KnowledgeStore] = None,
+        state_store: Optional[StateStore] = None,
+        config: Optional[PersistenceConfig] = None,
+    ):
+        """
+        Initialize the orchestrator.
+        
+        Args:
+            conversation_store: Store for session/message persistence
+            knowledge_store: Store for vector embeddings
+            state_store: Store for key-value state
+            config: Configuration (alternative to passing stores directly)
+        """
+        if config:
+            stores = create_stores_from_config(config)
+            self.conversation = stores["conversation"] or conversation_store
+            self.knowledge = stores["knowledge"] or knowledge_store
+            self.state = stores["state"] or state_store
+            self._config = config
+        else:
+            self.conversation = conversation_store
+            self.knowledge = knowledge_store
+            self.state = state_store
+            self._config = None
+        
+        self._current_session: Optional[ConversationSession] = None
+        # Delegate target: the live adapter owns the store-write lifecycle hooks.
+        # Built lazily from the resolved stores so import stays cheap and a
+        # store-less orchestrator never constructs one.
+        self._db = None
+        # Bounded LRU cache: prevents unbounded memory growth in long-running
+        # servers/bots where each request may carry a fresh session_id.
+        self._session_cache: "OrderedDict[str, ConversationSession]" = OrderedDict()
+        try:
+            self._cache_maxsize = max(1, int(os.environ.get("PRAISONAI_SESSION_CACHE_MAX", "1024")))
+        except (TypeError, ValueError):
+            # Empty/non-numeric override must not abort persistence init;
+            # fall back to the documented default.
+            self._cache_maxsize = 1024
+        self._cache_lock = threading.RLock()  # RLock allows re-entrant access
+
+    def _sync(self, value: Any) -> Any:
+        """Drive a store call to completion from a sync context.
+
+        Async backends (``mode="async"`` → ``AsyncConversationStore`` and friends)
+        return a coroutine from every method. Sync hooks that call them directly
+        would otherwise discard the coroutine unawaited — a silent no-op that loses
+        the write. When we detect a coroutine we run it via the shared async bridge
+        (single source of truth) so sync callers still get their result; otherwise
+        we pass the value through unchanged for genuinely sync stores.
+        """
+        if inspect.iscoroutine(value):
+            from .._async_bridge import run_sync_or_offload
+            # ``run_sync_or_offload`` works from a plain sync caller *and* from
+            # inside a running loop (FastAPI handler, Jupyter, async test); a
+            # bare ``run_sync`` would raise in the latter, silently breaking sync
+            # persistence hooks that ride an async store under a running loop.
+            return run_sync_or_offload(value, thread_name="praisonai-persistence-sync")
+        return value
+    
+    @classmethod
+    def from_config(cls, config: PersistenceConfig) -> "PersistenceOrchestrator":
+        """Create orchestrator from configuration."""
+        return cls(config=config)
+    
+    @classmethod
+    def from_env(cls) -> "PersistenceOrchestrator":
+        """Create orchestrator from environment variables."""
+        config = PersistenceConfig.from_env()
+        return cls(config=config)
+    
+    def _adapter(self):
+        """Lazily build the delegate adapter over this orchestrator's stores.
+
+        The adapter (:class:`praisonai.db.adapter.PraisonAIDB`) is the single
+        owner of the message-write / session-end store logic; the orchestrator
+        reuses it instead of keeping a second copy.
+        """
+        if self._db is None:
+            from ..db.adapter import PraisonAIDB
+            self._db = PraisonAIDB._from_stores(
+                conversation_store=self.conversation,
+                state_store=self.state,
+                knowledge_store=self.knowledge,
+            )
+        return self._db
+
+    # =========================================================================
+    # Thread-Safe Cache Operations
+    # =========================================================================
+    
+    def _cache_put(self, session: ConversationSession) -> None:
+        """Store session in cache with thread safety and LRU eviction."""
+        with self._cache_lock:
+            self._session_cache[session.session_id] = session
+            self._session_cache.move_to_end(session.session_id)
+            while len(self._session_cache) > self._cache_maxsize:
+                self._session_cache.popitem(last=False)
+    
+    def _cache_get(self, session_id: str) -> Optional[ConversationSession]:
+        """Get session from cache with thread safety and defensive copying."""
+        with self._cache_lock:
+            cached = self._session_cache.get(session_id)
+            if cached is not None:
+                self._session_cache.move_to_end(session_id)
+            return deepcopy(cached) if cached is not None else None
+    
+    def _cache_delete(self, session_id: str) -> Optional[ConversationSession]:
+        """Remove session from cache with thread safety."""
+        with self._cache_lock:
+            return self._session_cache.pop(session_id, None)
+    
+    def _cache_clear(self) -> None:
+        """Clear all sessions from cache with thread safety."""
+        with self._cache_lock:
+            self._session_cache.clear()
+    
+    # =========================================================================
+    # Agent Lifecycle Hooks
+    # =========================================================================
+    
+    def on_agent_start(
+        self,
+        agent: Any,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        resume: bool = True,
+    ) -> List[ConversationMessage]:
+        """
+        Called before agent run. Loads or creates session.
+        
+        Args:
+            agent: The agent instance
+            session_id: Session ID (generated if not provided)
+            user_id: User ID for session
+            resume: Whether to load existing session history
+        
+        Returns:
+            List of previous messages if resuming, empty list otherwise
+        """
+        if not session_id:
+            session_id = str(uuid.uuid4())
+        
+        if not self.conversation:
+            logger.debug("No conversation store configured, skipping session load")
+            return []
+        
+        from .conversation._ops import resume_or_create_session
+
+        # Try to load existing session
+        session = None
+        if resume:
+            session = self._sync(self.conversation.get_session(session_id))
+
+        if session:
+            logger.info(f"Resuming session: {session_id}")
+            self._current_session = session
+            self._cache_put(session)
+
+        # Build the new session lazily inside the factory so the resume path
+        # never touches the agent's identity or constructs a discarded object.
+        # The factory captures the exact instance the helper persists so the
+        # same object (identical timestamps/identity) is cached below.
+        created: List[ConversationSession] = []
+
+        def _build_session() -> ConversationSession:
+            agent_id = getattr(agent, "name", None) or getattr(agent, "agent_id", None)
+            new_session = ConversationSession(
+                session_id=session_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                name=f"Session {session_id[:8]}",
+                metadata={"agent_type": type(agent).__name__},
+            )
+            created.append(new_session)
+            return new_session
+
+        messages = resume_or_create_session(
+            self.conversation,
+            session,
+            session_id,
+            build_session=_build_session,
+            get_messages=lambda: self._sync(self.conversation.get_messages(session_id)),
+            create_session=lambda s: self._sync(self.conversation.create_session(s)),
+        )
+
+        if messages is None:
+            # New session was created inside the helper; capture and cache it.
+            new_session = created[0]
+            logger.info(f"Created new session: {session_id}")
+            self._current_session = new_session
+            self._cache_put(new_session)
+            return []
+
+        return messages
+    
+    def on_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        tool_calls: Optional[List[Dict]] = None,
+        tool_call_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[ConversationMessage]:
+        """
+        Called after each message (user or assistant).
+        
+        Args:
+            session_id: Session ID
+            role: Message role (user, assistant, system, tool)
+            content: Message content
+            tool_calls: Tool calls (for assistant messages)
+            tool_call_id: Tool call ID (for tool response messages)
+            metadata: Additional metadata
+        
+        Returns:
+            The persisted message, or None if no store configured
+        """
+        if not self.conversation:
+            return None
+        
+        message = ConversationMessage(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+            metadata=metadata,
+        )
+        
+        # Delegate the store write to the single-owner adapter dispatch so the
+        # sync/async-store handling is not duplicated here.
+        self._adapter()._call_store(
+            self.conversation, "add_message", "async_add_message", session_id, message
+        )
+        logger.debug(f"Persisted {role} message to session {session_id}")
+        return message
+    
+    def on_agent_end(
+        self,
+        agent: Any,
+        session_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Called after agent run. Updates session metadata.
+        
+        Args:
+            agent: The agent instance
+            session_id: Session ID
+            metadata: Additional metadata to store
+        """
+        if not self.conversation:
+            return
+        
+        adapter = self._adapter()
+        session = self._cache_get(session_id) or adapter._call_store(
+            self.conversation, "get_session", "async_get_session", session_id
+        )
+        if session:
+            session.updated_at = time.time()
+            if metadata:
+                session.metadata = {**(session.metadata or {}), **metadata}
+            adapter._call_store(
+                self.conversation, "update_session", "async_update_session", session
+            )
+            # Update cache with the modified session
+            self._cache_put(session)
+            logger.debug(f"Updated session metadata: {session_id}")
+    
+    # =========================================================================
+    # Async Agent Lifecycle Hooks
+    # =========================================================================
+    
+    async def aon_agent_start(
+        self,
+        agent: Any,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        resume: bool = True,
+    ) -> List[ConversationMessage]:
+        """
+        Async version of on_agent_start.
+        
+        Args:
+            agent: The agent instance
+            session_id: Session ID (generated if not provided)
+            user_id: User ID for session
+            resume: Whether to load existing session history
+        
+        Returns:
+            List of previous messages if resuming, empty list otherwise
+        """
+        if not session_id:
+            session_id = str(uuid.uuid4())
+        
+        if not self.conversation:
+            logger.debug("No conversation store configured, skipping session load")
+            return []
+        
+        from .conversation._ops import aresume_or_create_session
+
+        is_async = isinstance(self.conversation, AsyncConversationStore)
+
+        async def _get_session():
+            if is_async:
+                return await self.conversation.get_session(session_id)
+            # Run blocking store off the loop so we don't block multi-agent execution
+            return await asyncio.to_thread(self.conversation.get_session, session_id)
+
+        async def _create_session(s):
+            if is_async:
+                return await self.conversation.create_session(s)
+            return await asyncio.to_thread(self.conversation.create_session, s)
+
+        async def _get_messages():
+            if is_async:
+                return await self.conversation.get_messages(session_id)
+            return await asyncio.to_thread(self.conversation.get_messages, session_id)
+
+        # Try to load existing session
+        session = None
+        if resume:
+            session = await _get_session()
+
+        if session:
+            logger.info(f"Resuming session: {session_id}")
+            self._current_session = session
+            self._cache_put(session)
+
+        # Build the new session lazily inside the factory so the resume path
+        # never touches the agent's identity or constructs a discarded object.
+        # The factory captures the exact instance the helper persists so the
+        # same object (identical timestamps/identity) is cached below.
+        created: List[ConversationSession] = []
+
+        def _build_session() -> ConversationSession:
+            agent_id = getattr(agent, "name", None) or getattr(agent, "agent_id", None)
+            new_session = ConversationSession(
+                session_id=session_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                name=f"Session {session_id[:8]}",
+                metadata={"agent_type": type(agent).__name__},
+            )
+            created.append(new_session)
+            return new_session
+
+        messages = await aresume_or_create_session(
+            self.conversation,
+            session,
+            session_id,
+            build_session=_build_session,
+            create_session=_create_session,
+            get_messages=_get_messages,
+        )
+
+        if messages is None:
+            # New session was created inside the helper; capture and cache it.
+            new_session = created[0]
+            logger.info(f"Created new session: {session_id}")
+            self._current_session = new_session
+            self._cache_put(new_session)
+            return []
+
+        return messages
+    
+    async def aon_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        tool_calls: Optional[List[Dict]] = None,
+        tool_call_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[ConversationMessage]:
+        """
+        Async version of on_message.
+        
+        Args:
+            session_id: Session ID
+            role: Message role (user, assistant, system, tool)
+            content: Message content
+            tool_calls: Tool calls (for assistant messages)
+            tool_call_id: Tool call ID (for tool response messages)
+            metadata: Additional metadata
+        
+        Returns:
+            The persisted message, or None if no store configured
+        """
+        if not self.conversation:
+            return None
+        
+        message = ConversationMessage(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+            metadata=metadata,
+        )
+        
+        # Delegate the async store write to the single-owner adapter dispatch so
+        # the async/sync-store branching is not duplicated here.
+        await self._adapter()._dispatch_async(
+            self.conversation, "add_message", "async_add_message", session_id, message
+        )
+        logger.debug(f"Persisted {role} message to session {session_id}")
+        return message
+    
+    async def aon_agent_end(
+        self,
+        agent: Any,
+        session_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Async version of on_agent_end.
+        
+        Args:
+            agent: The agent instance
+            session_id: Session ID
+            metadata: Additional metadata to store
+        """
+        if not self.conversation:
+            return
+        
+        adapter = self._adapter()
+        session = self._cache_get(session_id)
+        if not session:
+            session = await adapter._dispatch_async(
+                self.conversation, "get_session", "async_get_session", session_id
+            )
+
+        if session:
+            session.updated_at = time.time()
+            if metadata:
+                session.metadata = {**(session.metadata or {}), **metadata}
+
+            await adapter._dispatch_async(
+                self.conversation, "update_session", "async_update_session", session
+            )
+            # Update cache with the modified session
+            self._cache_put(session)
+            logger.debug(f"Updated session metadata: {session_id}")
+    
+    # =========================================================================
+    # Knowledge Retrieval
+    # =========================================================================
+    
+    def retrieve_knowledge(
+        self,
+        query_embedding: List[float],
+        collection: str = "default",
+        limit: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[KnowledgeDocument]:
+        """
+        Retrieve relevant documents for RAG.
+        
+        Args:
+            query_embedding: Query vector embedding
+            collection: Collection name
+            limit: Max documents to return
+            filters: Metadata filters
+        
+        Returns:
+            List of relevant documents
+        """
+        if not self.knowledge:
+            logger.debug("No knowledge store configured")
+            return []
+        
+        return self._sync(self.knowledge.search(
+            collection=collection,
+            query_embedding=query_embedding,
+            limit=limit,
+            filters=filters,
+        ))
+    
+    def add_knowledge(
+        self,
+        documents: List[KnowledgeDocument],
+        collection: str = "default",
+    ) -> List[str]:
+        """
+        Add documents to knowledge store.
+        
+        Args:
+            documents: Documents with embeddings
+            collection: Collection name
+        
+        Returns:
+            List of document IDs
+        """
+        if not self.knowledge:
+            raise ValueError("No knowledge store configured")
+        
+        return self._sync(self.knowledge.upsert(collection, documents))
+    
+    async def aretrieve_knowledge(
+        self,
+        query_embedding: List[float],
+        collection: str = "default",
+        limit: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[KnowledgeDocument]:
+        """Async-safe RAG retrieval.
+
+        Every real vector backend issues a network round trip on ``search``.
+        Called from an async agent (``arun`` / a FastAPI handler), the sync
+        :meth:`retrieve_knowledge` would block the event loop for the whole
+        round trip, serialising every other concurrent request behind it. This
+        offloads the store call to a worker thread so the loop stays free, in
+        line with the async conversation hooks (``aon_message`` etc.).
+        """
+        if not self.knowledge:
+            logger.debug("No knowledge store configured")
+            return []
+
+        if inspect.iscoroutinefunction(self.knowledge.search):
+            return await self.knowledge.search(
+                collection=collection,
+                query_embedding=query_embedding,
+                limit=limit,
+                filters=filters,
+            )
+        return await asyncio.to_thread(
+            self.knowledge.search,
+            collection=collection,
+            query_embedding=query_embedding,
+            limit=limit,
+            filters=filters,
+        )
+
+    async def aadd_knowledge(
+        self,
+        documents: List[KnowledgeDocument],
+        collection: str = "default",
+    ) -> List[str]:
+        """Async-safe counterpart to :meth:`add_knowledge` (see rationale there)."""
+        if not self.knowledge:
+            raise ValueError("No knowledge store configured")
+
+        if inspect.iscoroutinefunction(self.knowledge.upsert):
+            return await self.knowledge.upsert(collection, documents)
+        return await asyncio.to_thread(self.knowledge.upsert, collection, documents)
+    
+    # =========================================================================
+    # State Management
+    # =========================================================================
+    
+    def get_state(self, key: str) -> Optional[Any]:
+        """Get state value."""
+        if not self.state:
+            return None
+        return self._sync(self.state.get(key))
+    
+    def set_state(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """Set state value with optional TTL."""
+        if not self.state:
+            return
+        self._sync(self.state.set(key, value, ttl))
+    
+    def delete_state(self, key: str) -> bool:
+        """Delete state value."""
+        if not self.state:
+            return False
+        return self._sync(self.state.delete(key))
+    
+    # =========================================================================
+    # Session Management
+    # =========================================================================
+    
+    def get_session(self, session_id: str) -> Optional[ConversationSession]:
+        """Get a session by ID."""
+        if not self.conversation:
+            return None
+        return self._sync(self.conversation.get_session(session_id))
+    
+    def list_sessions(
+        self,
+        user_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[ConversationSession]:
+        """List sessions for a user."""
+        if not self.conversation:
+            return []
+        return self._sync(self.conversation.list_sessions(user_id=user_id, limit=limit))
+    
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session and all its messages."""
+        if not self.conversation:
+            return False
+        
+        # Remove from cache using thread-safe method
+        self._cache_delete(session_id)
+        
+        return self._sync(self.conversation.delete_session(session_id))
+    
+    def get_messages(
+        self,
+        session_id: str,
+        limit: Optional[int] = None,
+    ) -> List[ConversationMessage]:
+        """Get messages from a session."""
+        if not self.conversation:
+            return []
+        return self._sync(self.conversation.get_messages(session_id, limit=limit))
+    
+    # =========================================================================
+    # Context Building
+    # =========================================================================
+    
+    def build_context(
+        self,
+        session_id: str,
+        query_embedding: Optional[List[float]] = None,
+        history_limit: int = 20,
+        knowledge_limit: int = 5,
+        knowledge_collection: str = "default",
+    ) -> Dict[str, Any]:
+        """
+        Build context for agent including history and knowledge.
+        
+        Args:
+            session_id: Session ID
+            query_embedding: Query embedding for knowledge retrieval
+            history_limit: Max history messages
+            knowledge_limit: Max knowledge documents
+            knowledge_collection: Knowledge collection name
+        
+        Returns:
+            Dict with 'history' and 'knowledge' keys
+        """
+        context = {
+            "history": [],
+            "knowledge": [],
+        }
+        
+        # Get conversation history
+        if self.conversation:
+            messages = self._sync(self.conversation.get_messages(session_id, limit=history_limit))
+            context["history"] = [
+                {"role": m.role, "content": m.content}
+                for m in messages
+            ]
+        
+        # Get relevant knowledge
+        if self.knowledge and query_embedding:
+            docs = self._sync(self.knowledge.search(
+                collection=knowledge_collection,
+                query_embedding=query_embedding,
+                limit=knowledge_limit,
+            ))
+            context["knowledge"] = [
+                {"content": d.content, "metadata": d.metadata}
+                for d in docs
+            ]
+        
+        return context
+    
+    # =========================================================================
+    # Cleanup
+    # =========================================================================
+    
+    def close(self) -> None:
+        """Close all stores and release resources."""
+        if self.conversation:
+            self._sync(self.conversation.close())
+        if self.knowledge:
+            self._sync(self.knowledge.close())
+        if self.state:
+            self._sync(self.state.close())
+        
+        # Clear cache using thread-safe method
+        self._cache_clear()
+        logger.info("Persistence orchestrator closed")
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False

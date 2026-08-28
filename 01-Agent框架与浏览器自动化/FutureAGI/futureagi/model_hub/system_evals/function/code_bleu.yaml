@@ -1,0 +1,60 @@
+eval_id: 167
+name: code_bleu
+description: Computes CodeBLEU - a code-aware BLEU variant that combines standard n-gram BLEU with keyword matching for code-specific
+  tokens (def, class, return, if, for, etc). Better than standard BLEU for evaluating code generation.
+criteria: Measures code generation quality using n-gram overlap weighted with code keyword matching.
+eval_tags:
+- Code
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - reference
+  - hypothesis
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    reference: Reference/expected code
+    hypothesis: Generated code
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import math
+        from collections import Counter
+        ref = str(kwargs.get("reference", expected or "")).strip()
+        hyp = str(kwargs.get("hypothesis", output or "")).strip()
+        if not ref or not hyp:
+            return {"score": 0.0, "reason": "Missing reference or hypothesis"}
+        rt = ref.split()
+        ht = hyp.split()
+        if not ht:
+            return {"score": 0.0, "reason": "Empty hypothesis"}
+        def _ng(t, n):
+            return [tuple(t[i:i+n]) for i in range(len(t)-n+1)]
+        lp = []
+        for n in range(1, 5):
+            rn = Counter(_ng(rt, n))
+            hn = Counter(_ng(ht, n))
+            tot = sum(hn.values())
+            if tot == 0:
+                p = 1e-9
+            else:
+                cl = sum(min(hn[ng], rn.get(ng, 0)) for ng in hn)
+                p = (cl + 1) / (tot + 1)
+            lp.append(math.log(p))
+        bp = 1.0 if len(ht) >= len(rt) else math.exp(1 - len(rt)/max(len(ht), 1))
+        bleu = bp * math.exp(sum(0.25*l for l in lp))
+        kws = {"def","class","return","if","else","elif","for","while","try","except",
+               "finally","with","import","from","as","in","not","and","or","is","None",
+               "True","False","lambda","yield","async","await","function","const","let",
+               "var","SELECT","FROM","WHERE","JOIN","INSERT","UPDATE","DELETE","CREATE"}
+        rk = set(t for t in rt if t in kws)
+        hk = set(t for t in ht if t in kws)
+        kw_score = len(rk & hk) / len(rk) if rk else 1.0
+        score = max(0.0, min(1.0, 0.7 * bleu + 0.3 * kw_score))
+        return {"score": float(score), "reason": f"CodeBLEU: {score:.4f} (BLEU={bleu:.4f}, kw={kw_score:.4f})"}

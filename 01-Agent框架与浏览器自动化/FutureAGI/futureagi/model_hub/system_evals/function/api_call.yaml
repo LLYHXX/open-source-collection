@@ -1,0 +1,71 @@
+eval_id: 31
+name: api_call
+description: Makes an API call and evaluates the response
+eval_tags:
+- Code
+- Output Validation
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - response
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config:
+    url:
+      type: string
+      default: null
+    payload:
+      type: dict
+      default: {}
+    headers:
+      type: dict
+      default: {}
+  config_params_desc:
+    response: The response to be evaluated
+    url: The URL for the API call
+    payload: The payload to be sent with the API call
+    headers: The headers to be sent with the API call
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        import urllib.request
+        response = kwargs.get("response", output or "")
+        url = kwargs.get("url", "")
+        payload = kwargs.get("payload", {})
+        headers = kwargs.get("headers", {})
+        if not url:
+            return {"score": 0.0, "reason": "No URL provided for API call"}
+        try:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if isinstance(headers, str):
+                headers = json.loads(headers)
+            # Include the response in the payload for evaluation
+            if isinstance(payload, dict):
+                payload["response"] = response
+            data = json.dumps(payload).encode("utf-8") if payload else None
+            req = urllib.request.Request(url, data=data, method='POST' if data else 'GET')
+            req.add_header("Content-Type", "application/json")
+            for key, value in (headers or {}).items():
+                req.add_header(key, value)
+            resp = urllib.request.urlopen(req, timeout=30)
+            resp_body = resp.read().decode("utf-8")
+            try:
+                result = json.loads(resp_body)
+                if isinstance(result, dict):
+                    score = float(result.get("score", result.get("result", 1.0 if result.get("pass", True) else 0.0)))
+                    reason = result.get("reason", result.get("message", f"API returned status {resp.status}"))
+                    return {"score": score, "reason": str(reason)}
+            except (json.JSONDecodeError, ValueError):
+                pass
+            if resp.status == 200:
+                return {"score": 1.0, "reason": f"API call successful (status 200), response: {resp_body[:200]}"}
+            else:
+                return {"score": 0.0, "reason": f"API call returned status {resp.status}"}
+        except Exception as e:
+            return {"score": 0.0, "reason": f"API call failed: {str(e)}"}

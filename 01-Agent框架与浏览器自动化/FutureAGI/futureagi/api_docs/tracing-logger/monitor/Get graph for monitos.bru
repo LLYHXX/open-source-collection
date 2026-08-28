@@ -1,0 +1,23 @@
+meta {
+  name: Get graph for monitos
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/tracer/user-alerts/create_graph/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "metric_type":"eval_template" //or system_metrics
+    //"metric": "eb544cd9-05ed-4449-98cf-abe94055e6f8"
+    //"metric": "latency" or tokens, cost, traffic (if metric_type = system_metric)
+  }
+}

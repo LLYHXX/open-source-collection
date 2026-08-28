@@ -1,0 +1,35 @@
+meta {
+  name: optimisation create
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8000/model-hub/optimisation/create/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name" : "test pydantic",
+    "dataset_id" : "d88474b7-2d2d-48da-a988-0e0b2b26559d",
+    "column_id": "5365e928-0ece-4c87-9605-3664078ace0a",
+    "optimizeType":"PROMPT_TEMPLATE",
+    "messages" : [],
+    "user_eval_template_mapping":{"f36ff146-3e0d-49f1-8d72-dead636dc44d":"f36ff146-3e0d-49f1-8d72-dead636dc44d"},
+    "user_eval_template_ids" : ["f36ff146-3e0d-49f1-8d72-dead636dc44d"],
+    "model_config" : {
+      "model_name" : "gpt-4o-mini",
+      "temperature": 0.7,
+      "frequency_penalty": 0.7,
+      "presence_penalty": 0.5,
+      "max_tokens": 2000,
+      "top_p": 0
+    }
+  }
+}

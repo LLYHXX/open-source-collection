@@ -1,0 +1,23 @@
+meta {
+  name: signup
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/accounts/signup/
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+      "email": "avi.saini@oodles.io",
+      "full_name": "password",
+     "password":"Futureagi@45"
+  }
+}
+
+vars:pre-request {
+  host: http://localhost:8000
+}

@@ -1,0 +1,15 @@
+meta {
+  name: get monitors
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/monitor/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

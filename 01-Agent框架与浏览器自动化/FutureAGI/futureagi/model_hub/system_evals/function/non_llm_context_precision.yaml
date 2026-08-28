@@ -1,0 +1,32 @@
+eval_id: 192
+name: non_llm_context_precision
+description: Non-LLM context precision for RAG evaluation. Measures what fraction of retrieved contexts match reference contexts using exact string matching.
+eval_tags:
+- RAG
+- Retrieval Systems
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [output, expected]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {output: "Retrieved contexts (JSON array)", expected: "Reference contexts (JSON array)"}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _p(v):
+            if isinstance(v, str):
+                try: return json.loads(v)
+                except: return [x.strip() for x in v.split("\n") if x.strip()]
+            if isinstance(v, list): return v
+            return [str(v)]
+        ret = _p(kwargs.get("output", output))
+        ref = _p(kwargs.get("expected", expected))
+        if not ret: return {"score": 0.0, "reason": "No retrieved contexts"}
+        ref_set = set(str(r).lower().strip() for r in ref)
+        hits = sum(1 for c in ret if str(c).lower().strip() in ref_set)
+        prec = hits/len(ret)
+        return {"score": float(prec), "reason": f"Context Precision: {prec:.4f} ({hits}/{len(ret)})"}

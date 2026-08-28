@@ -1,0 +1,41 @@
+meta {
+  name: Get Comparison Rankings
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{baseUrl}}/experiments/{{experimentId}}/comparisons/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  ## Get Comparison Rankings (V1)
+
+  Returns latest comparison rankings for an experiment.
+  Used by ChooseWinnerDrawer.jsx to load existing weights/rankings.
+
+  ### Response
+  ```json
+  {
+    "message": {
+      "comparisons": [
+        {
+          "weights": {
+            "response_time": 5,
+            "completion_tokens": 5,
+            "total_tokens": 5,
+            "scores": {"eval_name": 5}
+          }
+        }
+      ]
+    },
+    "status": 200
+  }
+  ```
+}

@@ -1,0 +1,22 @@
+meta {
+  name: remove-label-from-version
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/remove/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "label_id": "{{label_id}}",
+      "version_id": "{{version_id}}"
+    }
+}

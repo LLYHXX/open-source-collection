@@ -1,0 +1,64 @@
+eval_id: 165
+name: syntax_validation
+description: Validates code syntax without executing it. Supports Python (via ast.parse), JSON, and basic JavaScript bracket
+  validation. Useful for checking if LLM-generated code is syntactically correct.
+eval_tags:
+- Code
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config:
+    language:
+      type: option
+      default: python
+  config_params_desc:
+    text: The code to validate
+    language: Programming language (python, json, javascript)
+  config_params_option:
+    language:
+    - python
+    - json
+    - javascript
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import ast, json
+        text = str(kwargs.get("text", output or "")).strip()
+        lang = str(kwargs.get("language", "python")).lower()
+        if not text:
+            return {"score": 0.0, "reason": "Empty code"}
+        if lang == "python":
+            try:
+                ast.parse(text)
+                return {"score": 1.0, "reason": "Valid Python syntax"}
+            except SyntaxError as e:
+                return {"score": 0.0, "reason": f"Python syntax error at line {e.lineno}: {e.msg}"}
+        elif lang == "json":
+            try:
+                json.loads(text)
+                return {"score": 1.0, "reason": "Valid JSON"}
+            except json.JSONDecodeError as e:
+                return {"score": 0.0, "reason": f"JSON error: {e}"}
+        elif lang in ("javascript", "js"):
+            dp, db, dbr = 0, 0, 0
+            for ch in text:
+                if ch == "(": dp += 1
+                elif ch == ")": dp -= 1
+                elif ch == "{": db += 1
+                elif ch == "}": db -= 1
+                elif ch == "[": dbr += 1
+                elif ch == "]": dbr -= 1
+                if dp < 0 or db < 0 or dbr < 0:
+                    return {"score": 0.0, "reason": "Unbalanced brackets"}
+            if dp != 0 or db != 0 or dbr != 0:
+                return {"score": 0.0, "reason": "Unbalanced brackets"}
+            return {"score": 1.0, "reason": "JavaScript basic syntax OK"}
+        return {"score": 0.0, "reason": f"Unsupported language: {lang}"}

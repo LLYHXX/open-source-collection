@@ -1,0 +1,15 @@
+meta {
+  name: Delete User Eval
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{host}}/model-hub/develops/5d5d2b4c-dd95-4d5a-93ed-407b7368cf3a/delete_user_eval/36269c5d-4cba-4d08-a5fc-36275535517a/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

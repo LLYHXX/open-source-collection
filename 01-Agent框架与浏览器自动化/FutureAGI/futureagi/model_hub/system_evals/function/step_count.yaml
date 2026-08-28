@@ -1,0 +1,79 @@
+eval_id: 176
+name: step_count
+description: Counts and validates the number of steps/actions in an agent trajectory. Can check against exact count, minimum,
+  maximum, or range.
+criteria: Validates that an agent's execution uses an appropriate number of steps.
+eval_tags:
+- Agents
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  function_params_schema:
+    min_steps:
+      type: integer
+      default: null
+      nullable: true
+      minimum: 0
+    max_steps:
+      type: integer
+      default: null
+      nullable: true
+      minimum: 1
+    expected_steps:
+      type: integer
+      default: null
+      nullable: true
+      minimum: 0
+  config_params_desc:
+    output: Agent trajectory (JSON array of steps or comma-separated string)
+    min_steps: Minimum step count
+    max_steps: Maximum step count
+    expected_steps: Exact expected step count (overrides min/max)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, str):
+                try:
+                    val = json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    return [v.strip() for v in val.split(",") if v.strip()]
+            if isinstance(val, list):
+                return val
+            return [val]
+        steps = _parse(kwargs.get("output", output))
+        count = len(steps)
+        es = kwargs.get("expected_steps")
+        mn = kwargs.get("min_steps")
+        mx = kwargs.get("max_steps")
+        if es is None and mn is None and mx is None:
+            return {"score": 0.0, "reason": "At least one of expected_steps, min_steps, or max_steps must be provided"}
+        if es is not None:
+            es = int(es)
+            ok = count == es
+            return {"score": 1.0 if ok else 0.0, "reason": f"Steps: {count} {'==' if ok else '!='} expected {es}"}
+        if mn is not None and mx is not None:
+            mn, mx = int(mn), int(mx)
+            ok = mn <= count <= mx
+            return {"score": 1.0 if ok else 0.0, "reason": f"Steps: {count} {'in' if ok else 'outside'} [{mn},{mx}]"}
+        if mn is not None:
+            mn = int(mn)
+            ok = count >= mn
+            return {"score": 1.0 if ok else 0.0, "reason": f"Steps: {count} {'>=' if ok else '<'} {mn}"}
+        if mx is not None:
+            mx = int(mx)
+            ok = count <= mx
+            return {"score": 1.0 if ok else 0.0, "reason": f"Steps: {count} {'<=' if ok else '>'} {mx}"}
+        return {"score": 1.0, "reason": f"Step count: {count}"}

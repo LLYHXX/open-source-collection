@@ -1,0 +1,25 @@
+meta {
+  name: Add Rows SDK
+  type: http
+  seq: 26
+}
+
+post {
+  url: {{host}}/model-hub/develops/add_rows_sdk/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_name": "data001"
+  }
+}
+
+body:multipart-form {
+  new_dataset_name: ds_0115
+}

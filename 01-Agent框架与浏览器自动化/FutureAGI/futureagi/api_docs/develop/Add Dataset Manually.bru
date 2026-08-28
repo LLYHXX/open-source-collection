@@ -1,0 +1,24 @@
+meta {
+  name: Add Dataset Manually
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{host}}/model-hub/develops/create-dataset-manually/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_name": "My Dataset",
+    "description": "Dataset description",
+    "number_of_rows": 10,
+    "number_of_columns": 5
+  }
+}

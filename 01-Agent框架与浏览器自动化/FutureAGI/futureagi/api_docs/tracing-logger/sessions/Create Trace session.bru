@@ -1,0 +1,22 @@
+meta {
+  name: Create Trace session
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/tracer/trace-session/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "241358a5-7558-4987-bb57-e4d033db159c",
+    "trace": "d534e366-a51e-4479-a45d-125ba5438ab7"
+  }
+}

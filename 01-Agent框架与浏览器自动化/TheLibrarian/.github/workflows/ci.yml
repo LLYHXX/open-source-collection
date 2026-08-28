@@ -1,0 +1,316 @@
+name: CI
+
+on:
+  push:
+  # `pull_request:` is intentionally absent. With both triggers, every
+  # PR push fires CI twice (once for the branch push, once for the PR's
+  # merge ref) because the concurrency group is keyed by `github.ref`
+  # which differs between the two. Push-only is sufficient — the PR UI
+  # picks up the branch's check runs automatically.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Lint, typecheck, test, build, smoke, healthcheck, guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.17.1"
+
+      - name: Enable corepack (pnpm)
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.0 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level=high
+
+      - name: Build
+        run: pnpm build
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Smoke test
+        run: pnpm run smoke
+
+      - name: Healthcheck
+        run: pnpm run healthcheck
+
+      - name: Guard — test-count floor
+        run: pnpm run check:test-count
+
+      - name: Guard — no secrets in the vault
+        run: pnpm run check:no-secrets-in-vault
+
+      - name: Guard — naming canon (no consolidator / grooming-sense curator job symbols)
+        run: pnpm run check:naming-canon
+
+      # Runs after Build (above): the generator/check read built packages, so this
+      # can never pass against stale dist (docs-site spec K8).
+      - name: Guard — generated docs reference is in sync
+        run: pnpm run check:docs
+
+      - name: Validate source-build Docker Compose config
+        env:
+          LIBRARIAN_AGENT_TOKEN: ci-agent-token
+        run: docker compose -f docker/docker-compose.yml config --quiet
+
+      - name: Validate image-only Docker Compose config
+        run: docker compose --env-file docker/all-in-one.env.example -f docker/docker-compose.image.yml config --quiet
+
+  release-guard:
+    name: Release hygiene (version bump + no [Unreleased])
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.17.1"
+
+      # Every PR must bump the root version and file a dated CHANGELOG entry for
+      # it (no `[Unreleased]`). On a PR branch we hand the guard the base-main
+      # version so it can prove the bump actually happened; on main itself the
+      # static checks (version ↔ top entry, dated, linked) are enough.
+      - name: Check release hygiene
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            git fetch --depth=1 origin main
+            RELEASE_BASE_VERSION="$(git show origin/main:package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
+            export RELEASE_BASE_VERSION
+            echo "Base (origin/main) version: $RELEASE_BASE_VERSION"
+          fi
+          node scripts/check-release.mjs
+
+  docker-image:
+    name: Single-container image build + smoke
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build the all-in-one image
+        run: docker build -f docker/all-in-one.Dockerfile -t librarian-all-in-one:ci .
+
+      - name: Run it and smoke both health endpoints
+        env:
+          LIBRARIAN_SMOKE_CONTAINER_NAME: librarian-ci
+        run: node scripts/smoke-docker-image.mjs librarian-all-in-one:ci
+
+  e2e:
+    name: Dashboard e2e (Playwright)
+    needs: build
+    runs-on: ubuntu-latest
+    # This job's 15 min budget has to cover install + workspace build + Playwright
+    # browser install BEFORE the suite even starts, so a cold run (uncached
+    # browser) routinely hit the cap and was cancelled mid-suite — surfacing as a
+    # flaky "cancelled" check that blocked otherwise-green PRs. 30 min gives the
+    # suite real headroom while still catching a genuine hang.
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.17.1"
+
+      - name: Enable corepack (pnpm)
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace
+        run: pnpm build
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          # Include the lockfile so Renovate / manual pnpm-up bumps that
+          # only touch pnpm-lock.yaml still invalidate the browser cache.
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/dashboard/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install Playwright browser
+        run: pnpm --filter @librarian/dashboard test:e2e:install
+
+      - name: Run e2e suite
+        env:
+          LIBRARIAN_E2E_ADMIN_TOKEN: e2e-admin-token
+          LIBRARIAN_E2E_DATA_DIR: ${{ runner.temp }}/librarian-e2e-data
+        run: pnpm --filter @librarian/dashboard test:e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/dashboard/playwright-report
+          retention-days: 7
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: apps/dashboard/test-results
+          retention-days: 7
+
+  docs:
+    name: Docs site (build + accessibility)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.17.1"
+
+      - name: Enable corepack (pnpm)
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Builds the static docs site; the build fails the PR if the site can't
+      # be built (spec success criterion 3). The starlight-links-validator
+      # plugin runs here too, failing the build on any broken INTERNAL link
+      # (external links are never network-checked — spec success criterion 6).
+      - name: Build docs site (incl. internal link validation)
+        run: pnpm --filter @librarian/docs build
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-docs-${{ runner.os }}-${{ hashFiles('apps/docs/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-docs-${{ runner.os }}-
+
+      - name: Install Playwright browser
+        run: pnpm --filter @librarian/docs test:a11y:install
+
+      # axe-core / WCAG 2.1 AA contrast gate over the built site, both Reading
+      # Room palettes. Holds the custom `--sl-*` overrides to the product's own
+      # accessibility bar (spec success criterion 10).
+      - name: Accessibility check (axe / WCAG 2.1 AA)
+        run: pnpm --filter @librarian/docs test:a11y
+
+  screenshots:
+    name: Docs screenshots (capture)
+    needs: build
+    runs-on: ubuntu-latest
+    # Boots the mcp-server + dashboard and captures one PNG per documented route
+    # — the same e2e-class shape as the dashboard suite. The capture spec fails
+    # the job if any route errors or yields an empty image (spec criterion #7).
+    # The freshly-captured images upload as an artifact for review; the COMMITTED
+    # images stay the source of truth for the docs build, so CI never pixel-diffs
+    # them (antialiasing would flap).
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.17.1"
+
+      - name: Enable corepack (pnpm)
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace
+        run: pnpm build
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/dashboard/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install Playwright browser
+        run: pnpm --filter @librarian/dashboard test:e2e:install
+
+      - name: Capture screenshots
+        env:
+          LIBRARIAN_E2E_ADMIN_TOKEN: e2e-admin-token
+          LIBRARIAN_E2E_DATA_DIR: ${{ runner.temp }}/librarian-shots-data
+        run: pnpm --filter @librarian/dashboard run screenshots
+
+      - name: Upload captured screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-screenshots
+          path: apps/docs/src/assets/screenshots
+          retention-days: 7
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-report
+          path: apps/dashboard/playwright-report
+          retention-days: 7
+
+  # The `integration-wrappers` job was deleted here. The five harnesses
+  # (Claude Code, Codex, Hermes, OpenCode, Pi) all ship as standalone
+  # plugin repos that own their own CI; no in-tree wrappers remain to
+  # smoke-test. The shared lifecycle helper at
+  # `integrations/shared/librarian-lifecycle/` has its own vitest suite
+  # exercised by the main `Lint, typecheck, test, build, …` job above.

@@ -1,0 +1,3867 @@
+import os
+import time
+import json
+import logging
+import contextlib
+import contextvars
+import threading
+from praisonaiagents._logging import get_logger
+from typing import Any, Dict, Optional, List, Tuple, Callable
+from ..main import display_error, TaskOutput
+from ..agent.agent import Agent
+from ..task.task import Task
+from ..process.process import Process
+from .protocols import SpawnAnnounceProtocol, SpawnedSubAgent, SubAgentCompletionEvent
+from ..bus.bus import EventBus
+from ..bus.event import EventType, Event
+import asyncio
+import uuid
+from enum import Enum
+
+# Import token tracking
+try:
+    from ..telemetry.token_collector import get_token_collector
+except ImportError:
+    get_token_collector = None
+
+# Import async utility for hot-path usage
+try:
+    from ..approval.utils import run_coroutine_safely
+except ImportError:
+    run_coroutine_safely = None
+
+# Task status constants
+class TaskStatus(Enum):
+    """Enumeration for task status values to ensure consistency"""
+    COMPLETED = "completed"
+    IN_PROGRESS = "in progress"
+    NOT_STARTED = "not started"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+# Set up logger
+logger = get_logger(__name__)
+
+
+# Request authorisation + fail-closed bind guard are shared with Agent.launch
+# so the single-agent and multi-agent serving paths cannot drift apart.
+from ..agent.launch_security import (
+    launch_auth_token as _launch_auth_token,
+    authorise_launch_request as _authorise_launch_request,
+    resolve_launch_host as _resolve_launch_host,
+)
+
+
+# Agent server registry for thread-safe server management
+
+
+class _AgentServerRegistry:
+    """Encapsulates all shared HTTP server state with proper synchronization."""
+    
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._started: Dict[int, bool] = {}
+        self._endpoints: Dict[int, Dict[str, str]] = {}
+        self._apps: Dict[int, Any] = {}  # FastAPI apps
+        self._ready_events: Dict[int, threading.Event] = {}
+    
+    def get_or_create_app(self, port: int, title: str = "AgentTeam API") -> Tuple[Any, bool]:
+        """Thread-safe app creation. Returns (app, is_new)."""
+        with self._lock:
+            if port not in self._apps:
+                # Lazy import to avoid optional dependency at module level
+                from fastapi import FastAPI
+                self._apps[port] = FastAPI(title=title)
+                self._endpoints[port] = {}
+                self._ready_events[port] = threading.Event()
+                return self._apps[port], True
+            return self._apps[port], False
+    
+    def register_route(self, port: int, path: str, endpoint_id: str = "registered") -> None:
+        """Thread-safe route registration tracking."""
+        with self._lock:
+            if port not in self._endpoints:
+                self._endpoints[port] = {}
+            self._endpoints[port][path] = endpoint_id
+
+    def reserve_route(self, port: int, path: str, endpoint_id: str) -> tuple[str, Optional[str]]:
+        """Atomically reserve and register a route.
+
+        Returns:
+            tuple[str, Optional[str]]: (final_path, original_path_if_collided).
+            If there is no collision, final_path equals the requested path and
+            original_path_if_collided is None.
+        """
+        with self._lock:
+            if port not in self._endpoints:
+                self._endpoints[port] = {}
+
+            original_path = path
+            while path in self._endpoints[port]:
+                path = f"{original_path}_{str(uuid.uuid4())[:6]}"
+
+            self._endpoints[port][path] = endpoint_id
+            return path, (original_path if path != original_path else None)
+
+    def list_routes(self, port: int) -> List[str]:
+        """Return a snapshot list of registered routes for a port."""
+        with self._lock:
+            return list(self._endpoints.get(port, {}).keys())
+    
+    def start_server_if_needed(self, port: int, host: str = "0.0.0.0", **kwargs) -> bool:  # noqa: S104
+        """Start server with proper readiness signaling. Returns True if server was started."""
+        with self._lock:
+            if self._started.get(port, False):
+                return False  # Already started
+            self._started[port] = True
+            app = self._apps.get(port)
+            
+        if not app:
+            raise ValueError(f"No app registered for port {port}")
+        
+        ready_event = self._ready_events[port]
+        
+        def run_server():
+            import uvicorn
+            # Remove hardcoded log_level to avoid conflict with kwargs
+            config = uvicorn.Config(app, host=host, port=port, **kwargs)
+            server = uvicorn.Server(config)
+            ready_event.set()  # Signal readiness
+            server.run()
+        
+        thread = threading.Thread(target=run_server, daemon=True)
+        thread.start()
+        
+        # Check for configurable timeout via environment variable
+        try:
+            timeout = float(os.environ.get("PRAISONAI_SERVER_READY_TIMEOUT", "5.0"))
+        except ValueError:
+            logger.warning("Invalid PRAISONAI_SERVER_READY_TIMEOUT value. Using default 5.0s.")
+            timeout = 5.0
+        became_ready = ready_event.wait(timeout=timeout)
+        
+        if not became_ready:
+            logger.warning(
+                "Agent server on port %s did not become ready within %.1fs. "
+                "Proceeding, but some features may not work correctly. "
+                "Check server logs for startup errors.",
+                port,
+                timeout,
+            )
+        
+        return True
+
+
+# Module level — single registry instance
+_server_registry = _AgentServerRegistry()
+
+def encode_file_to_base64(file_path: str) -> str:
+    """Base64-encode a file."""
+    import base64
+    with open(file_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+def process_video(video_path: str, seconds_per_frame=2):
+    """Split video into frames (base64-encoded)."""
+    import cv2
+    import base64
+    base64_frames = []
+    video = cv2.VideoCapture(video_path)
+    total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = video.get(cv2.CAP_PROP_FPS)
+    frames_to_skip = int(fps * seconds_per_frame)
+    curr_frame = 0
+    while curr_frame < total_frames:
+        video.set(cv2.CAP_PROP_POS_FRAMES, curr_frame)
+        success, frame = video.read()
+        if not success:
+            break
+        _, buffer = cv2.imencode(".jpg", frame)
+        base64_frames.append(base64.b64encode(buffer).decode("utf-8"))
+        curr_frame += frames_to_skip
+    video.release()
+    return base64_frames
+
+def get_multimodal_message(text_prompt: str, images: list) -> list:
+    """
+    Build multimodal message content for LLM with text and images.
+    
+    DRY helper - replaces duplicate _get_multimodal_message in aexecute_task/execute_task.
+    
+    Args:
+        text_prompt: The text content of the message
+        images: List of image paths (local or URL)
+        
+    Returns:
+        List of content items for multimodal LLM message
+    """
+    content = [{"type": "text", "text": text_prompt}]
+    
+    for img in images:
+        # If local file path for a valid image
+        if os.path.exists(img):
+            ext = os.path.splitext(img)[1].lower()
+            # If it's a .mp4, convert to frames
+            if ext == ".mp4":
+                frames = process_video(img, seconds_per_frame=1)
+                content.append({"type": "text", "text": "These are frames from the video."})
+                for f in frames:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpg;base64,{f}"}
+                    })
+            else:
+                encoded = encode_file_to_base64(img)
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/{ext.lstrip('.')};base64,{encoded}"
+                    }
+                })
+        else:
+            # Treat as a remote URL
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": img}
+            })
+    return content
+
+def _prepare_task_prompt(task, task_description, context_text=None):
+    """
+    Prepare task prompt with context and memory (DRY helper).
+    """
+    # Build task prompt - only use "User Input/Topic" format if there's actual content
+    if context_text and context_text.strip():
+        task_prompt = f"""
+User Input/Topic: {context_text}
+
+Task: {task_description}
+Expected Output: {task.expected_output}
+
+IMPORTANT: Your response must be about the user's input/topic above. Incorporate it into your task."""
+    else:
+        task_prompt = f"""
+You need to do the following task: {task_description}.
+Expected Output: {task.expected_output}."""
+
+    # Add memory context if available
+    if task.memory:
+        try:
+            # Use cache-optimized context if available for better prompt caching
+            if hasattr(task.memory, 'build_cache_optimized_context'):
+                try:
+                    cache_result = task.memory.build_cache_optimized_context(
+                        task_descr=task.description,
+                        include_cache_boundary=False  # Don't include boundary for agent task context
+                    )
+                    memory_context = cache_result.get('stable_prefix', '')
+                except Exception as e:
+                    # Fall back to standard context building
+                    logger.debug(f"Cache-optimized context failed for task '{task.description or task.id}', falling back to standard: {e}")
+                    memory_context = task.memory.build_context_for_task(task.description)
+            else:
+                memory_context = task.memory.build_context_for_task(task.description)
+            if memory_context:
+                # Log detailed memory context for debugging
+                logger.debug(f"Memory context for task '{task.description}': {memory_context}")
+                # Include actual memory content without verbose headers (essential for AI agent functionality)
+                task_prompt += f"\n\n{memory_context}"
+        except Exception as e:
+            logger.error(f"Error getting memory context: {e}")
+
+    task_prompt += "\nPlease provide only the final result of your work. Do not add any conversation or extra explanation."
+    return task_prompt
+
+def _execute_with_agent_sync(executor_agent, task_prompt, task, tools, stream=None):
+    """
+    Execute task with agent synchronously (DRY helper).
+    """
+    if task.images:
+        return executor_agent.chat(
+            get_multimodal_message(task_prompt, task.images),
+            tools=tools,
+            output_json=task.output_json,
+            output_pydantic=task.output_pydantic,
+            stream=stream,
+            task_name=task.name,
+            task_description=task.description,
+            task_id=task.id
+        )
+    else:
+        return executor_agent.chat(
+            task_prompt,
+            tools=tools,
+            output_json=task.output_json,
+            output_pydantic=task.output_pydantic,
+            stream=stream,
+            task_name=task.name,
+            task_description=task.description,
+            task_id=task.id
+        )
+
+async def _execute_with_agent_async(executor_agent, task_prompt, task, tools, stream=None):
+    """
+    Execute task with agent asynchronously (DRY helper).
+    """
+    if task.images:
+        return await executor_agent.achat(
+            get_multimodal_message(task_prompt, task.images),
+            tools=tools,
+            output_json=task.output_json,
+            output_pydantic=task.output_pydantic,
+            stream=stream,
+            task_name=task.name,
+            task_description=task.description,
+            task_id=task.id
+        )
+    else:
+        return await executor_agent.achat(
+            task_prompt,
+            tools=tools,
+            output_json=task.output_json,
+            output_pydantic=task.output_pydantic,
+            stream=stream,
+            task_name=task.name,
+            task_description=task.description,
+            task_id=task.id
+        )
+
+
+def _build_execution_context(agents_instance, task_id, skip_memory_init=False):
+    """
+    Build unified execution context for task execution (DRY helper).
+    Eliminates duplication between sync/async execution paths.
+
+    Args:
+        skip_memory_init: When True, skip the synchronous ``initialize_memory()``
+            call. The async path (``aexecute_task``) already attempts
+            ``initialize_memory_async()`` beforehand, so this avoids blocking the
+            event loop on a synchronous ``Memory()`` construction (and a
+            duplicate backend attempt) if that async init failed.
+    """
+    from .protocols import ExecutionContext
+    
+    task = agents_instance.tasks[task_id]
+    
+    # Initialize memory before task execution. The async path (aexecute_task)
+    # already attempts initialize_memory_async() and passes skip_memory_init=True
+    # so we never block the event loop on a synchronous Memory() construction.
+    if not task.memory and not skip_memory_init:
+        task.memory = task.initialize_memory()
+
+    executor_agent = task.agent
+    
+    # Create agent from agent_config if provided and no agent assigned
+    if executor_agent is None and getattr(task, 'agent_config', None):
+        executor_agent = agents_instance._create_agent_from_config(task.agent_config)
+        task.agent = executor_agent
+    
+    # Validate executor agent exists
+    if executor_agent is None:
+        raise ValueError(
+            f"Task {task_id} has no assigned agent. "
+            "Set task.agent or provide task.agent_config before execution."
+        )
+    
+    # Set current agent for token tracking.
+    # Prefer the real LLM instance (executor_agent.llm is always a model-name
+    # string, so it never exposes set_current_agent/last_token_metrics).
+    llm = getattr(executor_agent, 'llm_instance', None)
+    if llm is None:
+        llm = getattr(executor_agent, 'llm', None)
+    if llm and hasattr(llm, 'set_current_agent'):
+        llm.set_current_agent(executor_agent.display_name)
+
+    # Place the agent's tools BEFORE snapshotting them. This snapshot is passed
+    # to chat() as an explicit `tools=`, which wins over `agent.tools` -- so if
+    # the sandbox attaches later (inside chat()), the model is handed the
+    # pre-attach list and every tool runs on the host while a sandbox sits
+    # provisioned and unused. Silent, and worse than it sounds: in
+    # start_for_each() row 1 got local tools and row 2 got the bridged set,
+    # because row 1's chat() mutated agent.tools in time for row 2's snapshot.
+    if executor_agent is not None and getattr(executor_agent, "tools_run_on", None) is not None:
+        from ..agent.tools_placement import ensure_tools_placed
+
+        ensure_tools_placed(executor_agent)
+
+    # Ensure tools are available from both task and agent (create copy to avoid mutation)
+    tools = list(task.tools or [])
+    if executor_agent and executor_agent.tools:
+        tools.extend(executor_agent.tools)
+
+    # Substitute variables in task description if provided
+    task_description = task.description
+    variables = getattr(task, 'variables', None) or getattr(agents_instance, 'variables', None) or {}
+    for key, value in variables.items():
+        task_description = task_description.replace(f"{{{{{key}}}}}", str(value))
+
+    # Build context first to include in task prompt
+    context_text = ""
+    # Inter-task context / validation feedback assembled by the workflow process
+    # engine (Process._build_task_context) is stored on the task; fold it in so
+    # downstream/retried tasks actually see upstream output and rejection reasons.
+    extra_context = getattr(task, '_execution_context', None)
+    if extra_context:
+        context_text = extra_context
+        # NOTE: We intentionally do NOT clear _execution_context here. Task
+        # retries (guardrail/completion failures) re-enter this helper via the
+        # run_task/arun_task retry loops, and clearing would strip the upstream
+        # output + validation feedback the retry needs. The Process engine owns
+        # this field's lifecycle: it re-sets it before each task yield and resets
+        # every task's _execution_context to None before selecting the next task.
+    if task.context:
+        context_results = []  # Collect contexts then de-duplicate
+        for context_item in task.context:
+            # Use the centralized helper function
+            context_str = process_task_context(context_item, agents_instance.verbose, agents_instance.user_id)
+            # Only add non-empty context strings
+            if context_str and context_str.strip():
+                context_results.append(context_str)
+        
+        # Join unique context results with proper formatting
+        unique_contexts = list(dict.fromkeys(context_results))  # Remove duplicates
+        if agents_instance.verbose >= 3:
+            logger.info(f"Task {task_id} context items: {len(unique_contexts)}")
+            for i, ctx in enumerate(unique_contexts):
+                logger.debug(f"Context {i+1}: {ctx[:100]}...")
+        context_separator = '\n\n'
+        joined_contexts = context_separator.join(unique_contexts)
+        if context_text and joined_contexts:
+            context_text = context_text + context_separator + joined_contexts
+        elif joined_contexts:
+            context_text = joined_contexts
+    
+    # Build task prompt using DRY helper
+    task_prompt = _prepare_task_prompt(task, task_description, context_text)
+
+    if agents_instance.verbose >= 2:
+        logger.info(f"Executing task {task_id}: {task_description} using {executor_agent.display_name}")
+    logger.debug(f"Starting execution of task {task_id} with prompt:\n{task_prompt}")
+
+    return ExecutionContext(
+        task_id=task_id,
+        task=task,
+        executor_agent=executor_agent,
+        tools=tools,
+        task_description=task_description,
+        context_text=context_text,
+        task_prompt=task_prompt,
+        llm=llm,
+        verbose=agents_instance.verbose,
+        stream=agents_instance.stream,
+        user_id=agents_instance.user_id
+    )
+
+
+def _process_task_result(agents_instance, context, agent_output):
+    """
+    Process task execution result (DRY helper).
+    Eliminates duplication in result processing between sync/async paths.
+    """
+    from .protocols import TaskResult
+    
+    task = context.task
+    task_id = context.task_id
+    executor_agent = context.executor_agent
+    llm = context.llm
+    
+    if agent_output:
+        # Store the response in memory
+        if task.memory:
+            try:
+                task.store_in_memory(
+                    content=agent_output,
+                    agent_name=executor_agent.display_name,
+                    task_id=task_id
+                )
+            except Exception as e:
+                logger.error(f"Failed to store agent output in memory: {e}")
+
+        task_output = TaskOutput(
+            description=task.description,
+            summary=task.description[:10],
+            raw=agent_output,
+            agent=executor_agent.display_name,
+            output_format="RAW"
+        )
+        
+        # Add token metrics if available
+        if llm and hasattr(llm, 'last_token_metrics'):
+            token_metrics = llm.last_token_metrics
+            if token_metrics:
+                task_output.token_metrics = token_metrics
+
+        cleaned = agent_output
+        if task.output_json or task.output_pydantic:
+            try:
+                cleaned = agents_instance.clean_json_output(agent_output)
+            except Exception as e:
+                logger.warning(f"Warning: Could not clean output of task {task_id}: {e}")
+
+        json_parse_error = None
+        pydantic_parse_error = None
+
+        if task.output_json:
+            try:
+                parsed = json.loads(cleaned)
+                task_output.json_dict = parsed
+                task_output.output_format = "JSON"
+            except Exception as e:
+                json_parse_error = e
+                logger.warning(f"Warning: Could not parse output of task {task_id} as JSON: {e}")
+                logger.debug(f"Output that failed JSON parsing: {agent_output}")
+
+        if task.output_pydantic:
+            try:
+                parsed = json.loads(cleaned)
+                if hasattr(task.output_pydantic, "model_validate"):
+                    pyd_obj = task.output_pydantic.model_validate(parsed)
+                else:
+                    pyd_obj = task.output_pydantic(**parsed)
+                task_output.pydantic = pyd_obj
+                task_output.output_format = "Pydantic"
+            except Exception as e:
+                pydantic_parse_error = e
+                schema_name = getattr(task.output_pydantic, "__name__", str(task.output_pydantic))
+                logger.warning(
+                    f"Warning: Could not parse output of task {task_id} as Pydantic Model "
+                    f"({schema_name}): {e}"
+                )
+                logger.debug(f"Output that failed Pydantic parsing: {agent_output}")
+
+        task.result = task_output
+
+        # Fail-closed: when structured output was requested but not produced,
+        # the task did not fulfil its contract. Surface it as a failed result so
+        # callers relying on TaskResult.success (and the retry loop, which uses
+        # completion_checker) do not treat freeform prose as a success.
+        if task.output_pydantic and task_output.pydantic is None:
+            schema_name = getattr(task.output_pydantic, "__name__", str(task.output_pydantic))
+            detail = f" ({pydantic_parse_error})" if pydantic_parse_error is not None else ""
+            return TaskResult(
+                task_output=task_output,
+                success=False,
+                error=f"Structured output validation failed for {schema_name}: could not parse agent output as the requested Pydantic model.{detail}",
+            )
+        if task.output_json and task_output.json_dict is None:
+            detail = f" ({json_parse_error})" if json_parse_error is not None else ""
+            return TaskResult(
+                task_output=task_output,
+                success=False,
+                error=f"Structured output validation failed: could not parse agent output as JSON.{detail}",
+            )
+
+        return TaskResult(task_output=task_output, success=True)
+    else:
+        task.status = "failed"
+        return TaskResult(task_output=None, success=False, error="Agent did not produce any output.")
+
+def process_task_context(context_item, verbose=0, user_id=None):
+    """
+    Process a single context item for task execution.
+    This helper function avoids code duplication between async and sync execution methods.
+    Args:
+        context_item: The context item to process (can be string, list, task object, or dict)
+        verbose: Verbosity level for logging
+        user_id: User ID for database queries
+        
+    Returns:
+        str: Formatted context string for this item
+    """
+    if isinstance(context_item, str):
+        return f"Input Content:\n{context_item}"
+    elif isinstance(context_item, list):
+        return f"Input Content: {' '.join(str(x) for x in context_item)}"
+    elif hasattr(context_item, 'result'):  # Task object
+        # Ensure the previous task is completed before including its result
+        task_status = getattr(context_item, 'status', None)
+        task_name = context_item.name if context_item.name else context_item.description
+        
+        if context_item.result and task_status == TaskStatus.COMPLETED.value:
+            # Log detailed result for debugging
+            logger.debug(f"Previous task '{task_name}' result: {context_item.result.raw}")
+            # Return actual result content without verbose label (essential for task chaining)
+            return context_item.result.raw
+        elif task_status == TaskStatus.COMPLETED.value and not context_item.result:
+            return ""  # No result to include
+        else:
+            return ""  # Task not completed, no context to include
+    elif isinstance(context_item, dict) and ("vector_store" in context_item or "embedding_db_config" in context_item):
+        from ..knowledge.knowledge import Knowledge
+        try:
+            # Handle both string and dict configs - support both vector_store and embedding_db_config keys for backward compatibility
+            cfg = context_item.get("vector_store") or context_item.get("embedding_db_config")
+            if isinstance(cfg, str):
+                cfg = json.loads(cfg)
+            
+            knowledge = Knowledge(config={"vector_store": cfg}, verbose=verbose)
+            
+            # Only use user_id as filter
+            db_results = knowledge.search(
+                context_item.get("query", ""),  # Use query from context if available
+                user_id=user_id if user_id else None
+            )
+            
+            # Log knowledge results for debugging (always available for troubleshooting)
+            logger.debug(f"Knowledge search results ({len(db_results)} items): {str(db_results)}")
+            
+            # Return actual content without verbose "[DB Context]:" prefix
+            return str(db_results)
+        except Exception as e:
+            # Log error for debugging (always available for troubleshooting)
+            logger.debug(f"Vector DB Error: {e}")
+            
+            # Return empty string to avoid exposing error details in AI prompts
+            # Error details are preserved in debug logs for troubleshooting
+            return ""
+    else:
+        return str(context_item)  # Fallback for unknown types
+
+class AgentTeam(SpawnAnnounceProtocol):
+    """
+    Multi-agent coordinator that manages and delegates work to multiple agents.
+    
+    AgentTeam orchestrates the execution of tasks across multiple Agent instances,
+    supporting sequential, parallel, and hierarchical execution patterns.
+    
+    Example:
+        from praisonaiagents import Agent, AgentTeam, Task
+        
+        researcher = Agent(role="Researcher", instructions="Research topics")
+        writer = Agent(role="Writer", instructions="Write content")
+        
+        task1 = Task(description="Research AI trends", agent=researcher)
+        task2 = Task(description="Write article", agent=writer)
+        
+        team = AgentTeam(
+            agents=[researcher, writer],
+            tasks=[task1, task2],
+            process="sequential"
+        )
+        result = team.start()
+    
+    Note:
+        The class was renamed from `AgentManager` to `AgentTeam` in v1.0.
+        `AgentManager` and `Agents` remain as silent aliases for backward compatibility.
+    """
+    
+    def __init__(
+        self,
+        agents,
+        tasks=None,
+        process="sequential",
+        manager_llm=None,
+        name: Optional[str] = None,
+        variables: Optional[Dict[str, Any]] = None,
+        llm: Optional[str] = None,  # Deprecated alias for model=
+        model: Optional[str] = None,  # Default model for members that did not name one
+        # Consolidated feature params (agent-centric API)
+        memory: Optional[Any] = False,  # Union[bool, MultiAgentMemoryConfig]
+        planning: Optional[Any] = False,  # Union[bool, MultiAgentPlanningConfig]
+        context: Optional[Any] = False,  # Union[bool, ManagerConfig, ContextManager]
+        output: Optional[Any] = None,  # Union[str, MultiAgentOutputConfig]
+        execution: Optional[Any] = None,  # Union[str, MultiAgentExecutionConfig]
+        hooks: Optional[Any] = None,  # MultiAgentHooksConfig
+        # Additional consolidated params for feature parity with Agent
+        autonomy: Optional[Any] = None,  # Union[bool, AutonomyConfig] - agent autonomy
+        knowledge: Optional[Any] = None,  # Union[bool, List[str], KnowledgeConfig] - RAG
+        guardrails: Optional[Any] = None,  # Union[bool, Callable, GuardrailConfig] - validation
+        web: Optional[Any] = None,  # Union[bool, WebConfig] - web search/fetch
+        reflection: Optional[Any] = None,  # Union[bool, ReflectionConfig] - self-reflection
+        caching: Optional[Any] = None,  # Union[bool, CachingConfig] - caching
+        learn: Optional[Any] = None,  # Union[bool, LearnConfig] - continuous learning
+        # Union[str, ComputeProviderProtocol] - where every agent's shell/file
+        # tools run: "docker", "e2b", "modal", "daytona", "flyio", "tenki",
+        # "local", "subprocess", "sandlock", "ssh", "novita". The team shares
+        # ONE sandbox and one working directory, so files written by one agent
+        # are visible to the others. Orchestration and thinking stay local.
+        # Pass a configured provider instance to customise resources.
+        tools_run_on: Optional[Any] = None,
+        # Accepted only to fail with a useful message -- see resolve_placement.
+        run_on: Optional[Any] = None,
+    ):
+        """
+        Initialize AgentManager with consolidated feature parameters.
+        
+        Args:
+            agents: List of Agent instances
+            tasks: Optional list of Task instances (auto-generated from agents if None)
+            process: Execution process type ("sequential", "workflow", "hierarchical").
+                For parallel fan-out, set async_execution=True on individual Task
+                objects within a "workflow" or "sequential" process.
+            manager_llm: Model for the hierarchical manager agent. Unrelated to
+                model=/llm=; it never touches the members.
+            llm: Deprecated alias for model=. Passing both raises TypeError.
+            model: Default model for members that did not name one themselves.
+                An agent constructed with its own llm=/model=/auth= keeps it.
+            name: Name for this agent collection
+            variables: Global variables for substitution
+            memory: Memory configuration (bool | MultiAgentMemoryConfig)
+            planning: Planning configuration (bool | MultiAgentPlanningConfig)
+            context: Context management (bool | ManagerConfig | ContextManager)
+            output: Output configuration (str | MultiAgentOutputConfig)
+            execution: Execution configuration (str | MultiAgentExecutionConfig)
+            hooks: Hooks configuration (MultiAgentHooksConfig)
+            autonomy: Autonomy configuration (bool | AutonomyConfig)
+            knowledge: Knowledge/RAG configuration (bool | List[str] | KnowledgeConfig)
+            guardrails: Guardrails configuration (bool | Callable | GuardrailConfig)
+            web: Web search/fetch configuration (bool | WebConfig)
+            reflection: Self-reflection configuration (bool | ReflectionConfig)
+            learn: Continuous learning configuration (bool | LearnConfig)
+        """
+        # Store new params for propagation to agents
+        self._learn = learn
+        # model= is the canonical name; llm= is the deprecated alias. Passing
+        # both is refused rather than silently resolved (see resolve_model_alias).
+        # The resolved value is the default model for the members: applied to
+        # every agent that never named a model of its own; an agent that did
+        # keeps it. Same rule AgentFlow uses for the agents it builds.
+        # Must UNWRAP, not just alias-resolve: this value is pushed into every
+        # member via _apply_default_llm, and a member holding an LLMConfig fails
+        # inside chat() with "'LLMConfig' object has no attribute 'lower'".
+        from ..utils.model_alias import resolve_model_name
+        self.llm = resolve_model_name(llm, model, type(self).__name__)
+        if self.llm:
+            for _member in (agents.values() if isinstance(agents, dict) else (agents or [])):
+                _apply = getattr(_member, "_apply_default_llm", None)
+                if callable(_apply):
+                    _apply(self.llm)
+        self._autonomy = autonomy
+        self._knowledge = knowledge
+        self._guardrails = guardrails
+        self._web = web
+        self._reflection = reflection
+        self._caching = caching
+        # Warn about params that are accepted for API symmetry with Agent but are
+        # not yet applied at the team level, so a truthy value stops being a silent
+        # no-op. Pass these to individual Agent(...) instances instead.
+        _unwired = {
+            "guardrails": guardrails, "web": web, "reflection": reflection,
+            "caching": caching, "learn": learn, "knowledge": knowledge,
+        }
+        _set = [k for k, v in _unwired.items() if v]
+        if _set:
+            logging.warning(
+                f"AgentTeam received {_set} but does not yet apply them at the team "
+                "level; pass these to individual Agent(...) instances instead."
+            )
+        # ─────────────────────────────────────────────────────────────────────
+        # Extract values from consolidated params using UNIFIED CANONICAL resolver
+        # Precedence: Instance > Config > Dict > Array > String > Bool > Default
+        # ─────────────────────────────────────────────────────────────────────
+        
+        # Import canonical resolver and presets
+        from ..config.param_resolver import resolve, ArrayMode
+        from ..config.presets import (
+            MULTI_AGENT_OUTPUT_PRESETS, MULTI_AGENT_EXECUTION_PRESETS,
+            MEMORY_PRESETS, MEMORY_URL_SCHEMES,
+        )
+        
+        # Import config classes for type checking
+        try:
+            from ..config.feature_configs import (
+                MultiAgentMemoryConfig, MultiAgentPlanningConfig,
+                MultiAgentOutputConfig, MultiAgentExecutionConfig,
+                MultiAgentHooksConfig
+            )
+        except ImportError:
+            MultiAgentMemoryConfig = None
+            MultiAgentPlanningConfig = None
+            MultiAgentOutputConfig = None
+            MultiAgentExecutionConfig = None
+            MultiAgentHooksConfig = None
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # Resolve OUTPUT param using canonical resolver
+        # Supports: None, str preset, list [preset, overrides], Config, dict
+        # ─────────────────────────────────────────────────────────────────────
+        _output_config = resolve(
+            value=output,
+            param_name="output",
+            config_class=MultiAgentOutputConfig,
+            presets=MULTI_AGENT_OUTPUT_PRESETS,
+            array_mode=ArrayMode.PRESET_OVERRIDE,
+            default=MultiAgentOutputConfig() if MultiAgentOutputConfig else None,
+        )
+        if _output_config and hasattr(_output_config, 'verbose'):
+            _verbose = _output_config.verbose
+            _stream = _output_config.stream
+        else:
+            _verbose = 0
+            _stream = False
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # Resolve EXECUTION param using canonical resolver
+        # Supports: None, str preset, list [preset, overrides], Config, dict
+        # ─────────────────────────────────────────────────────────────────────
+        _exec_config = resolve(
+            value=execution,
+            param_name="execution",
+            config_class=MultiAgentExecutionConfig,
+            presets=MULTI_AGENT_EXECUTION_PRESETS,
+            array_mode=ArrayMode.PRESET_OVERRIDE,
+            default=MultiAgentExecutionConfig() if MultiAgentExecutionConfig else None,
+        )
+        if _exec_config and hasattr(_exec_config, 'max_iter'):
+            _max_iter = _exec_config.max_iter
+            _max_retries = _exec_config.max_retries
+        else:
+            _max_iter = 10
+            _max_retries = 5
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # Resolve HOOKS param using canonical resolver
+        # Supports: None, list, Config, dict
+        # ─────────────────────────────────────────────────────────────────────
+        _hooks_config = resolve(
+            value=hooks,
+            param_name="hooks",
+            config_class=MultiAgentHooksConfig,
+            array_mode=ArrayMode.PASSTHROUGH,
+            default=None,
+        )
+        if _hooks_config and hasattr(_hooks_config, 'completion_checker'):
+            _completion_checker = _hooks_config.completion_checker
+            _on_task_start = _hooks_config.on_task_start
+            _on_task_complete = _hooks_config.on_task_complete
+        else:
+            _completion_checker = None
+            _on_task_start = None
+            _on_task_complete = None
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # Resolve MEMORY param using canonical resolver
+        # Supports: None, bool, str preset/URL, list, Config, dict, Instance
+        # ─────────────────────────────────────────────────────────────────────
+        _memory_config_resolved = resolve(
+            value=memory,
+            param_name="memory",
+            config_class=MultiAgentMemoryConfig,
+            presets=MEMORY_PRESETS,
+            url_schemes=MEMORY_URL_SCHEMES,
+            instance_check=lambda v: hasattr(v, 'database_url'),
+            array_mode=ArrayMode.SINGLE_OR_LIST,
+            default=None,
+        )
+        
+        # Extract values from resolved memory config
+        _user_id = "praison"
+        _memory_config = None
+        _embedder = None
+        if _memory_config_resolved is not None:
+            if hasattr(_memory_config_resolved, 'database_url'):
+                # db() instance - pass through
+                _memory_config = {"db_instance": _memory_config_resolved}
+            elif MultiAgentMemoryConfig and isinstance(_memory_config_resolved, MultiAgentMemoryConfig):
+                _user_id = _memory_config_resolved.user_id or "praison"
+                _memory_config = _memory_config_resolved.config
+                _embedder = _memory_config_resolved.embedder
+            elif isinstance(_memory_config_resolved, dict):
+                # Dict from preset resolution
+                _memory_config = _memory_config_resolved
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # Resolve PLANNING param using canonical resolver
+        # Supports: None, bool, str LLM, list, Config, dict
+        # ─────────────────────────────────────────────────────────────────────
+        _planning_config = resolve(
+            value=planning,
+            param_name="planning",
+            config_class=MultiAgentPlanningConfig,
+            string_mode="llm_model",
+            array_mode=ArrayMode.PRESET_OVERRIDE,
+            default=None,
+        )
+        
+        # Extract values from resolved planning config
+        _planning_llm = "gpt-4o-mini"
+        _auto_approve_plan = False
+        _planning_tools = None
+        _planning_reasoning = False
+        if _planning_config is not None:
+            if MultiAgentPlanningConfig and isinstance(_planning_config, MultiAgentPlanningConfig):
+                _planning_llm = _planning_config.llm or "gpt-4o-mini"
+                _auto_approve_plan = _planning_config.auto_approve
+                _planning_tools = _planning_config.tools
+                _planning_reasoning = _planning_config.reasoning
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # Memory dependency check
+        # ─────────────────────────────────────────────────────────────────────
+        if memory:
+            try:
+                from ..memory.memory import Memory
+            except ImportError:
+                raise ImportError(
+                    "Memory features requested but memory dependencies not installed. "
+                    "Please install with: pip install \"praisonaiagents[memory]\""
+                )
+
+        if not agents:
+            raise ValueError("At least one agent must be provided")
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # Core initialization
+        # ─────────────────────────────────────────────────────────────────────
+        self.run_id = str(uuid.uuid4())
+        self.user_id = _user_id
+        self.max_iter = _max_iter
+
+        # Pass user_id and autonomy to each agent
+        for agent in agents:
+            agent.user_id = self.user_id
+            # Propagate autonomy config to agents that don't already have it
+            if self._autonomy is not None and self._autonomy is not False:
+                if not agent.autonomy_enabled:
+                    agent._init_autonomy(self._autonomy)
+
+        self.agents: List[Agent] = agents
+        self.tasks: Dict[int, Task] = {}
+        if _max_retries < 3:
+            _max_retries = 3
+        self.completion_checker = _completion_checker if _completion_checker else self.default_completion_checker
+        self.task_id_counter = 0
+        # Last user-supplied task id, tracked for hierarchical runs so the
+        # return path never surfaces the synthetic manager_task's output.
+        self._last_real_task_id = None
+        self._task_id_lock = threading.Lock()  # Thread-safe task ID assignment
+        self._state_lock = threading.Lock()  # Thread-safe state mutations
+        self.verbose = _verbose
+        self.max_retries = _max_retries
+        _VALID_PROCESSES = {"workflow", "sequential", "hierarchical"}
+        if process not in _VALID_PROCESSES:
+            raise ValueError(
+                f"Unknown process type {process!r}. Valid values are: "
+                f"{sorted(_VALID_PROCESSES)}. Note: parallel fan-out is achieved "
+                f"by setting async_execution=True on individual Task objects within "
+                f"a 'workflow' or 'sequential' process, not via process=\"parallel\"."
+            )
+        self.process = process
+        self.stream = _stream
+        self.name = name
+        # Remote execution: one shared sandbox for every agent on this team.
+        from ..agent.placement import resolve_placement
+
+        resolve_placement(
+            "AgentTeam", run_on=run_on, tools_run_on=tools_run_on,
+            supports_run_on=False,
+        )
+        self.tools_run_on = tools_run_on
+        # Kept readable rather than removed. `team.run_on` used to exist, and
+        # code doing getattr(team, "run_on", None) for introspection or
+        # serialisation would otherwise start raising AttributeError. None is
+        # the honest value: a team orchestrates locally, so nothing about it
+        # runs wholly on a managed runtime.
+        self.run_on = None
+
+        # Callbacks for workflow execution
+        self.on_task_start = _on_task_start
+        self.on_task_complete = _on_task_complete
+        self.variables = variables if variables else {}
+        
+        # Spawn-announce pattern support
+        self._spawned_agents: Dict[str, SpawnedSubAgent] = {}
+        self._completion_callbacks: Dict[str, Callable[[SubAgentCompletionEvent], Any]] = {}
+        self._completion_events: List[SubAgentCompletionEvent] = []
+        self._event_bus: Optional[EventBus] = None
+        self._spawn_lock = threading.RLock()  # Thread-safe spawn operations (reentrant)
+        self._team_id = str(uuid.uuid4())  # Unique team identifier
+        # Aggregate stream emitter (lazy). Fans in member agents' per-step
+        # StreamEventEmitter events, tagging each with the emitting agent's id,
+        # so a single consumer can attribute activity to a specific team member.
+        self.__stream_emitter = None
+        self.__stream_fanin_wired = False
+        
+        # Check for manager_llm in environment variable if not provided
+        self.manager_llm = manager_llm or os.getenv('OPENAI_MODEL_NAME', 'gpt-4o-mini')
+        
+        # Set logger level based on verbose
+        if _verbose >= 5:
+            logger.setLevel(10)  # DEBUG
+        elif _verbose >= 3:
+            logger.setLevel(20)  # INFO
+        else:
+            logger.setLevel(30)  # WARNING
+
+        # Also set third-party loggers to WARNING
+        import logging as _logging
+        get_logger('chromadb').setLevel(_logging.WARNING)
+        get_logger('openai').setLevel(_logging.WARNING)
+        get_logger('httpx').setLevel(_logging.WARNING)
+        get_logger('httpcore').setLevel(_logging.WARNING)
+
+        if self.verbose:
+            logger.info(f"Using model {self.manager_llm} for manager")
+        
+        # If no tasks provided, generate them from agents
+        if tasks is None:
+            tasks = []
+            for agent in self.agents:
+                task = agent.generate_task()
+                tasks.append(task)
+            logger.info(f"Auto-generated {len(tasks)} tasks from agents")
+        else:
+            if not tasks:
+                raise ValueError("If tasks are provided, at least one task must be present")
+            logger.info(f"Using {len(tasks)} provided tasks")
+        
+        # Add tasks and set their status
+        for task in tasks:
+            self.add_task(task)
+            task.status = "not started"
+            
+        # Set up sequential flow if needed
+        if len(tasks) > 1 and (process == "sequential" or all(task.next_tasks == [] for task in tasks)):
+            for i in range(len(tasks) - 1):
+                tasks[i].next_tasks = [tasks[i + 1].name]
+                if tasks[i + 1].context is None:
+                    tasks[i + 1].context = []
+                tasks[i + 1].context.append(tasks[i])
+            logger.info("Set up sequential flow with automatic context passing")
+        
+        self._state = {}
+        
+        # Context management
+        self._context_param = context
+        self._context_manager = None
+        self._context_manager_initialized = False
+        
+        # Planning mode
+        self.planning = planning
+        self.planning_llm = _planning_llm
+        self.auto_approve_plan = _auto_approve_plan
+        self.planning_tools = _planning_tools
+        self.planning_reasoning = _planning_reasoning
+        self._current_plan = None
+        self._todo_list = None
+        self._planning_agent = None
+        
+        # Memory system
+        self.shared_memory = None
+        if memory:
+            try:
+                from ..memory.memory import Memory
+                
+                mem_cfg = _memory_config
+                if not mem_cfg:
+                    mem_cfg = next((t.config.get('memory_config') for t in tasks if hasattr(t, 'config') and t.config), None)
+                if not mem_cfg:
+                    from ..paths import get_project_data_dir
+                    _pd = str(get_project_data_dir())
+                    mem_cfg = {
+                        "provider": "rag",
+                        "use_embedding": True,
+                        "storage": {
+                            "type": "sqlite",
+                            "path": f"{_pd}/memory.db"
+                        },
+                        "rag_db_path": f"{_pd}/chroma_db"
+                    }
+                if _embedder:
+                    if isinstance(_embedder, dict):
+                        mem_cfg = mem_cfg or {}
+                        mem_cfg["embedder"] = _embedder
+                    else:
+                        mem_cfg = mem_cfg or {}
+                        mem_cfg["embedder_function"] = _embedder
+
+                if mem_cfg:
+                    self.shared_memory = Memory(config=mem_cfg, verbose=_verbose)
+                    if _verbose >= 5:
+                        logger.info("Initialized shared memory for Agents")
+                    for task in tasks:
+                        if not task.memory:
+                            task.memory = self.shared_memory
+                            if _verbose >= 5:
+                                logger.info(f"Assigned shared memory to task {task.id}")
+            except Exception as e:
+                logger.error(f"Failed to initialize shared memory: {e}")
+        
+        if self.shared_memory:
+            for task in tasks:
+                    task.memory = self.shared_memory
+                    logger.info(f"Assigned shared memory to task {task.id}")
+
+        # Telemetry
+        try:
+            from ..telemetry import get_telemetry
+            self._telemetry = get_telemetry()
+        except (ImportError, AttributeError):
+            self._telemetry = None
+
+    @property
+    def stream_emitter(self):
+        """Aggregate ``StreamEventEmitter`` fanning in member agents' events.
+
+        Lazily created on first access. On creation it registers a forwarding
+        callback on each member agent's own ``stream_emitter`` so per-step
+        events (tool calls, text/reasoning deltas, retries, errors) surface on a
+        single team-level emitter, each tagged with the emitting agent's
+        ``agent_id``. This gives a single attach point (e.g. the CLI
+        ``--output stream-json`` bridge) parity with single-agent runs.
+
+        Zero-overhead when unused: nothing is wired unless this property is
+        accessed, and forwarding only tags ``agent_id`` when the source event
+        did not already carry one.
+        """
+        if self.__stream_emitter is None:
+            try:
+                from ..streaming.events import StreamEventEmitter
+            except ImportError:
+                return None
+            self.__stream_emitter = StreamEventEmitter()
+        if not self.__stream_fanin_wired:
+            self._wire_stream_fanin()
+        return self.__stream_emitter
+
+    def _wire_stream_fanin(self):
+        """Forward each member agent's stream events onto the team emitter.
+
+        Best-effort and idempotent: an agent whose emitter is unavailable is
+        skipped, and a forwarding callback is attached at most once per team.
+        """
+        team_emitter = self.__stream_emitter
+        if team_emitter is None:
+            return
+        self.__stream_fanin_wired = True
+        for agent in self.agents:
+            member_emitter = getattr(agent, "stream_emitter", None)
+            if member_emitter is None or not hasattr(member_emitter, "add_callback"):
+                continue
+            agent_id = getattr(agent, "agent_id", None) or getattr(agent, "display_name", None)
+            member_emitter.add_callback(self._make_fanin_callback(team_emitter, agent_id))
+
+    @staticmethod
+    def _make_fanin_callback(team_emitter, agent_id):
+        """Build a callback that re-emits an event on the team emitter."""
+        def _forward(event):
+            try:
+                if agent_id is not None and getattr(event, "agent_id", None) is None:
+                    try:
+                        event.agent_id = agent_id
+                    except (AttributeError, TypeError):
+                        pass
+                team_emitter.emit(event)
+            except Exception:
+                logger.debug("AgentTeam stream fan-in forward failed", exc_info=True)
+        return _forward
+
+    def add_task(self, task):
+        with self._task_id_lock:
+            task_id = self.task_id_counter
+            task.id = task_id
+            self.tasks[task_id] = task
+            self.task_id_counter += 1
+            return task_id
+
+    def _last_hierarchical_task_id(self):
+        """Return the last user-supplied task id before hierarchical injection.
+
+        The hierarchical process injects a synthetic ``manager_task`` that always
+        lands last in the insertion-ordered ``self.tasks`` dict. Snapshotting the
+        real task ids up front lets the return path surface the final delegated
+        task's result instead of the Manager's own generic answer.
+
+        A ``manager_task`` from a prior run of the same team can still be present
+        in ``self.tasks`` (it is not removed after a run), so it is explicitly
+        skipped here; otherwise a second ``.start()`` would return the previous
+        run's Manager output instead of the final user-task result.
+        """
+        for task_id in reversed(self.tasks):
+            task = self.tasks.get(task_id)
+            if getattr(task, "name", None) == "manager_task":
+                continue
+            return task_id
+        return None
+
+    def clean_json_output(self, output: str) -> str:
+        """Clean JSON output while preserving the legacy team method."""
+        from ..main import clean_triple_backticks
+
+        return clean_triple_backticks(output)
+
+    @property
+    def context_manager(self):
+        """
+        ContextManager instance for unified context management across all agents.
+        
+        Lazy initialized on first access when context=True or context=ManagerConfig.
+        Returns None when context=False (zero overhead).
+        
+        For multi-agent scenarios, uses MultiAgentContextManager for per-agent isolation.
+        """
+        if self._context_manager_initialized:
+            return self._context_manager
+        
+        # Initialize based on context param type
+        if self._context_param is False or self._context_param is None:
+            # Zero overhead - no context management
+            self._context_manager = None
+            self._context_manager_initialized = True
+            return None
+        
+        # Lazy import to avoid overhead when not used
+        try:
+            from ..context import MultiAgentContextManager, ManagerConfig
+        except ImportError:
+            # Context module not available
+            self._context_manager = None
+            self._context_manager_initialized = True
+            return None
+        
+        if self._context_param is True:
+            # Enable with safe defaults for multi-agent
+            self._context_manager = MultiAgentContextManager()
+        elif isinstance(self._context_param, ManagerConfig):
+            # Use provided config for all agents
+            self._context_manager = MultiAgentContextManager(config=self._context_param)
+        elif hasattr(self._context_param, 'get_agent_manager'):
+            # Already a MultiAgentContextManager instance
+            self._context_manager = self._context_param
+        else:
+            # Unknown type, disable
+            self._context_manager = None
+        
+        self._context_manager_initialized = True
+        return self._context_manager
+
+    def default_completion_checker(self, task, agent_output):
+        # Fail-closed for structured output: if a structured model was requested
+        # but not produced, the task is NOT complete. Returning False here drives
+        # the existing retry loop and, once retries are exhausted, leaves the task
+        # in a "failed" state instead of silently succeeding with freeform prose.
+        if task.output_json:
+            return task.result is not None and task.result.json_dict is not None
+        if task.output_pydantic:
+            return task.result is not None and task.result.pydantic is not None
+        return len(agent_output.strip()) > 0
+
+    async def aexecute_task(self, task_id):
+        """Async version of execute_task method - now using DRY helpers"""
+        if task_id not in self.tasks:
+            display_error(f"Error: Task with ID {task_id} does not exist")
+            return
+        task = self.tasks[task_id]
+        
+        # Only import multimodal dependencies if task has images
+        if task.images and task.status == "not started":
+            try:
+                import cv2  # noqa: F401 - availability check
+                import base64  # noqa: F401 - availability check
+                from moviepy import VideoFileClip  # noqa: F401 - availability check
+            except ImportError as e:
+                display_error(f"Error: Missing required dependencies for image/video processing: {e}")
+                display_error("Please install with: pip install opencv-python moviepy")
+                task.status = "failed"
+                return None
+
+        if task.status == "not started":
+            task.status = "in progress"
+
+        # Initialize memory asynchronously to avoid blocking the event loop on
+        # synchronous Memory() construction. The shared helper's own
+        # `if not task.memory:` guard makes this a safe no-op for the sync path.
+        if not task.memory:
+            await task.initialize_memory_async()
+
+        # Build execution context using DRY helper. skip_memory_init=True prevents
+        # the helper from falling back to the *synchronous* initialize_memory()
+        # (which would block the event loop and duplicate a failed backend attempt)
+        # when the async init above did not populate task.memory.
+        context = _build_execution_context(self, task_id, skip_memory_init=True)
+
+        # Execute with agent using DRY helper
+        agent_output = await _execute_with_agent_async(
+            context.executor_agent, context.task_prompt, context.task, 
+            context.tools, stream=self.stream
+        )
+
+        # Process result using DRY helper
+        task_result = _process_task_result(self, context, agent_output)
+        return task_result.task_output
+
+    def _apply_task_guardrail(self, task, task_id, task_output):
+        """Apply guardrail validation to task output.
+        
+        Returns:
+            tuple: (task_output, should_retry) where should_retry is True if task should be retried
+            
+        Raises:
+            Exception: If guardrail validation fails after max retries
+        """
+        if not task._guardrail_fn:
+            return task_output, False
+            
+        try:
+            guardrail_result = task._process_guardrail(task_output)
+            if not guardrail_result.success:
+                if task.retry_count >= task.max_retries:
+                    raise Exception(
+                        f"Task failed guardrail validation after {task.max_retries} retries. "
+                        f"Last error: {guardrail_result.error}"
+                    )
+                
+                task.retry_count += 1
+                task.status = "in progress"  # Keep task in progress for retry
+                logger.warning(f"Task {task_id}: Guardrail validation failed (retry {task.retry_count}/{task.max_retries}): {guardrail_result.error}")
+                return task_output, True  # Signal retry needed
+            
+            # If guardrail passed and returned a modified result
+            if guardrail_result.result is not None:
+                if isinstance(guardrail_result.result, str):
+                    # Update the task output with the modified result
+                    task_output.raw = guardrail_result.result
+                    # Clear structured fields to avoid stale cache
+                    if hasattr(task_output, 'json_dict'):
+                        task_output.json_dict = None
+                    if hasattr(task_output, 'pydantic'):
+                        task_output.pydantic = None
+                    task.result = task_output
+                elif hasattr(guardrail_result.result, 'raw'):
+                    # Replace with the new task output
+                    task_output = guardrail_result.result
+                    task.result = task_output
+            
+            logger.info(f"Task {task_id}: Guardrail validation passed")
+            return task_output, False  # No retry needed
+            
+        except Exception as e:
+            logger.error(f"Task {task_id}: Error in guardrail processing: {e}")
+            # Handle guardrail failure with retry logic
+            if task.retry_count >= task.max_retries:
+                raise Exception(
+                    f"Task failed due to guardrail processing error after {task.max_retries} retries. "
+                    f"Last error: {e}"
+                ) from e
+            task.retry_count += 1
+            task.status = "in progress"
+            logger.warning(f"Task {task_id}: Guardrail processing error (retry {task.retry_count}/{task.max_retries}): {e}")
+            return task_output, True  # Signal retry needed
+
+    def _run_task_start_hook(self, task, task_id):
+        """Run the on_task_start hook and propagate global variables to the task.
+
+        Shared by run_task (sync) and arun_task (async) so the lifecycle hooks
+        and variable propagation stay consistent across both paths.
+        """
+        if self.on_task_start:
+            try:
+                self.on_task_start(task, task_id)
+            except Exception as e:
+                logger.error(f"Error in on_task_start callback: {e}")
+
+        # Apply global variables to task if not already set. Use a shallow copy so a
+        # task mutating its variables doesn't leak back into the shared AgentTeam state.
+        if self.variables and not getattr(task, 'variables', None):
+            task.variables = self.variables.copy()
+
+    def _run_task_complete_hook(self, task, task_output):
+        """Run the on_task_complete hook. Shared by run_task and arun_task."""
+        if self.on_task_complete:
+            try:
+                self.on_task_complete(task, task_output)
+            except Exception as e:
+                logger.error(f"Error in on_task_complete callback: {e}")
+
+    async def _arun_task_start_hook(self, task, task_id):
+        """Async-aware on_task_start hook for arun_task.
+
+        Awaits coroutine callbacks and offloads synchronous ones to the executor so
+        a blocking hook can't stall the event loop. Falls back to the sync helper's
+        variable propagation.
+        """
+        if self.on_task_start:
+            try:
+                if asyncio.iscoroutinefunction(self.on_task_start):
+                    await self.on_task_start(task, task_id)
+                else:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, self.on_task_start, task, task_id)
+            except Exception as e:
+                logger.error(f"Error in on_task_start callback: {e}")
+
+        if self.variables and not getattr(task, 'variables', None):
+            task.variables = self.variables.copy()
+
+    async def _arun_task_complete_hook(self, task, task_output):
+        """Async-aware on_task_complete hook for arun_task (see _arun_task_start_hook)."""
+        if self.on_task_complete:
+            try:
+                if asyncio.iscoroutinefunction(self.on_task_complete):
+                    await self.on_task_complete(task, task_output)
+                else:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, self.on_task_complete, task, task_output)
+            except Exception as e:
+                logger.error(f"Error in on_task_complete callback: {e}")
+
+
+    async def arun_task(self, task_id):
+        """Async version of run_task method"""
+        if task_id not in self.tasks:
+            display_error(f"Error: Task with ID {task_id} does not exist")
+            return
+        task = self.tasks[task_id]
+        if task.status == "completed":
+            logger.info(f"Task with ID {task_id} is already completed")
+            return
+
+        # Call on_task_start callback and propagate variables (async-aware, mirrors run_task)
+        await self._arun_task_start_hook(task, task_id)
+
+        # Use per-task max_retries if available
+        task_max = getattr(task, "max_retries", self.max_retries)
+        retries = 0
+        while task.status != "completed" and retries < task_max:
+            logger.debug(f"Attempt {retries+1} for task {task_id}")
+            if task.status in ["not started", "in progress"]:
+                task_output = await self.aexecute_task(task_id)
+                if task_output and self.completion_checker(task, task_output.raw):
+                    # Apply guardrail validation using shared helper
+                    task_output, should_retry = self._apply_task_guardrail(task, task_id, task_output)
+                    if should_retry:
+                        retries += 1
+                        continue
+                    
+                    task.status = "completed"
+                    # Run execute_callback for memory operations
+                    try:
+                        await task.execute_callback(task_output)
+                    except Exception as e:
+                        logger.error(f"Error executing memory callback for task {task_id}: {e}")
+                        logger.exception(e)
+                        # Respect task failure policies - re-raise if configured
+                        if hasattr(task, 'fail_on_callback_error') and task.fail_on_callback_error:
+                            raise
+                        if hasattr(task, 'fail_on_memory_error') and task.fail_on_memory_error:
+                            raise
+                            
+                    self.save_output_to_file(task, task_output)
+
+                    # Call on_task_complete callback (async-aware, mirrors run_task)
+                    await self._arun_task_complete_hook(task, task_output)
+
+                    if self.verbose >= 1:
+                        logger.info(f"Task {task_id} completed successfully.")
+                else:
+                    task.status = "in progress"
+                    if self.verbose >= 1:
+                        logger.info(f"Task {task_id} not completed, retrying")
+                    # Use task's retry policy instead of hardcoded sleep (with cap)
+                    delay = getattr(task, 'retry_delay', 1)
+                    max_delay = getattr(task, 'max_retry_delay', 300)  # 5 min cap
+                    actual_delay = min(delay * (2 ** retries), max_delay)
+                    await asyncio.sleep(actual_delay)
+                    retries += 1
+            else:
+                if task.status == "failed":
+                    logger.info("Task is failed, resetting to in-progress for another try...")
+                    task.status = "in progress"
+                else:
+                    logger.info("Invalid Task status")
+                    break
+
+        if retries == task_max and task.status != "completed":
+            task.status = "failed"  # Set failed status to match sync behavior
+            logger.info(f"Task {task_id} failed after {task_max} retries.")
+
+    @staticmethod
+    async def _gather_with_isolation(coros):
+        """Gather async tasks with exception isolation.
+
+        Uses return_exceptions=True so a single failure does not orphan its
+        siblings (leaving them running in the background to mutate shared state).
+        The first exception is re-raised after all siblings have settled.
+        """
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return results
+
+    def _depends_on_pending(self, task, pending):
+        """True if ``task`` depends on a task still pending in the batch.
+
+        ``pending`` is a list of ``(task_id, coroutine)`` pairs already queued
+        for parallel execution. If one of the task's dependencies is in that
+        set, its result isn't available yet, so the batch must be flushed before
+        queuing this task (otherwise the dependent builds its prompt from an
+        empty result for the still-in-progress dependency).
+
+        Two dependency edges are checked, since ``_build_task_context`` reads
+        from both:
+          - ``task.context``: explicit context tasks (by object ``id``).
+          - ``task.previous_tasks``: workflow ``next_tasks`` edges, stored as
+            task *names*; without this a workflow successor could be queued in
+            the same async batch as its predecessor and read an empty result.
+        """
+        if not pending:
+            return False
+        pending_ids = {tid for tid, _ in pending}
+
+        deps = getattr(task, 'context', None) or []
+        if any(getattr(dep, 'id', None) in pending_ids for dep in deps):
+            return True
+
+        previous = getattr(task, 'previous_tasks', None) or []
+        if previous:
+            pending_names = {
+                self.tasks[tid].name
+                for tid in pending_ids
+                if tid in self.tasks
+            }
+            if any(name in pending_names for name in previous):
+                return True
+
+        return False
+
+    def _deps_failed(self, task_id):
+        """True if any dependency of ``task_id`` finished in a failed state.
+
+        asequential()/aworkflow() run their own failure check inside the
+        generator, but async tasks are buffered and drained later, so an
+        upstream async task may not have failed yet when the generator yielded
+        the dependent. Re-checking here — after pending async tasks are flushed
+        — makes the failure cascade fire for the async_execution path too, for
+        both dependency edges ``_build_task_context`` reads (context tasks and
+        workflow ``previous_tasks``).
+        """
+        task = self.tasks.get(task_id)
+        if task is None:
+            return False
+
+        for dep in getattr(task, 'context', None) or []:
+            dep_id = getattr(dep, 'id', None)
+            if dep_id in self.tasks and self.tasks[dep_id].status == "failed":
+                return True
+
+        previous = getattr(task, 'previous_tasks', None) or []
+        if previous:
+            by_name = {t.name: t for t in self.tasks.values()}
+            if any(
+                name in by_name and by_name[name].status == "failed"
+                for name in previous
+            ):
+                return True
+
+        return False
+
+    def _should_continue_on_dep_failure(self, task_id):
+        """True if the task opted into graceful degradation via its own flags.
+
+        Honors the documented per-task flow-control knobs ``skip_on_failure``
+        and ``on_error`` (``"continue"``). When set, a dependent task still runs
+        (in degraded mode) instead of being force-failed when an upstream
+        dependency fails.
+        """
+        task = self.tasks.get(task_id)
+        if task is None:
+            return False
+        return bool(getattr(task, 'skip_on_failure', False)) or \
+            getattr(task, 'on_error', 'stop') == 'continue'
+
+    async def arun_all_tasks(self):
+        """Async version of run_all_tasks method"""
+        process = Process(
+            tasks=self.tasks,
+            agents=self.agents,
+            manager_llm=self.manager_llm,
+            verbose=self.verbose,
+            max_iter=self.max_iter
+        )
+        
+        if self.process == "workflow":
+            tasks_to_run = []  # list of (task_id, coroutine)
+            async for task_id in process.aworkflow():
+                task = self.tasks[task_id]
+                if task.async_execution:
+                    # If this async task depends on another async task still
+                    # pending in the current batch, flush first so its context
+                    # is available before this one reads it.
+                    if self._depends_on_pending(task, tasks_to_run):
+                        await self._gather_with_isolation([c for _, c in tasks_to_run])
+                        tasks_to_run = []
+                        # A just-flushed prerequisite may now be failed; don't
+                        # queue a dependent that would run with missing context
+                        # unless it opted into graceful degradation.
+                        if self._deps_failed(task_id) and not self._should_continue_on_dep_failure(task_id):
+                            self.tasks[task_id].status = "failed"
+                            continue
+                    tasks_to_run.append((task_id, self.arun_task(task_id)))
+                else:
+                    # If we encounter a sync task, we must wait for the previous async tasks to finish.
+                    if tasks_to_run:
+                        await self._gather_with_isolation([c for _, c in tasks_to_run])
+                        tasks_to_run = []
+                    
+                    # Run sync task in an executor to avoid blocking the event loop
+                    # Use copy_context_to_callable to propagate contextvars (needed for trace emission)
+                    from ..trace.context_events import copy_context_to_callable
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, copy_context_to_callable(lambda tid=task_id: self.run_task(tid)))
+
+            if tasks_to_run:
+                await self._gather_with_isolation([c for _, c in tasks_to_run])
+                
+        elif self.process == "sequential":
+            async_tasks_to_run = []  # list of (task_id, coroutine)
+            
+            async def flush_async_tasks():
+                """Execute all pending async tasks"""
+                nonlocal async_tasks_to_run
+                if async_tasks_to_run:
+                    await self._gather_with_isolation([c for _, c in async_tasks_to_run])
+                    async_tasks_to_run = []
+
+            async for task_id in process.asequential():
+                task = self.tasks[task_id]
+                if task.async_execution:
+                    # If this async task depends on another async task still
+                    # pending in the current batch, flush first so its context
+                    # is available before this one reads it (avoids a same-batch
+                    # race that silently substitutes empty dependency context).
+                    if self._depends_on_pending(task, async_tasks_to_run):
+                        await flush_async_tasks()
+                        # A just-flushed prerequisite may now be failed; don't
+                        # queue a dependent that would run with missing context
+                        # unless it opted into graceful degradation.
+                        if self._deps_failed(task_id) and not self._should_continue_on_dep_failure(task_id):
+                            self.tasks[task_id].status = "failed"
+                            continue
+                    # Collect async tasks to run in parallel
+                    async_tasks_to_run.append((task_id, self.arun_task(task_id)))
+                else:
+                    # Before running a sync task, execute all pending async tasks
+                    await flush_async_tasks()
+                    # A just-flushed async prerequisite may now be failed; skip
+                    # the dependent so we don't run it with missing upstream
+                    # context, unless it opted into graceful degradation.
+                    if self._deps_failed(task_id) and not self._should_continue_on_dep_failure(task_id):
+                        self.tasks[task_id].status = "failed"
+                        continue
+                    # Run sync task in an executor to avoid blocking the event loop
+                    # Use copy_context_to_callable to propagate contextvars (needed for trace emission)
+                    from ..trace.context_events import copy_context_to_callable
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, copy_context_to_callable(lambda tid=task_id: self.run_task(tid)))
+            
+            # Execute any remaining async tasks at the end
+            await flush_async_tasks()
+        elif self.process == "hierarchical":
+            # Snapshot the real (user-supplied) task ids before the hierarchical
+            # generator injects its synthetic manager_task. The manager_task is
+            # always added last (highest id), so relying on dict-insertion order
+            # in the return path would surface the Manager's own generic answer
+            # instead of the final delegated task's result.
+            self._last_real_task_id = self._last_hierarchical_task_id()
+            # Drive the generator manually so the real id assigned to the yielded
+            # synthetic manager_task is sent back via .asend(). A plain `async for`
+            # only calls __anext__() (i.e. asend(None)), leaving manager_task_id
+            # permanently None and defeating the generator's self-delegation guard.
+            gen = process.ahierarchical()
+            try:
+                task_id = await gen.__anext__()
+                while True:
+                    if isinstance(task_id, Task):
+                        task_id = self.add_task(task_id)
+                    if self.tasks[task_id].async_execution:
+                        await self.arun_task(task_id)
+                    else:
+                        # Run sync task in an executor to avoid blocking the event loop
+                        # Use copy_context_to_callable to propagate contextvars (needed for trace emission)
+                        from ..trace.context_events import copy_context_to_callable
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, copy_context_to_callable(lambda tid=task_id: self.run_task(tid)))
+                    task_id = await gen.asend(task_id)
+            except StopAsyncIteration:
+                pass
+
+
+    # ── shared sandbox lifetime ──────────────────────────────────────────────
+    # A ContextVar, not an instance attribute: the previous version set
+    # `self.run_on = None` for the duration of the run, so a second caller
+    # inspecting the team mid-run saw "no sandbox" and any concurrent start()
+    # executed every tool on the host. Depth lives with the caller, not on the
+    # shared object, so the team's declared placement is always readable.
+    #
+    # The depth is keyed PER TEAM, not shared class-wide. A single integer here
+    # meant any team started while another team's run was on the stack saw
+    # depth==1 and skipped its own sandbox entirely -- so a nested team ran on
+    # the host, and a team sharing an agent with the outer run executed on the
+    # OUTER team's sandbox.
+    #
+    # ContextVar, not threading.local: two coroutines that `astart()` the SAME
+    # team under one asyncio.gather run on one thread, so thread-local state is
+    # shared between them -- the second saw the first's depth==1, skipped its
+    # own sandbox, and ran against a sandbox the first could tear down mid-flight.
+    # A ContextVar is copied per task at gather/create_task time, so each run
+    # gets its own depth map; it is also per-thread, so sync callers stay
+    # isolated too. The value is an immutable frozen mapping replaced via .set()
+    # (never mutated in place), because a copied context shares the *reference*
+    # to a mutable dict and in-place mutation would leak straight back across
+    # the tasks the copy was meant to separate.
+    _tools_scope_depths: "contextvars.ContextVar" = contextvars.ContextVar(
+        "praisonai_tools_scope_depths", default=()
+    )
+
+    def _needs_tools_scope(self) -> bool:
+        """True when this call should provision the team's shared sandbox."""
+        if getattr(self, "tools_run_on", None) is None:
+            return False
+        return dict(self._tools_scope_depths.get()).get(id(self), 0) == 0
+
+    @contextlib.contextmanager
+    def _shared_tools_scope(self):
+        """Hold one sandbox for everything nested inside.
+
+        Re-entrant by design: ``start_for_each`` opens the scope once for the
+        whole batch, so the ``start()`` call it makes per input row finds the
+        scope already open and reuses that sandbox instead of provisioning and
+        destroying one per row.
+        """
+        from ..managed.shared_compute import SharedCompute
+
+        key = id(self)
+        depths = dict(self._tools_scope_depths.get())
+        depths[key] = depths.get(key, 0) + 1
+        token = self._tools_scope_depths.set(tuple(sorted(depths.items())))
+        try:
+            with SharedCompute(self.tools_run_on) as shared:
+                shared.attach(list(self.agents or []))
+                yield shared
+        finally:
+            self._tools_scope_depths.reset(token)
+
+    async def astart(self, content=None, return_dict=False, **kwargs):
+        """Async version of start method.
+        
+        Args:
+            content: Optional content to add to all tasks' context
+            return_dict: If True, returns the full results dictionary instead of only the final response
+            **kwargs: Additional arguments
+        """
+        # Same shared sandbox as start(). Without this, an async team with
+        # tools_run_on= ran every tool on the host and said nothing.
+        if self._needs_tools_scope():
+            with self._shared_tools_scope():
+                return await self.astart(content=content, return_dict=return_dict, **kwargs)
+
+        # Track execution via telemetry
+        if hasattr(self, '_telemetry') and self._telemetry:
+            self._telemetry.track_agent_execution(self.name, success=True, async_mode=True)
+            
+        if content:
+            # Add content to context of all tasks
+            for task in self.tasks.values():
+                if isinstance(content, (str, list)):
+                    if not task.context:
+                        task.context = []
+                    task.context.append(content)
+
+        await self.arun_all_tasks()
+        
+        # Get results
+        results = {
+            "task_status": self.get_all_tasks_status(),
+            "task_results": {task_id: self.get_task_result(task_id) for task_id in self.tasks}
+        }
+        
+        # By default, return only the final agent's response
+        if not return_dict:
+            # Prefer the tracked last real task id (set by hierarchical runs so
+            # the synthetic manager_task never masks the real final result);
+            # otherwise fall back to the last task in insertion order.
+            last_task_id = getattr(self, "_last_real_task_id", None)
+            if last_task_id is None:
+                task_ids = list(self.tasks.keys())
+                last_task_id = task_ids[-1] if task_ids else None
+            if last_task_id is not None:
+                last_result = self.get_task_result(last_task_id)
+                if last_result:
+                    return last_result.raw
+                    
+        # Return full results dict if return_dict is True or if no final result was found
+        return results
+
+    def save_output_to_file(self, task, task_output):
+        if task.output_file:
+            try:
+                if task.create_directory:
+                    dir_name = os.path.dirname(task.output_file)
+                    if dir_name:
+                        os.makedirs(dir_name, exist_ok=True)
+                with open(task.output_file, "w") as f:
+                    f.write(str(task_output))
+                if self.verbose >= 1:
+                    logger.info(f"Task output saved to {task.output_file}")
+            except Exception as e:
+                display_error(f"Error saving task output to file: {e}")
+
+    def execute_task(self, task_id):
+        """Synchronous version of execute_task method - now using DRY helpers"""
+        if task_id not in self.tasks:
+            display_error(f"Error: Task with ID {task_id} does not exist")
+            return
+        task = self.tasks[task_id]
+        
+        logger.info(f"Starting execution of task {task_id}")
+        logger.info(f"Task config: {task.config}")
+        
+        # Only import multimodal dependencies if task has images
+        if task.images and task.status == "not started":
+            try:
+                import cv2  # noqa: F401 - availability check
+                import base64  # noqa: F401 - availability check
+                from moviepy import VideoFileClip  # noqa: F401 - availability check
+            except ImportError as e:
+                display_error(f"Error: Missing required dependencies for image/video processing: {e}")
+                display_error("Please install with: pip install opencv-python moviepy")
+                task.status = "failed"
+                return None
+
+        if task.status == "not started":
+            task.status = "in progress"
+
+        # Build execution context using DRY helper
+        context = _build_execution_context(self, task_id)
+
+        # Execute with agent using DRY helper
+        agent_output = _execute_with_agent_sync(
+            context.executor_agent, context.task_prompt, context.task, 
+            context.tools, stream=self.stream
+        )
+
+        # Process result using DRY helper
+        task_result = _process_task_result(self, context, agent_output)
+        return task_result.task_output
+
+    def run_task(self, task_id):
+        """Synchronous version of run_task method"""
+        if task_id not in self.tasks:
+            display_error(f"Error: Task with ID {task_id} does not exist")
+            return
+        task = self.tasks[task_id]
+        if task.status == "completed":
+            logger.info(f"Task with ID {task_id} is already completed")
+            return
+
+        # Call on_task_start callback and propagate variables (shared with arun_task)
+        self._run_task_start_hook(task, task_id)
+
+        # Use per-task max_retries if available
+        task_max = getattr(task, "max_retries", self.max_retries)
+        retries = 0
+        while task.status != "completed" and retries < task_max:
+            logger.debug(f"Attempt {retries+1} for task {task_id}")
+            if task.status in ["not started", "in progress"]:
+                task_output = self.execute_task(task_id)
+                if task_output and self.completion_checker(task, task_output.raw):
+                    # Apply guardrail validation using shared helper
+                    task_output, should_retry = self._apply_task_guardrail(task, task_id, task_output)
+                    if should_retry:
+                        retries += 1
+                        continue
+                    
+                    task.status = "completed"
+                    # Run execute_callback for memory operations
+                    try:
+                        # Use the new sync wrapper to avoid pending coroutine issues
+                        task.execute_callback_sync(task_output)
+                    except Exception as e:
+                        logger.error(f"Error executing memory callback for task {task_id}: {e}")
+                        logger.exception(e)
+                        # Respect task failure policies - re-raise if configured
+                        # (mirrors arun_task so sync/async surfaces behave identically)
+                        if hasattr(task, 'fail_on_callback_error') and task.fail_on_callback_error:
+                            raise
+                        if hasattr(task, 'fail_on_memory_error') and task.fail_on_memory_error:
+                            raise
+
+                    self.save_output_to_file(task, task_output)
+
+                    # Call on_task_complete callback (shared with arun_task)
+                    self._run_task_complete_hook(task, task_output)
+
+                    if self.verbose >= 1:
+                        logger.info(f"Task {task_id} completed successfully.")
+                else:
+                    task.status = "in progress"
+                    if self.verbose >= 1:
+                        logger.info(f"Task {task_id} not completed, retrying")
+                    # Use task's retry policy instead of hardcoded sleep (with cap)
+                    delay = getattr(task, 'retry_delay', 1)
+                    max_delay = getattr(task, 'max_retry_delay', 300)  # 5 min cap
+                    actual_delay = min(delay * (2 ** retries), max_delay)
+                    time.sleep(actual_delay)
+                    retries += 1
+            else:
+                if task.status == "failed":
+                    logger.info("Task is failed, resetting to in-progress for another try...")
+                    task.status = "in progress"
+                else:
+                    logger.info("Invalid Task status")
+                    break
+
+        if retries == task_max and task.status != "completed":
+            task.status = "failed"  # Set failed status
+            logger.info(f"Task {task_id} failed after {task_max} retries.")
+
+    def run_all_tasks(self):
+        """Synchronous version of run_all_tasks method"""
+        process = Process(
+            tasks=self.tasks,
+            agents=self.agents,
+            manager_llm=self.manager_llm,
+            verbose=self.verbose,
+            max_iter=self.max_iter
+        )
+        
+        if self.process == "workflow":
+            for task_id in process.workflow():
+                self.run_task(task_id)
+        elif self.process == "sequential":
+            for task_id in process.sequential():
+                self.run_task(task_id)
+        elif self.process == "hierarchical":
+            # See arun_all_tasks: capture the last real task id before the
+            # synthetic manager_task is injected so the return path doesn't
+            # surface the Manager's own generic output.
+            self._last_real_task_id = self._last_hierarchical_task_id()
+            # Drive the generator manually so the real id assigned to the yielded
+            # synthetic manager_task is sent back via .send(). A plain `for` only
+            # calls __next__() (i.e. send(None)), leaving manager_task_id
+            # permanently None and defeating the generator's self-delegation guard.
+            gen = process.hierarchical()
+            try:
+                task_id = next(gen)
+                while True:
+                    if isinstance(task_id, Task):
+                        task_id = self.add_task(task_id)
+                    self.run_task(task_id)
+                    task_id = gen.send(task_id)
+            except StopIteration:
+                pass
+
+    def get_task_status(self, task_id):
+        if task_id in self.tasks:
+            return self.tasks[task_id].status
+        return None
+
+    def get_all_tasks_status(self):
+        return {task_id: self.tasks[task_id].status for task_id in self.tasks}
+
+    def get_task_result(self, task_id):
+        if task_id in self.tasks:
+            return self.tasks[task_id].result
+        return None
+
+    def get_task_details(self, task_id):
+        if task_id in self.tasks:
+            return str(self.tasks[task_id])
+        return None
+
+    def get_agent_details(self, agent_name):
+        agent = [task.agent for task in self.tasks.values() if task.agent and task.agent.name == agent_name]
+        if agent:
+            return str(agent[0])
+        return None
+
+    def __repr__(self):
+        """Show where this team's work happens, not just its name."""
+        from ..agent.execution_location import repr_fields
+
+        return (
+            f"AgentTeam(name={self.name!r}, agents={len(self.agents or [])}, "
+            f"{repr_fields(self, shared=True)})"
+        )
+
+    def where_does_it_run(self) -> str:
+        """Plain-English answer to "where does my code actually run?"."""
+        from ..agent.execution_location import explain
+
+        return explain(self, shared=True)
+
+    def start(self, content=None, return_dict=False, output=None, **kwargs):
+        """Start agent execution with verbose output (beginner-friendly).
+        
+        Shows Rich panels with workflow progress when in TTY. Use .run() for
+        silent execution in production/scripts.
+        
+        Args:
+            content: Optional content to add to all tasks' context
+            return_dict: If True, returns the full results dictionary
+            output: Output preset - "silent", "verbose", "normal", etc.
+                    Default in TTY: "verbose" (shows progress)
+                    Default non-TTY: "silent"
+            **kwargs: Additional arguments
+            
+        Example:
+            ```python
+            # Interactive - shows Rich panels
+            agents = AgentManager(agents=[agent1, agent2])
+            result = agents.start()  # Verbose output by default
+            
+            # Force silent mode
+            result = agents.start(output="silent")
+            ```
+        """
+        # Remote execution: provision ONE sandbox shared by every agent on the
+        # team, and tear it down even if execution raises.
+        if self._needs_tools_scope():
+            with self._shared_tools_scope():
+                return self.start(content=content, return_dict=return_dict,
+                                  output=output, **kwargs)
+
+        # Track execution via telemetry
+        if hasattr(self, '_telemetry') and self._telemetry:
+            self._telemetry.track_agent_execution(self.name, success=True)
+        import sys
+        from ..main import PRAISON_COLORS
+        
+        # Determine if we're in an interactive TTY
+        is_tty = sys.stdout.isatty()
+        
+        # Resolve output mode (TTY-aware)
+        if output is None:
+            # Default: verbose in TTY (beginner-friendly), silent otherwise
+            # Note: Don't check self.verbose here - start() is for interactive use
+            show_verbose = is_tty
+        elif output == "silent":
+            show_verbose = False
+        elif output in ("verbose", "debug", "normal"):
+            show_verbose = True
+        else:
+            show_verbose = is_tty
+        
+        # Add content to context if provided
+        if content:
+            for task in self.tasks.values():
+                if isinstance(content, (str, list)):
+                    if not task.context:
+                        task.context = []
+                    task.context.append(content)
+        
+        # ─────────────────────────────────────────────────────────────
+        # Verbose Mode: Show Rich panels for multi-agent workflow
+        # ─────────────────────────────────────────────────────────────
+        if show_verbose and is_tty:
+            from rich.panel import Panel
+            from rich.console import Console
+            console = Console()
+            import time as time_module
+            
+            # Show workflow overview panel
+            agent_names = " → ".join([a.display_name for a in self.agents])
+            workflow_info = f"[bold {PRAISON_COLORS['metrics']}]Process:[/] {self.process}\n"
+            workflow_info += f"[bold {PRAISON_COLORS['metrics']}]Agents:[/] {agent_names}"
+            
+            console.print(Panel(
+                workflow_info,
+                title="[bold]Multi-Agent Workflow[/]",
+                border_style=PRAISON_COLORS["agent"],
+                padding=(1, 2)
+            ))
+            console.print()
+            
+            # Use callbacks for verbose display while maintaining process orchestration
+            total_agents = len(self.agents)
+            workflow_start_time = time_module.time()
+            task_times = {}
+            task_idx = {}
+            
+            # Set up index mapping for tasks
+            for idx, task_id in enumerate(self.tasks.keys(), 1):
+                task_idx[task_id] = idx
+            
+            # Define callbacks to display progress while using proper orchestration
+            def verbose_task_start_callback(task, task_id):
+                try:
+                    agent = task.agent
+                    agent_name = agent.display_name if agent else "Unknown"
+                    agent_model = getattr(agent, 'llm', 'gpt-4o-mini') if agent else "unknown"
+                    idx = task_idx.get(task_id, 0)
+                    
+                    # Show agent task panel with model info
+                    task_desc = task.description[:100] + "..." if len(task.description) > 100 else task.description
+                    panel_content = f"[bold {PRAISON_COLORS['task_text']}]📋 Task:[/] {task_desc}\n"
+                    panel_content += f"[dim]🤖 Model: {agent_model}[/dim]"
+                    console.print(Panel.fit(
+                        panel_content,
+                        title=f"[bold]Agent [{idx}/{total_agents}]: {agent_name}[/]",
+                        border_style=PRAISON_COLORS["task"]
+                    ))
+                    
+                    # Store start time for this task
+                    task_times[task_id] = time_module.time()
+                    
+                    # Show working spinner
+                    console.print(f"[bold yellow]Working...[/]  {agent_name} generating response...")
+                except Exception as e:
+                    logging.debug(f"Error in verbose task start callback: {e}")
+            
+            def verbose_task_complete_callback(task, task_output):
+                try:
+                    task_id = getattr(task, 'id', 'unknown')
+                    start_time = task_times.get(task_id, time_module.time())
+                    elapsed = time_module.time() - start_time
+                    idx = task_idx.get(task_id, 0)
+                    
+                    # Show response panel - FULL response, no truncation
+                    if task_output:
+                        response_text = str(task_output.raw)
+                        # No truncation - show full response in verbose mode
+                        from rich.markdown import Markdown
+                        console.print(Panel(
+                            Markdown(response_text),
+                            title=f"[bold]Agent [{idx}/{total_agents}] Complete ({elapsed:.1f}s)[/]",
+                            border_style=PRAISON_COLORS["response"],
+                            padding=(1, 2)
+                        ))
+                    console.print()
+                except Exception as e:
+                    logging.debug(f"Error in verbose task complete callback: {e}")
+            
+            # Set callbacks for verbose display (compose with existing callbacks)
+            original_on_task_start = self.on_task_start
+            original_on_task_complete = self.on_task_complete
+            
+            def composed_on_task_start(task, task_id):
+                try:
+                    verbose_task_start_callback(task, task_id)
+                except Exception as e:
+                    logging.debug(f"Error in verbose task start callback: {e}")
+                if original_on_task_start:
+                    try:
+                        original_on_task_start(task, task_id)
+                    except Exception as e:
+                        logging.debug(f"Error in original task start callback: {e}")
+            
+            def composed_on_task_complete(task, task_output):
+                try:
+                    verbose_task_complete_callback(task, task_output)
+                except Exception as e:
+                    logging.debug(f"Error in verbose task complete callback: {e}")
+                if original_on_task_complete:
+                    try:
+                        original_on_task_complete(task, task_output)
+                    except Exception as e:
+                        logging.debug(f"Error in original task complete callback: {e}")
+            
+            self.on_task_start = composed_on_task_start
+            self.on_task_complete = composed_on_task_complete
+            
+            # Use proper process orchestration with verbose callbacks
+            try:
+                if self.planning:
+                    self._run_with_planning()
+                else:
+                    self.run_all_tasks()
+            finally:
+                # Restore original callbacks
+                self.on_task_start = original_on_task_start
+                self.on_task_complete = original_on_task_complete
+            
+            # Workflow summary panel
+            total_elapsed = time_module.time() - workflow_start_time
+            console.print(Panel.fit(
+                f"[bold green]Total Time:[/] {total_elapsed:.1f}s\n"
+                f"[bold green]Agents Run:[/] {total_agents}/{total_agents}",
+                title="[bold]✅ Workflow Complete[/]",
+                border_style="green"
+            ))
+            console.print()
+        else:
+            # Silent mode: Run tasks without display
+            if self.planning:
+                self._run_with_planning()
+            else:
+                self.run_all_tasks()
+        
+        # Auto-display token metrics if any agent has metrics=True
+        metrics_enabled = any(getattr(agent, 'metrics', False) for agent in self.agents)
+        if metrics_enabled:
+            try:
+                self.display_token_usage()
+            except (ImportError, AttributeError) as e:
+                logging.debug(f"Could not auto-display token usage: {e}")
+            except Exception as e:
+                logging.debug(f"Unexpected error in token metrics display: {e}")
+        
+        # Get results
+        results = {
+            "task_status": self.get_all_tasks_status(),
+            "task_results": {task_id: self.get_task_result(task_id) for task_id in self.tasks}
+        }
+        
+        # By default, return only the final agent's response
+        if not return_dict:
+            # Prefer the tracked last real task id (set by hierarchical runs so
+            # the synthetic manager_task never masks the real final result);
+            # otherwise fall back to the last task in insertion order.
+            last_task_id = getattr(self, "_last_real_task_id", None)
+            if last_task_id is None:
+                task_ids = list(self.tasks.keys())
+                last_task_id = task_ids[-1] if task_ids else None
+            if last_task_id is not None:
+                last_result = self.get_task_result(last_task_id)
+                if last_result:
+                    return last_result.raw
+                    
+        return results
+
+    def run(self, content=None, return_dict=False, **kwargs):
+        """Run agents silently (production use).
+        
+        Unlike .start() which shows verbose output, .run() executes silently
+        for programmatic/production use.
+        
+        Args:
+            content: Optional content to add to all tasks' context
+            return_dict: If True, returns the full results dictionary
+            **kwargs: Additional arguments
+        """
+        # Always run silently - no verbose output
+        return self.start(content=content, return_dict=return_dict, output="silent", **kwargs)
+
+    def _snapshot_task_state(self):
+        """Snapshot per-task run state so a batch can restore it afterwards.
+
+        Captures the fields that ``run_task``/``arun_task`` mutate during a run
+        (``status``, ``result``, ``retry_count``) plus caller-defined
+        ``variables``, keeping the public Task API backward-compatible.
+        """
+        snapshot = {}
+        for task_id, task in self.tasks.items():
+            snapshot[task_id] = {
+                "status": getattr(task, "status", None),
+                "result": getattr(task, "result", None),
+                "retry_count": getattr(task, "retry_count", None),
+                "variables": getattr(task, "variables", None),
+            }
+        return snapshot
+
+    def _reset_task_state_for_item(self):
+        """Reset per-task run state before each batch item executes.
+
+        Without this, ``run_task``/``arun_task`` see ``status == "completed"``
+        from the previous item and skip execution, returning stale results.
+        Clearing ``variables`` lets the current item's global ``variables``
+        re-propagate (see ``_run_task_start_hook``).
+        """
+        for task in self.tasks.values():
+            task.status = "not started"
+            task.result = None
+            if hasattr(task, "retry_count"):
+                task.retry_count = 0
+            task.variables = {}
+
+    def _restore_task_state(self, snapshot):
+        """Restore per-task run state captured by ``_snapshot_task_state``."""
+        for task_id, state in snapshot.items():
+            task = self.tasks.get(task_id)
+            if task is None:
+                continue
+            task.status = state["status"]
+            task.result = state["result"]
+            if state["retry_count"] is not None:
+                task.retry_count = state["retry_count"]
+            task.variables = state["variables"]
+
+    def _build_batch_result(self, batch_id, items):
+        """Aggregate per-item results into a batch summary dict.
+
+        ``token_usage_total`` is the session-level summary from the shared token
+        collector (cumulative, not batch-scoped) — kept lightweight; use
+        per-item outputs for finer accounting.
+        """
+        succeeded = sum(1 for item in items if item["success"])
+        return {
+            "batch_id": batch_id,
+            "items": items,
+            "outputs": [item["output"] for item in items],
+            "succeeded": succeeded,
+            "failed": len(items) - succeeded,
+            "total": len(items),
+            "token_usage_total": self.get_token_usage_summary(),
+        }
+
+    @staticmethod
+    def _validate_batch_input(item_input, index):
+        """Coerce/validate a single batch input into a dict of variables."""
+        if item_input is None:
+            return {}
+        if not isinstance(item_input, dict):
+            raise ValueError(
+                f"inputs[{index}] must be a dict of variables, got "
+                f"{type(item_input).__name__}"
+            )
+        return item_input
+
+    def start_for_each(
+        self,
+        inputs,
+        *,
+        on_error="continue",
+        output="silent",
+        **kwargs,
+    ):
+        """Run this team once per input dict, interpolating ``{{key}}`` placeholders.
+
+        Each input dict is applied as per-run ``variables`` (existing
+        ``{{placeholder}}`` interpolation in task descriptions), so the original
+        task templates are never permanently mutated.
+
+        Args:
+            inputs: List of dicts; each runs the team once with those variables.
+            on_error: "continue" (default) collects errors per item and keeps
+                going; "fail_fast" re-raises on the first failing item.
+            output: Output preset forwarded to ``start`` (default "silent").
+            **kwargs: Additional arguments forwarded to ``start``.
+
+        Returns:
+            dict with ``batch_id``, ``items`` (per-item ``index``/``input``/
+            ``success``/``output``/``error``), ``outputs``, ``succeeded``,
+            ``failed``, ``total`` and ``token_usage_total``.
+        """
+        if on_error not in ("continue", "fail_fast"):
+            raise ValueError("on_error must be 'continue' or 'fail_fast'")
+
+        # One sandbox for the whole batch. Without this the per-row start()
+        # call provisions and destroys its own, so a 50-row batch paid for 50
+        # sandboxes and no row could see what an earlier row wrote.
+        if self._needs_tools_scope():
+            with self._shared_tools_scope():
+                return self.start_for_each(
+                    inputs, on_error=on_error, output=output, **kwargs
+                )
+
+        batch_id = f"batch_{uuid.uuid4().hex[:12]}"
+        saved_variables = self.variables
+        task_snapshot = self._snapshot_task_state()
+        items = []
+        try:
+            for index, item_input in enumerate(inputs):
+                result = {"index": index, "input": item_input, "success": False,
+                          "output": None, "error": None}
+                try:
+                    item_vars = self._validate_batch_input(item_input, index)
+                    self.variables = {**saved_variables, **item_vars}
+                    self._reset_task_state_for_item()
+                    result["output"] = self.start(output=output, **kwargs)
+                    result["success"] = True
+                except Exception as exc:  # noqa: BLE001
+                    if on_error == "fail_fast":
+                        raise
+                    result["error"] = str(exc)
+                items.append(result)
+        finally:
+            self.variables = saved_variables
+            self._restore_task_state(task_snapshot)
+
+        return self._build_batch_result(batch_id, items)
+
+    async def astart_for_each(
+        self,
+        inputs,
+        *,
+        on_error="continue",
+        **kwargs,
+    ):
+        """Async twin of :meth:`start_for_each` (sequential per-item execution)."""
+        if on_error not in ("continue", "fail_fast"):
+            raise ValueError("on_error must be 'continue' or 'fail_fast'")
+
+        # One sandbox for the whole batch -- see start_for_each.
+        if self._needs_tools_scope():
+            with self._shared_tools_scope():
+                return await self.astart_for_each(
+                    inputs, on_error=on_error, **kwargs
+                )
+
+        batch_id = f"batch_{uuid.uuid4().hex[:12]}"
+        saved_variables = self.variables
+        task_snapshot = self._snapshot_task_state()
+        items = []
+        try:
+            for index, item_input in enumerate(inputs):
+                result = {"index": index, "input": item_input, "success": False,
+                          "output": None, "error": None}
+                try:
+                    item_vars = self._validate_batch_input(item_input, index)
+                    self.variables = {**saved_variables, **item_vars}
+                    self._reset_task_state_for_item()
+                    result["output"] = await self.astart(**kwargs)
+                    result["success"] = True
+                except Exception as exc:  # noqa: BLE001
+                    if on_error == "fail_fast":
+                        raise
+                    result["error"] = str(exc)
+                items.append(result)
+        finally:
+            self.variables = saved_variables
+            self._restore_task_state(task_snapshot)
+
+        return self._build_batch_result(batch_id, items)
+
+    def set_state(self, key: str, value: Any) -> None:
+        """Set a state value"""
+        with self._state_lock:
+            self._state[key] = value
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        """Get a state value"""
+        return self._state.get(key, default)
+
+    def update_state(self, updates: Dict) -> None:
+        """Update multiple state values"""
+        with self._state_lock:
+            self._state.update(updates)
+
+    def clear_state(self) -> None:
+        """Clear all state values"""
+        with self._state_lock:
+            self._state.clear()
+    
+    # Convenience methods for enhanced state management
+    def has_state(self, key: str) -> bool:
+        """Check if a state key exists"""
+        return key in self._state
+    
+    def get_all_state(self) -> Dict[str, Any]:
+        """Get a copy of the entire state dictionary"""
+        return self._state.copy()
+    
+    def delete_state(self, key: str) -> bool:
+        """Delete a state key if it exists. Returns True if deleted, False if key didn't exist."""
+        with self._state_lock:
+            if key in self._state:
+                del self._state[key]
+                return True
+            return False
+    
+    def increment_state(self, key: str, amount: float = 1, default: float = 0) -> float:
+        """Increment a numeric state value. Creates the key with default if it doesn't exist."""
+        with self._state_lock:
+            current = self._state.get(key, default)
+            if not isinstance(current, (int, float)):
+                raise TypeError(f"Cannot increment non-numeric value at key '{key}': {type(current).__name__}")
+            new_value = current + amount
+            self._state[key] = new_value
+            return new_value
+    
+    def append_to_state(self, key: str, value: Any, max_length: Optional[int] = None) -> List[Any]:
+        """Append a value to a list state. Creates the list if it doesn't exist.
+        
+        Args:
+            key: State key
+            value: Value to append
+            max_length: Optional maximum length for the list
+            
+        Returns:
+            The updated list
+            
+        Raises:
+            TypeError: If the existing value is not a list and convert_to_list=False
+        """
+        with self._state_lock:
+            if key not in self._state:
+                self._state[key] = []
+            elif not isinstance(self._state[key], list):
+                # Be explicit about type conversion for better user experience
+                current_value = self._state[key]
+                self._state[key] = [current_value]
+            
+            self._state[key].append(value)
+            
+            # Trim list if max_length is specified
+            if max_length and len(self._state[key]) > max_length:
+                self._state[key] = self._state[key][-max_length:]
+            
+            return self._state[key]
+    
+    def _team_state_payload(self, session_id: str) -> Dict[str, Any]:
+        """Build the serialisable team-state payload for durable persistence."""
+        with self._state_lock:
+            state_copy = dict(self._state)
+        return {
+            "session_id": session_id,
+            "user_id": self.user_id,
+            "run_id": self.run_id,
+            "state": state_copy,
+            "agents": [agent.display_name for agent in self.agents],
+            "process": self.process,
+        }
+
+    def save_session_state(self, session_id: str, include_memory: bool = True) -> bool:
+        """Persist team session state for deterministic resume (Issue #3635).
+
+        Writes the shared team ``_state`` (plus run bookkeeping) to the durable,
+        project-scoped ``SessionStore`` — the same store single ``Agent`` resume
+        uses — keyed deterministically by ``session_id``. This gives multi-agent
+        runs the same locked, atomic, memory-independent continuity as a single
+        agent: it works even with ``memory=False``.
+
+        ``shared_memory`` is kept as an *optional enrichment* (not a gate) so
+        legacy semantic-recall lookups still find the state when memory is on.
+
+        Returns ``True`` when the durable write succeeded, ``False`` otherwise,
+        so callers can tell whether a resumable state actually reached disk.
+        """
+        state_data = self._team_state_payload(session_id)
+
+        # Primary, durable path: SessionStore (locked, atomic, memory-independent).
+        durable_saved = False
+        try:
+            from ..session.store import get_default_session_store
+            durable_saved = bool(
+                get_default_session_store().update_session_metadata(
+                    session_id, team_session_state=state_data
+                )
+            )
+            if not durable_saved:
+                logger.warning(
+                    f"Durable team session save reported no write for {session_id}"
+                )
+        except Exception as e:  # never fail a completed run on save
+            logger.warning(f"Durable team session save failed for {session_id}: {e}")
+
+        # Optional enrichment: mirror into shared memory for semantic recall.
+        if self.shared_memory and include_memory:
+            try:
+                self.shared_memory.store_short_term(
+                    text=f"Session state for {session_id}",
+                    metadata={
+                        "type": "session_state",
+                        "session_id": session_id,
+                        "user_id": self.user_id,
+                        "state_data": state_data,
+                    },
+                )
+            except Exception as e:
+                logger.debug(f"Shared-memory session enrichment failed: {e}")
+
+        return durable_saved
+
+    def restore_session_state(self, session_id: str) -> bool:
+        """Restore team session state for deterministic resume. Returns True if restored.
+
+        Reads first from the durable ``SessionStore`` keyed by ``session_id``
+        (no fuzzy search, no memory requirement). Falls back to the legacy
+        ``shared_memory`` semantic lookup only for sessions written before this
+        durable path existed, preserving backward compatibility.
+        """
+        # Primary, durable path: SessionStore lookup by exact session_id.
+        try:
+            from ..session.store import get_default_session_store
+            store = get_default_session_store()
+            if store.session_exists(session_id):
+                metadata = store.get_session(session_id).metadata or {}
+                state_data = metadata.get("team_session_state")
+                if isinstance(state_data, dict) and "state" in state_data:
+                    with self._state_lock:
+                        self._state.update(state_data["state"])
+                    return True
+        except Exception as e:
+            logger.debug(f"Durable team session restore failed for {session_id}: {e}")
+
+        # Legacy fallback: shared-memory semantic lookup (pre-#3635 sessions).
+        if not self.shared_memory:
+            return False
+
+        results = self.shared_memory.search_short_term(
+            query="type:session_state",
+            limit=10  # Get more results to filter by session_id
+        )
+
+        # Filter results by session_id in metadata
+        for result in results:
+            metadata = result.get("metadata", {})
+            if (metadata.get("type") == "session_state" and 
+                metadata.get("session_id") == session_id):
+                state_data = metadata.get("state_data", {})
+                if "state" in state_data:
+                    # Merge with existing state instead of replacing
+                    with self._state_lock:
+                        self._state.update(state_data["state"])
+                    return True
+        
+        return False
+
+    def get_token_usage_summary(self) -> Dict[str, Any]:
+        """Get a summary of token usage across all agents and tasks."""
+        if not get_token_collector:
+            return {"error": "Token tracking not available"}
+        
+        return get_token_collector().get_session_summary()
+    
+    def get_detailed_token_report(self) -> Dict[str, Any]:
+        """Get a detailed token usage report."""
+        if not get_token_collector:
+            return {"error": "Token tracking not available"}
+        
+        collector = get_token_collector()
+        summary = collector.get_session_summary()
+        recent = collector.get_recent_interactions(limit=20)
+        
+        # Calculate cost estimates (example rates)
+        cost_per_1k_input = 0.0005  # $0.0005 per 1K input tokens
+        cost_per_1k_output = 0.0015  # $0.0015 per 1K output tokens
+        
+        total_metrics = summary.get("total_metrics", {})
+        input_cost = (total_metrics.get("input_tokens", 0) / 1000) * cost_per_1k_input
+        output_cost = (total_metrics.get("output_tokens", 0) / 1000) * cost_per_1k_output
+        total_cost = input_cost + output_cost
+        
+        return {
+            "summary": summary,
+            "recent_interactions": recent,
+            "cost_estimate": {
+                "input_cost": f"${input_cost:.4f}",
+                "output_cost": f"${output_cost:.4f}",
+                "total_cost": f"${total_cost:.4f}",
+                "note": "Cost estimates based on example rates"
+            }
+        }
+    
+    def display_token_usage(self):
+        """Display token usage in a formatted table."""
+        if not get_token_collector:
+            print("Token tracking not available")
+            return
+        
+        summary = get_token_collector().get_session_summary()
+        
+        print("\n" + "="*50)
+        print("TOKEN USAGE SUMMARY")
+        print("="*50)
+        
+        total_metrics = summary.get("total_metrics", {})
+        print(f"\nTotal Interactions: {summary.get('total_interactions', 0)}")
+        print(f"Total Tokens: {total_metrics.get('total_tokens', 0):,}")
+        print(f"  - Input Tokens: {total_metrics.get('input_tokens', 0):,}")
+        print(f"  - Output Tokens: {total_metrics.get('output_tokens', 0):,}")
+        print(f"  - Cached Tokens: {total_metrics.get('cached_tokens', 0):,}")
+        print(f"  - Reasoning Tokens: {total_metrics.get('reasoning_tokens', 0):,}")
+        
+        # By model
+        by_model = summary.get("by_model", {})
+        if by_model:
+            print("\nUsage by Model:")
+            for model, metrics in by_model.items():
+                print(f"  {model}: {metrics.get('total_tokens', 0):,} tokens")
+        
+        # By agent
+        by_agent = summary.get("by_agent", {})
+        if by_agent:
+            print("\nUsage by Agent:")
+            for agent, metrics in by_agent.items():
+                print(f"  {agent}: {metrics.get('total_tokens', 0):,} tokens")
+        
+        print("="*50 + "\n")
+        
+    def launch(self, path: str = '/agents', port: int = 8000, host: str = '127.0.0.1', debug: bool = False, protocol: str = "http"):
+        """
+        Launch all agents as a single API endpoint (HTTP) or an MCP server. 
+        In HTTP mode, the endpoint accepts a query and processes it through all agents in sequence.
+        In MCP mode, serving is delegated to the ``praisonai-mcp`` agent adapter
+        (``serve_agents``), publishing ``ask_{agent_name}`` per agent plus
+        ``list_agents`` — the same path used by ``Agent.launch(protocol="mcp")``.
+        
+        Args:
+            path: API endpoint path (default: '/agents') for HTTP. Ignored in MCP mode.
+            port: Server port (default: 8000)
+            host: Server host (default: '127.0.0.1'; changed from '0.0.0.0' to
+                avoid binding all interfaces by default — pass '0.0.0.0'
+                explicitly to expose externally). Binding a non-loopback host
+                without ``PRAISONAI_LAUNCH_AUTH_TOKEN`` set auto-generates and
+                prints a one-time bearer token.
+            debug: Enable debug mode for uvicorn (default: False)
+            protocol: "http" to launch as FastAPI, "mcp" to serve over MCP via
+                ``praisonai-mcp`` (install with ``pip install praisonai-mcp``).
+            
+        Returns:
+            None
+        """
+        if protocol == "http":
+            # Use centralized server registry
+
+            if not self.agents:
+                logging.warning("No agents to launch for HTTP mode. Add agents to the Agents instance first.")
+                return
+                
+            # Try to import FastAPI dependencies - lazy loading
+            try:
+                import uvicorn
+                from fastapi import FastAPI, HTTPException, Request
+                from fastapi.responses import JSONResponse
+                from pydantic import BaseModel
+                import threading
+                import time
+                import asyncio # Ensure asyncio is imported for HTTP mode too
+                
+                # Define the request model here since we need pydantic
+                class AgentQuery(BaseModel):
+                    query: str
+                    
+            except ImportError as e:
+                # Check which specific module is missing
+                missing_module = str(e).split("No module named '")[-1].rstrip("'")
+                display_error(f"Missing dependency: {missing_module}. Required for launch() method with HTTP mode.")
+                logging.error(f"Missing dependency: {missing_module}. Required for launch() method with HTTP mode.")
+                print(f"\nTo add API capabilities, install the required dependencies:")
+                print(f"pip install {missing_module}")
+                print("\nOr install all API dependencies with:")
+                print("pip install 'praisonaiagents[api]'")
+                return None
+
+            # Fail-closed bind guard shared with Agent.launch: never serve
+            # keyless on a non-loopback host. Applied only after the no-agents
+            # and dependency guards above, so a launch that bails out cannot
+            # mutate the process-wide launch token (which every route reads per
+            # request) and retroactively 401 an already-running endpoint.
+            host = _resolve_launch_host(host)
+            
+            # Thread-safe initialization of FastAPI app
+            app, is_new = _server_registry.get_or_create_app(
+                port, f"PraisonAI Agents API (Port {port})"
+            )
+            
+            if is_new:
+                # Add a root endpoint with a welcome message
+                @app.get("/")
+                async def root():
+                    return {
+                        "message": f"Welcome to PraisonAI Agents API on port {port}. See /docs for usage.",
+                        "endpoints": _server_registry.list_routes(port)
+                    }
+                
+                # Add healthcheck endpoint
+                @app.get("/health")
+                async def healthcheck():
+                    return {
+                        "status": "ok", 
+                        "endpoints": _server_registry.list_routes(port)
+                    }
+            
+            # Normalize path to ensure it starts with /
+            if not path.startswith('/'):
+                path = f'/{path}'
+                
+            # Generate a unique ID for this agent group's endpoint and reserve route atomically
+            endpoint_id = str(uuid.uuid4())
+            path, original_path = _server_registry.reserve_route(port, path, endpoint_id)
+            if original_path is not None:
+                logging.warning(f"Path '{original_path}' is already registered on port {port}. Please use a different path.")
+                print(f"⚠️ Warning: Path '{original_path}' is already registered on port {port}.")
+                logging.warning(f"Using '{path}' instead of '{original_path}'")
+                print(f"🔄 Using '{path}' instead")
+            
+            # Define the endpoint handler
+            @app.post(path)
+            async def handle_query(request: Request, query_data: Optional[AgentQuery] = None):
+                if not _authorise_launch_request(request):
+                    raise HTTPException(status_code=401, detail="Unauthorized")
+                # Handle both direct JSON with query field and form data
+                if query_data is None:
+                    try:
+                        request_data = await request.json()
+                        if "query" not in request_data:
+                            raise HTTPException(status_code=400, detail="Missing 'query' field in request")
+                        query = request_data["query"]
+                    except Exception:
+                        # Fallback to form data or query params
+                        form_data = await request.form()
+                        if "query" in form_data:
+                            query = form_data["query"]
+                        else:
+                            raise HTTPException(status_code=400, detail="Missing 'query' field in request")
+                else:
+                    query = query_data.query
+                
+                try:
+                    # Process the query sequentially through all agents
+                    current_input = query
+                    results = []
+                    
+                    for agent_instance in self.agents: # Corrected variable name to agent_instance
+                        try:
+                            # Use async version if available, otherwise use sync version
+                            if asyncio.iscoroutinefunction(agent_instance.chat):
+                                response = await agent_instance.achat(current_input, task_name=None, task_description=None, task_id=None)
+                            else:
+                                # Run sync function in a thread to avoid blocking
+                                # Use copy_context_to_callable to propagate contextvars (needed for trace emission)
+                                from ..trace.context_events import copy_context_to_callable
+                                loop = asyncio.get_running_loop()
+                                # Correctly pass current_input to the lambda for closure
+                                response = await loop.run_in_executor(None, copy_context_to_callable(lambda ci=current_input: agent_instance.chat(ci)))
+                            
+                            # Store this agent's result
+                            results.append({
+                                "agent": agent_instance.display_name,
+                                "response": response
+                            })
+                            
+                            # Use this response as input to the next agent
+                            current_input = response
+                        except Exception as e:
+                            logging.error(f"Error with agent {agent_instance.display_name}: {str(e)}", exc_info=True)
+                            results.append({
+                                "agent": agent_instance.display_name,
+                                "error": str(e)
+                            })
+                            # Decide error handling: continue with original input, last good input, or stop? 
+                            # For now, let's continue with the last successful 'current_input' or original 'query' if first agent fails
+                            # This part might need refinement based on desired behavior.
+                            # If an agent fails, its 'response' might be None or an error string.
+                            # current_input will carry that forward. Or, we could choose to halt or use last good input.
+                    
+                    # Return all results and the final output
+                    return {
+                        "query": query,
+                        "results": results,
+                        "final_response": current_input
+                    }
+                except Exception as e:
+                    logging.error(f"Error processing query: {str(e)}", exc_info=True)
+                    return JSONResponse(
+                        status_code=500,
+                        content={"error": f"Error processing query: {str(e)}"}
+                    )
+            
+            print(f"🚀 Multi-Agent HTTP API available at http://{host}:{port}{path}")
+            agent_names = ", ".join([agent.display_name for agent in self.agents])
+            print(f"📊 Available agents for this endpoint ({len(self.agents)}): {agent_names}")
+            
+            # Create per-agent endpoints for individual agent access
+            # This allows n8n and other tools to call specific agents
+            agents_dict = {agent.display_name.lower().replace(' ', '_'): agent for agent in self.agents}
+            
+            # Add GET endpoint to list available agents
+            @app.get(f"{path}/list")
+            async def list_agents(request: Request):
+                if not _authorise_launch_request(request):
+                    raise HTTPException(status_code=401, detail="Unauthorized")
+                return {
+                    "agents": [
+                        {"name": agent.display_name, "id": agent.display_name.lower().replace(' ', '_')}
+                        for agent in self.agents
+                    ]
+                }
+            
+            # Add per-agent POST endpoints
+            for agent_id, agent_instance in agents_dict.items():
+                agent_path = f"{path}/{agent_id}"
+                
+                # Create a closure to capture the agent instance
+                def create_agent_handler(agent):
+                    async def handle_single_agent(request: Request):
+                        if not _authorise_launch_request(request):
+                            raise HTTPException(status_code=401, detail="Unauthorized")
+                        try:
+                            request_data = await request.json()
+                            query = request_data.get("query", "")
+                            if not query:
+                                raise HTTPException(status_code=400, detail="Missing 'query' field")
+                        except Exception:
+                            raise HTTPException(status_code=400, detail="Invalid JSON body")
+                        
+                        try:
+                            if asyncio.iscoroutinefunction(agent.chat):
+                                response = await agent.achat(query)
+                            else:
+                                # Use copy_context_to_callable to propagate contextvars (needed for trace emission)
+                                from ..trace.context_events import copy_context_to_callable
+                                loop = asyncio.get_running_loop()
+                                response = await loop.run_in_executor(None, copy_context_to_callable(lambda q=query: agent.chat(q)))
+                            
+                            return {
+                                "agent": agent.display_name,
+                                "query": query,
+                                "response": response
+                            }
+                        except Exception as e:
+                            logging.error(f"Error with agent {agent.display_name}: {str(e)}", exc_info=True)
+                            return JSONResponse(
+                                status_code=500,
+                                content={"error": f"Agent error: {str(e)}"}
+                            )
+                    return handle_single_agent
+                
+                # Register the endpoint
+                app.post(agent_path)(create_agent_handler(agent_instance))
+                _server_registry.register_route(port, agent_path, f"{endpoint_id}_{agent_id}")
+            
+            print(f"🔗 Per-agent endpoints: {', '.join([f'{path}/{aid}' for aid in agents_dict.keys()])}")
+            
+            # Start the server if it's not already running for this port
+            if _server_registry.start_server_if_needed(port, host, log_level="debug" if debug else "info"):
+                print(f"✅ FastAPI server started at http://{host}:{port}")
+                print(f"📚 API documentation available at http://{host}:{port}/docs")
+                
+            endpoints = _server_registry.list_routes(port)
+            print(f"🔌 Registered HTTP endpoints on port {port}: {', '.join(endpoints)}")
+            
+            # Get the stack frame to check if this is the last launch() call in the script
+            import inspect
+            stack = inspect.stack()
+            
+            # If this is called from a Python script (not interactive), try to detect if it's the last launch call
+            if len(stack) > 1 and stack[1].filename.endswith('.py'):
+                caller_frame = stack[1]
+                caller_line = caller_frame.lineno
+                
+                try:
+                    # Read the file to check if there are more launch calls after this one
+                    with open(caller_frame.filename, 'r') as f:
+                        lines = f.readlines()
+                    
+                    # Check if there are more launch() calls after the current line
+                    has_more_launches = False
+                    for line_content in lines[caller_line:]: # Renamed variable
+                        if '.launch(' in line_content and not line_content.strip().startswith('#'):
+                            has_more_launches = True
+                            break
+                    
+                    # If this is the last launch call, block the main thread
+                    if not has_more_launches:
+                        try:
+                            print("\nAll agent groups registered for HTTP mode. Press Ctrl+C to stop the servers.")
+                            while True:
+                                time.sleep(1)
+                        except KeyboardInterrupt:
+                            print("\nServers stopped")
+                except Exception as e:
+                    # If something goes wrong with detection, block anyway to be safe
+                    logging.error(f"Error in HTTP launch detection: {e}")
+                    try:
+                        print("\nKeeping HTTP servers alive. Press Ctrl+C to stop.")
+                        while True:
+                            time.sleep(1)
+                    except KeyboardInterrupt:
+                        print("\nServers stopped")
+            return None
+
+        elif protocol == "mcp":
+            if not self.agents:
+                logging.warning("No agents to launch for MCP mode. Add agents to the Agents instance first.")
+                return
+
+            # Delegate to the praisonai-mcp agent adapter so multi-agent MCP
+            # serving shares one blessed entry point with the single-agent
+            # Agent.launch(protocol="mcp") path (both go through serve_agents).
+            # praisonai-mcp is an optional dependency imported lazily so core
+            # keeps no hard dependency on it.
+            try:
+                from praisonai_mcp import serve_agents
+
+                # Keep the call inside the ImportError guard: serve_agents()
+                # lazily imports its transport backend, so a praisonai-mcp
+                # installed without its optional transport extras surfaces the
+                # missing dependency here rather than at the import line above.
+                # Handling it in one place yields a single actionable install
+                # message instead of an uncaught traceback.
+                return serve_agents(self.agents, host=host, port=port)
+            except ImportError:
+                display_error("MCP serving requires the 'praisonai-mcp' package.")
+                logging.error("MCP serving requires the 'praisonai-mcp' package.")
+                print("\nTo add MCP capabilities, install: pip install praisonai-mcp")
+                return None
+        else:
+            display_error(f"Invalid protocol: {protocol}. Choose 'http' or 'mcp'.")
+            return None
+
+    # =========================================================================
+    # Planning Mode Properties and Methods
+    # =========================================================================
+    
+    @property
+    def current_plan(self):
+        """Get the current plan."""
+        return self._current_plan
+    
+    @property
+    def todo_list(self):
+        """Get the current todo list."""
+        return self._todo_list
+    
+    def _create_agent_from_config(self, agent_config: dict) -> 'Agent':
+        """
+        Create an Agent from a configuration dictionary.
+        
+        Args:
+            agent_config: Dict with keys like 'name', 'role', 'goal', 'backstory', 'llm', 'tools'
+            
+        Returns:
+            Agent instance
+        """
+        from ..agent.agent import Agent
+        
+        return Agent(
+            name=agent_config.get('name', 'TaskAgent'),
+            role=agent_config.get('role'),
+            goal=agent_config.get('goal'),
+            backstory=agent_config.get('backstory'),
+            llm=agent_config.get('llm'),
+            tools=agent_config.get('tools'),
+            output='verbose' if self.verbose >= 1 else 'silent',
+            memory=self.memory
+        )
+    
+    def _get_planning_agent(self):
+        """Lazy load PlanningAgent."""
+        if self._planning_agent is None and self.planning:
+            from ..planning import PlanningAgent
+            self._planning_agent = PlanningAgent(
+                llm=self.planning_llm,
+                read_only=True,
+                verbose=self.verbose,
+                tools=self.planning_tools,
+                reasoning=self.planning_reasoning
+            )
+        return self._planning_agent
+    
+    async def _create_plan(self, request: str = None, context: str = None):
+        """
+        Create an implementation plan.
+        
+        Args:
+            request: The request/goal to plan for
+            context: Optional additional context
+            
+        Returns:
+            Plan instance
+        """
+        planner = self._get_planning_agent()
+        if planner is None:
+            return None
+            
+        # Use first task description as request if not provided
+        if request is None and self.tasks:
+            first_task = list(self.tasks.values())[0]
+            request = first_task.description
+            
+        plan = await planner.create_plan(
+            request=request,
+            agents=self.agents,
+            tasks=list(self.tasks.values()),
+            context=context
+        )
+        
+        self._current_plan = plan
+        
+        # Create todo list from plan
+        from ..planning import TodoList
+        self._todo_list = TodoList.from_plan(plan)
+        
+        return plan
+    
+    def _create_plan_sync(self, request: str = None, context: str = None):
+        """
+        Synchronous version of _create_plan.
+        
+        Args:
+            request: The request/goal to plan for
+            context: Optional additional context
+            
+        Returns:
+            Plan instance
+        """
+        planner = self._get_planning_agent()
+        if planner is None:
+            return None
+            
+        # Use first task description as request if not provided
+        if request is None and self.tasks:
+            first_task = list(self.tasks.values())[0]
+            request = first_task.description
+            
+        plan = planner.create_plan_sync(
+            request=request,
+            agents=self.agents,
+            tasks=list(self.tasks.values()),
+            context=context
+        )
+        
+        self._current_plan = plan
+        
+        # Create todo list from plan
+        from ..planning import TodoList
+        self._todo_list = TodoList.from_plan(plan)
+        
+        return plan
+    
+    async def _request_approval(self, plan):
+        """
+        Request approval for a plan.
+        
+        Args:
+            plan: Plan to approve
+            
+        Returns:
+            True if approved, False if rejected
+        """
+        if self.auto_approve_plan:
+            plan.approve()
+            return True
+            
+        from ..planning import ApprovalCallback
+        callback = ApprovalCallback(auto_approve=self.auto_approve_plan)
+        return await callback.async_call(plan)
+    
+    def _request_approval_sync(self, plan):
+        """
+        Synchronous version of _request_approval.
+        
+        Args:
+            plan: Plan to approve
+            
+        Returns:
+            True if approved, False if rejected
+        """
+        if self.auto_approve_plan:
+            plan.approve()
+            return True
+            
+        from ..planning import ApprovalCallback
+        callback = ApprovalCallback(auto_approve=self.auto_approve_plan)
+        return callback(plan)
+    
+    def get_plan_markdown(self) -> str:
+        """
+        Get the current plan as markdown.
+        
+        Returns:
+            Markdown string or empty string if no plan
+        """
+        if self._current_plan:
+            return self._current_plan.to_markdown()
+        return ""
+    
+    def get_todo_markdown(self) -> str:
+        """
+        Get the current todo list as markdown.
+        
+        Returns:
+            Markdown string or empty string if no todo list
+        """
+        if self._todo_list:
+            return self._todo_list.to_markdown()
+        return ""
+    
+    def update_plan_step_status(self, step_id: str, status: str) -> bool:
+        """
+        Update the status of a plan step.
+        
+        Args:
+            step_id: ID of the step to update
+            status: New status
+            
+        Returns:
+            True if updated, False if not found
+        """
+        if self._current_plan:
+            result = self._current_plan.update_step_status(step_id, status)
+            # Sync todo list
+            if self._todo_list:
+                self._todo_list.sync_with_plan(self._current_plan)
+            return result
+        return False
+    
+    def _run_with_planning(self):
+        """
+        Run tasks with planning mode enabled.
+        
+        This method:
+        1. Creates a plan using PlanningAgent
+        2. Generates a todo list from the plan
+        3. Creates proper Task objects from plan steps
+        4. Executes each task using the full Task execution system
+           (with memory, callbacks, guardrails, structured output, etc.)
+        5. Tracks progress as items are completed
+        """
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.markdown import Markdown
+        from ..task import Task
+        
+        console = Console()
+        
+        # Step 1: Create the plan
+        console.print("\n[bold blue]📋 PLANNING PHASE[/bold blue]")
+        console.print("[dim]Creating implementation plan...[/dim]\n")
+        
+        # Build request from tasks
+        task_descriptions = [task.description for task in self.tasks.values()]
+        request = " AND ".join(task_descriptions)
+        
+        plan = self._create_plan_sync(request=request)
+        
+        if not plan:
+            console.print("[yellow]⚠️ Planning failed, falling back to normal execution[/yellow]")
+            self.run_all_tasks()
+            return
+        
+        # Display the plan
+        console.print(Panel(
+            Markdown(plan.to_markdown()),
+            title="[bold green]Generated Plan[/bold green]",
+            border_style="green"
+        ))
+        
+        # Step 2: Request approval if not auto-approve
+        if not self.auto_approve_plan:
+            approved = self._request_approval_sync(plan)
+            if not approved:
+                console.print("[red]❌ Plan rejected. Aborting execution.[/red]")
+                return
+        else:
+            plan.approve()
+            console.print("[green]✅ Plan auto-approved[/green]")
+        
+        # Step 3: Create todo list for tracking
+        from ..planning import TodoList
+        self._todo_list = TodoList.from_plan(plan)
+        
+        console.print("\n[bold blue]📝 TODO LIST[/bold blue]")
+        console.print(Panel(
+            Markdown(self._todo_list.to_markdown()),
+            title="[bold cyan]Tasks to Complete[/bold cyan]",
+            border_style="cyan"
+        ))
+        
+        # Emit planning event for trace observers
+        try:
+            from ..trace.protocol import get_default_emitter, ActionEvent
+            import time
+            
+            emitter = get_default_emitter()
+            if emitter and emitter.enabled:
+                emitter.emit(ActionEvent(
+                    event_type="plan_created",
+                    timestamp=time.time(),
+                    agent_name="PlanningAgent",
+                    metadata={"plan": self._todo_list.to_markdown()}
+                ))
+        except Exception:
+            pass
+        
+        # Step 4: Create proper Task objects from plan steps
+        console.print("\n[bold blue]🚀 EXECUTION PHASE[/bold blue]\n")
+        
+        # Map agent names to agent instances
+        agent_map = {agent.display_name: agent for agent in self.agents}
+        
+        # Store original tasks and create new tasks from plan
+        original_tasks = self.tasks.copy()
+        self.tasks = {}
+        with self._task_id_lock:
+            self.task_id_counter = 0
+        
+        # Create Task objects from plan steps
+        plan_tasks = []
+        step_to_task = {}  # Map step_id to task for context chaining
+        
+        for i, step in enumerate(plan.steps):
+            # Get the appropriate agent
+            agent = agent_map.get(step.agent, self.agents[0] if self.agents else None)
+            
+            if not agent:
+                console.print(f"[yellow]⚠️ No agent found for '{step.agent}', using first available[/yellow]")
+                agent = self.agents[0] if self.agents else None
+            
+            if not agent:
+                console.print(f"[red]❌ No agents available for step: {step.description}[/red]")
+                continue
+            
+            # Build context from dependencies (previous task results)
+            context = []
+            for dep_id in step.dependencies:
+                # Convert step_X format to actual step index
+                if dep_id.startswith("step_"):
+                    try:
+                        dep_index = int(dep_id.split("_")[1])
+                        if dep_index < len(plan_tasks):
+                            context.append(plan_tasks[dep_index])
+                    except (ValueError, IndexError):
+                        pass
+                elif dep_id in step_to_task:
+                    context.append(step_to_task[dep_id])
+            
+            # Find matching original task for additional config (memory, callbacks, etc.)
+            original_task = None
+            for orig_task in original_tasks.values():
+                if orig_task.agent and orig_task.agent.display_name == agent.display_name:
+                    original_task = orig_task
+                    break
+            
+            # Create Task with full features from original task if available
+            task = Task(
+                description=step.description,
+                expected_output=f"Complete: {step.description}",
+                agent=agent,
+                name=f"Plan Step {i + 1}",
+                tools=agent.tools if agent.tools else [],
+                context=context if context else None,
+                # Inherit from original task if available
+                memory=original_task.memory if original_task else None,
+                on_task_complete=original_task.callback if original_task else None,
+                guardrails=original_task.guardrail if original_task else None,
+                max_retries=original_task.max_retries if original_task else 3,
+                output_json=original_task.output_json if original_task else None,
+                output_pydantic=original_task.output_pydantic if original_task else None,
+                config=original_task.config if original_task else {}
+            )
+            
+            # Add task to our task list
+            task_id = self.add_task(task)
+            plan_tasks.append(task)
+            step_to_task[step.id] = task
+        
+        # Step 5: Execute tasks using the proper Task execution system
+        for i, (task_id, task) in enumerate(self.tasks.items()):
+            # Update todo list progress
+            if i < len(self._todo_list.items):
+                item = self._todo_list.items[i]
+                
+                # Display progress bar
+                progress = self._todo_list.progress
+                bar_length = 30
+                filled = int(bar_length * progress)
+                bar = "█" * filled + "░" * (bar_length - filled)
+                console.print(f"[dim]Progress: [{bar}] {progress * 100:.0f}%[/dim]")
+                
+                console.print(f"\n[bold]📌 Step {i + 1}/{len(self.tasks)}:[/bold] {task.description[:60]}...")
+                console.print(f"[dim]   Agent: {task.agent.display_name if task.agent else 'Unknown'}[/dim]")
+                
+                # Mark as in progress
+                self._todo_list.start(item.id)
+            
+            # Execute using the full Task execution system
+            # This includes: memory, callbacks, guardrails, structured output, retry logic
+            try:
+                self.run_task(task_id)
+                
+                if task.status == "completed":
+                    if i < len(self._todo_list.items):
+                        self._todo_list.complete(self._todo_list.items[i].id)
+                    console.print("[green]   ✅ Completed[/green]")
+                else:
+                    console.print(f"[yellow]   ⚠️ Task status: {task.status}[/yellow]")
+            except Exception as e:
+                console.print(f"[red]   ❌ Error: {e}[/red]")
+                logger.error(f"Error executing plan task {task_id}: {e}")
+        
+        # Final progress
+        completed_count = len([t for t in self.tasks.values() if t.status == "completed"])
+        console.print(f"\n[bold green]🎉 EXECUTION COMPLETE[/bold green]")
+        console.print(f"[dim]Progress: [{'█' * 30}] 100%[/dim]")
+        console.print(f"[green]Completed {completed_count}/{len(self.tasks)} tasks![/green]\n")
+        
+        # Keep plan-step tasks/results under _plan_tasks for introspection,
+        # then restore the user's original task set as the canonical self.tasks.
+        self._plan_tasks = self.tasks
+        self.tasks = original_tasks
+        with self._task_id_lock:
+            self.task_id_counter = (
+                max(original_tasks.keys()) + 1 if original_tasks else 0
+            )
+
+    # Resource Lifecycle Management
+    def close(self) -> None:
+        """Close all agent resources and cleanup connections.
+        
+        This method ensures proper cleanup of:
+        - Agent resources (connections, file handles)
+        - Shared memory connections (SQLite, ChromaDB, MongoDB)
+        - Context manager resources
+        """
+        from .._logging import get_logger
+        logger = get_logger(__name__)
+        
+        # Close all agents
+        for agent in self.agents:
+            try:
+                if hasattr(agent, 'close') and callable(agent.close):
+                    agent.close()
+                    logger.debug(f"Closed resources for agent: {agent.name}")
+            except Exception as e:
+                logger.warning(f"Agent {getattr(agent, 'name', 'unknown')} cleanup failed: {e}")
+        
+        # Close shared memory resources
+        if hasattr(self, 'shared_memory') and self.shared_memory:
+            try:
+                if hasattr(self.shared_memory, 'close') and callable(self.shared_memory.close):
+                    self.shared_memory.close()
+                    logger.debug("Closed shared memory resources")
+            except Exception as e:
+                logger.warning(f"Shared memory cleanup failed: {e}")
+        
+        # Close context manager if initialized
+        if hasattr(self, '_context_manager') and self._context_manager:
+            try:
+                if hasattr(self._context_manager, 'close') and callable(self._context_manager.close):
+                    self._context_manager.close()
+                    logger.debug("Closed context manager resources")
+            except Exception as e:
+                logger.warning(f"Context manager cleanup failed: {e}")
+
+    # Spawn-Announce Protocol Implementation
+    def spawn_sub_agent(
+        self,
+        agent: Agent,
+        task: Any,
+        completion_callback: Optional[Callable[[SubAgentCompletionEvent], Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> SpawnedSubAgent:
+        """Spawn a sub-agent for non-blocking execution (sync version).
+        
+        Implements the SpawnAnnounceProtocol for efficient parallel sub-agent workflows.
+        Integrates with existing handoff infrastructure to avoid code duplication.
+        Uses threading.Thread for background execution.
+        
+        Note: For async contexts, use aspawn_sub_agent() which uses asyncio primitives.
+        This method is safe to call from sync contexts only.
+        """
+        with self._spawn_lock:
+            # Create unique IDs
+            agent_id = f"{self._team_id}_{str(uuid.uuid4())[:8]}"
+            task_id = f"task_{str(uuid.uuid4())[:8]}"
+            
+            # Ensure event bus is initialized
+            if self._event_bus is None:
+                self._event_bus = EventBus()
+                # Subscribe to completion events for this team
+                self._event_bus.subscribe(
+                    self._handle_sub_agent_completion, 
+                    [EventType.SUBAGENT_COMPLETED.value, EventType.SUBAGENT_ERROR.value]
+                )
+            
+            # Create spawned agent record
+            spawned = SpawnedSubAgent(
+                agent_id=agent_id,
+                task_id=task_id,
+                agent=agent,
+                task=task,
+                spawn_time=time.time(),
+                parent_id=self._team_id,
+                metadata=metadata or {}
+            )
+            
+            # Store spawn record and callback
+            self._spawned_agents[agent_id] = spawned
+            if completion_callback:
+                self._completion_callbacks[agent_id] = completion_callback
+            
+            # Publish spawn event
+            self._event_bus.publish(
+                EventType.SUBAGENT_SPAWNED.value,
+                {
+                    "agent_id": agent_id,
+                    "task_id": task_id,
+                    "parent_id": self._team_id,
+                    "agent_name": getattr(agent, 'name', 'unknown'),
+                    "spawn_time": spawned.spawn_time,
+                    "metadata": spawned.metadata
+                }
+            )
+            
+            # Start the sub-agent asynchronously
+            import threading
+            def _execute_sub_agent():
+                try:
+                    # Execute the task with the sub-agent
+                    if hasattr(task, 'description'):
+                        result = agent.start(task.description)
+                    else:
+                        result = agent.start(str(task))
+                    
+                    # Announce successful completion
+                    self.announce_completion(agent_id, task_id, result, success=True)
+                except Exception as e:
+                    # Announce failure
+                    self.announce_completion(agent_id, task_id, None, success=False, error=str(e))
+            
+            spawn_thread = threading.Thread(target=_execute_sub_agent, daemon=True)
+            spawn_thread.start()
+            
+            logger.debug(f"Spawned sub-agent {agent_id} for task {task_id}")
+            return spawned
+    
+    def announce_completion(
+        self,
+        agent_id: str,
+        task_id: str,
+        result: Any,
+        success: bool = True,
+        error: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Announce sub-agent completion via event bus (sync version).
+        
+        Note: For async contexts, use aannounce_completion() to avoid blocking the event loop.
+        """
+        with self._spawn_lock:
+            # Create completion event
+            completion_event = SubAgentCompletionEvent(
+                agent_id=agent_id,
+                task_id=task_id,
+                result=result,
+                success=success,
+                error=error,
+                parent_id=self._team_id,
+                metadata=metadata or {}
+            )
+            
+            # Store the completion event
+            self._completion_events.append(completion_event)
+            
+            # Publish completion event via event bus
+            if self._event_bus:
+                event_type = EventType.SUBAGENT_COMPLETED.value if success else EventType.SUBAGENT_ERROR.value
+                self._event_bus.publish(
+                    event_type,
+                    {
+                        "agent_id": agent_id,
+                        "task_id": task_id,
+                        "parent_id": self._team_id,
+                        "result": result,
+                        "success": success,
+                        "error": error,
+                        "completion_time": completion_event.completion_time,
+                        "metadata": completion_event.metadata
+                    }
+                )
+            
+            logger.debug(f"Announced completion for sub-agent {agent_id}: {'success' if success else 'error'}")
+    
+    def get_spawned_agents(self) -> List[SpawnedSubAgent]:
+        """Get list of currently spawned sub-agents."""
+        with self._spawn_lock:
+            return list(self._spawned_agents.values())
+    
+    def wait_for_completions(
+        self,
+        timeout: Optional[float] = None,
+        agent_ids: Optional[List[str]] = None
+    ) -> List[SubAgentCompletionEvent]:
+        """Wait for sub-agent completions (optional blocking method)."""
+        import time as time_module
+        start_time = time_module.time()
+        
+        # Read target agents inside lock to avoid race condition
+        with self._spawn_lock:
+            target_agents = agent_ids or list(self._spawned_agents.keys())
+        
+        completed_agents = set()
+        
+        while True:
+            # Check for completed agents
+            with self._spawn_lock:
+                for event in self._completion_events:
+                    if event.agent_id in target_agents:
+                        completed_agents.add(event.agent_id)
+                
+                # Return if all target agents are completed
+                if completed_agents >= set(target_agents):
+                    return [e for e in self._completion_events if e.agent_id in target_agents]
+            
+            # Check timeout
+            if timeout and (time_module.time() - start_time) > timeout:
+                break
+                
+            # Brief sleep to avoid busy waiting
+            time_module.sleep(0.1)
+        
+        # Return whatever completions we have
+        with self._spawn_lock:
+            return [e for e in self._completion_events if e.agent_id in target_agents]
+    
+    def _handle_sub_agent_completion(self, event: Event) -> None:
+        """Internal handler for sub-agent completion events."""
+        if event.data.get("parent_id") != self._team_id:
+            return  # Not for this team
+        
+        agent_id = event.data.get("agent_id")
+        if not agent_id:
+            return
+        
+        # Call registered completion callback if any
+        with self._spawn_lock:
+            callback = self._completion_callbacks.get(agent_id)
+            if callback:
+                try:
+                    completion_event = SubAgentCompletionEvent(
+                        agent_id=agent_id,
+                        task_id=event.data.get("task_id", ""),
+                        result=event.data.get("result"),
+                        success=event.data.get("success", False),
+                        error=event.data.get("error"),
+                        completion_time=event.data.get("completion_time", time.time()),
+                        parent_id=event.data.get("parent_id"),
+                        metadata=event.data.get("metadata", {})
+                    )
+                    callback(completion_event)
+                except Exception as e:
+                    logger.warning(f"Completion callback failed for agent {agent_id}: {e}")
+            
+            # Clean up completed agent
+            if agent_id in self._spawned_agents:
+                del self._spawned_agents[agent_id]
+            if agent_id in self._completion_callbacks:
+                del self._completion_callbacks[agent_id]
+
+    # Async variants for asyncio-based orchestration (per AGENTS.md guidelines)
+    
+    async def aspawn_sub_agent(
+        self,
+        agent: Agent,
+        task: Any,
+        completion_callback: Optional[Callable[[SubAgentCompletionEvent], Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> SpawnedSubAgent:
+        """Async version of spawn_sub_agent using asyncio primitives."""
+        import asyncio
+        
+        # Use asyncio lock for async coordination
+        if not hasattr(self, '_async_spawn_lock'):
+            self._async_spawn_lock = asyncio.Lock()
+        
+        async with self._async_spawn_lock:
+            # Create unique IDs
+            agent_id = f"{self._team_id}_{str(uuid.uuid4())[:8]}"
+            task_id = f"task_{str(uuid.uuid4())[:8]}"
+            
+            # Ensure event bus is initialized
+            if self._event_bus is None:
+                self._event_bus = EventBus()
+                # Subscribe to completion events for this team
+                self._event_bus.subscribe(
+                    self._handle_sub_agent_completion, 
+                    [EventType.SUBAGENT_COMPLETED.value, EventType.SUBAGENT_ERROR.value]
+                )
+            
+            # Create spawned agent record
+            spawned = SpawnedSubAgent(
+                agent_id=agent_id,
+                task_id=task_id,
+                agent=agent,
+                task=task,
+                spawn_time=time.time(),
+                parent_id=self._team_id,
+                metadata=metadata or {}
+            )
+            
+            # Store spawn record and callback
+            self._spawned_agents[agent_id] = spawned
+            if completion_callback:
+                self._completion_callbacks[agent_id] = completion_callback
+            
+            # Publish spawn event
+            if self._event_bus:
+                self._event_bus.publish(
+                    EventType.SUBAGENT_SPAWNED,
+                    {
+                        "agent_id": agent_id,
+                        "task_id": task_id,
+                        "parent_id": self._team_id,
+                        "spawn_time": spawned.spawn_time,
+                        "metadata": spawned.metadata
+                    }
+                )
+        
+        # Execute sub-agent asynchronously using asyncio.create_task
+        async def _aexecute_sub_agent():
+            try:
+                # Use agent's async start method
+                result = await agent.astart(str(task))
+                await self.aannounce_completion(agent_id, task_id, result, success=True)
+            except Exception as e:
+                logger.warning(f"Sub-agent {agent_id} failed: {e}")
+                await self.aannounce_completion(agent_id, task_id, None, success=False, error=str(e))
+        
+        # Create task for background execution
+        asyncio.create_task(_aexecute_sub_agent())
+        
+        logger.debug(f"Async spawned sub-agent {agent_id} for task {task_id}")
+        return spawned
+
+    async def aannounce_completion(
+        self,
+        agent_id: str,
+        task_id: str,
+        result: Any,
+        success: bool = True,
+        error: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Async version of announce_completion."""
+        import asyncio
+        
+        if not hasattr(self, '_async_spawn_lock'):
+            self._async_spawn_lock = asyncio.Lock()
+        
+        async with self._async_spawn_lock:
+            # Create completion event
+            completion_event = SubAgentCompletionEvent(
+                agent_id=agent_id,
+                task_id=task_id,
+                result=result,
+                success=success,
+                error=error,
+                parent_id=self._team_id,
+                metadata=metadata or {}
+            )
+            
+            # Store the completion event
+            self._completion_events.append(completion_event)
+            
+            # Publish completion event via event bus (use async if available)
+            if self._event_bus:
+                event_type = EventType.SUBAGENT_COMPLETED.value if success else EventType.SUBAGENT_ERROR.value
+                if hasattr(self._event_bus, 'publish_async'):
+                    await self._event_bus.publish_async(
+                        event_type,
+                        {
+                            "agent_id": agent_id,
+                            "task_id": task_id,
+                            "parent_id": self._team_id,
+                            "result": result,
+                            "success": success,
+                            "error": error,
+                            "completion_time": completion_event.completion_time,
+                            "metadata": completion_event.metadata
+                        }
+                    )
+                else:
+                    # Fallback to sync publish
+                    self._event_bus.publish(
+                        event_type,
+                        {
+                            "agent_id": agent_id,
+                            "task_id": task_id,
+                            "parent_id": self._team_id,
+                            "result": result,
+                            "success": success,
+                            "error": error,
+                            "completion_time": completion_event.completion_time,
+                            "metadata": completion_event.metadata
+                        }
+                    )
+            
+            logger.debug(f"Async announced completion for sub-agent {agent_id}: {'success' if success else 'error'}")
+
+    async def await_for_completions(
+        self,
+        timeout: Optional[float] = None,
+        agent_ids: Optional[List[str]] = None
+    ) -> List[SubAgentCompletionEvent]:
+        """Async, event-driven version of wait_for_completions."""
+        import asyncio
+        
+        # Read target agents inside lock to avoid race condition
+        if not hasattr(self, '_async_spawn_lock'):
+            self._async_spawn_lock = asyncio.Lock()
+        
+        async with self._async_spawn_lock:
+            target_agents = agent_ids or list(self._spawned_agents.keys())
+        
+        if not target_agents:
+            # Return existing completions for the requested agents
+            async with self._async_spawn_lock:
+                return [e for e in self._completion_events if not agent_ids or e.agent_id in agent_ids]
+        
+        # Use asyncio.Event for efficient waiting
+        completion_event = asyncio.Event()
+        completed_agents = set()
+        
+        def check_completions():
+            """Check if all target agents are completed - THREAD-SAFE version."""
+            for event in self._completion_events:
+                if event.agent_id in target_agents:
+                    completed_agents.add(event.agent_id)
+            
+            if completed_agents >= set(target_agents):
+                # CRITICAL FIX: Use call_soon_threadsafe() to safely set event from background thread
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.call_soon_threadsafe(completion_event.set)
+                except RuntimeError:
+                    # Fallback if no event loop running
+                    pass
+        
+        # Check initial state
+        check_completions()
+        
+        if not completion_event.is_set():
+            # Subscribe to completion events temporarily
+            def completion_handler(event):
+                if event.data.get("parent_id") == self._team_id:
+                    check_completions()
+            
+            subscriber_id = self._event_bus.subscribe(
+                completion_handler,
+                [EventType.SUBAGENT_COMPLETED.value, EventType.SUBAGENT_ERROR.value]
+            ) if self._event_bus else None
+            
+            try:
+                # Wait for completion or timeout
+                await asyncio.wait_for(completion_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+            finally:
+                # Unsubscribe
+                if subscriber_id and self._event_bus:
+                    self._event_bus.unsubscribe(subscriber_id)
+        
+        # Return completed events
+        async with self._async_spawn_lock:
+            return [e for e in self._completion_events if e.agent_id in target_agents]
+
+    def __enter__(self):
+        """Context manager entry point for resource management."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit point - ensures resource cleanup."""
+        self.close()
+
+    async def __aenter__(self):
+        """Async context manager entry point for resource management."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit point - ensures async resource cleanup."""
+        from .._logging import get_logger
+        logger = get_logger(__name__)
+        
+        # Close all agents async if they support it
+        for agent in self.agents:
+            try:
+                if hasattr(agent, 'aclose') and callable(agent.aclose):
+                    await agent.aclose()
+                    logger.debug(f"Async closed resources for agent: {agent.name}")
+                elif hasattr(agent, 'close') and callable(agent.close):
+                    agent.close()
+                    logger.debug(f"Closed resources for agent: {agent.name}")
+            except Exception as e:
+                logger.warning(f"Agent {getattr(agent, 'name', 'unknown')} async cleanup failed: {e}")
+        
+        # Close shared memory resources (async if supported)
+        if hasattr(self, 'shared_memory') and self.shared_memory:
+            try:
+                if hasattr(self.shared_memory, 'aclose') and callable(self.shared_memory.aclose):
+                    await self.shared_memory.aclose()
+                    logger.debug("Async closed shared memory resources")
+                elif hasattr(self.shared_memory, 'close') and callable(self.shared_memory.close):
+                    self.shared_memory.close()
+                    logger.debug("Closed shared memory resources")
+            except Exception as e:
+                logger.warning(f"Shared memory async cleanup failed: {e}")
+
+# Backward compatibility aliases (silent - no deprecation warnings)
+# AgentTeam is the primary name (v1.0+)
+# AgentManager, Agents, PraisonAIAgents are silent aliases
+AgentManager = AgentTeam
+Agents = AgentTeam
+PraisonAIAgents = AgentTeam

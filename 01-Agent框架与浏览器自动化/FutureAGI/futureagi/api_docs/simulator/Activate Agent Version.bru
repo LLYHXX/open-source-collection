@@ -1,0 +1,56 @@
+meta {
+  name: Activate Agent Version
+  type: http
+  seq: 8
+}
+
+post {
+  url: http://localhost:8000/simulate/agent-definitions/{{agent_id}}/versions/{{version_id}}/activate/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Activate Agent Version
+  description: Activate a specific agent version and deactivate all other versions of the same agent
+  response: {
+    "message": "Agent version activated successfully",
+    "version": {
+      "id": "v3-uuid-here",
+      "version_number": 3,
+      "version_name": "v3",
+      "version_name_display": "v3",
+      "status": "active",
+      "status_display": "Active",
+      "score": 8.7,
+      "test_count": 45,
+      "pass_rate": 91.0,
+      "description": "Improved empathy responses and added product knowledge base",
+      "release_notes": "This version includes:\n- Improved empathy responses\n- Enhanced product knowledge base\n- Better escalation handling\n- Updated greeting scripts",
+      "agent_definition": "agent-uuid-here",
+      "organization": "org-uuid-here",
+      "configuration_snapshot": {
+        "id": "agent-uuid-here",
+        "agent_name": "Customer Service Rep",
+        "contact_number": "+1 555-0123",
+        "inbound": true,
+        "description": "Friendly customer service agent for handling support inquiries with empathy and efficiency",
+        "assistant_id": "asst_customer_001",
+        "language": "en",
+        "websocket_url": "wss://example.com/ws",
+        "websocket_headers": {},
+        "organization": "org-uuid-here",
+        "created_at": "2025-01-15T09:15:00Z",
+        "updated_at": "2025-01-20T10:30:00Z"
+      },
+      "is_active": true,
+      "is_latest": true,
+      "created_at": "2025-01-20T10:30:00Z",
+      "updated_at": "2025-01-20T10:30:00Z"
+    }
+  }
+}

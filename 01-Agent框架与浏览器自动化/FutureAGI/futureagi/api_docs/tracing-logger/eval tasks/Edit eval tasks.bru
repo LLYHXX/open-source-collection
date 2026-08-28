@@ -1,0 +1,63 @@
+meta {
+  name: Edit eval tasks
+  type: http
+  seq: 10
+}
+
+patch {
+  url: {{host}}/tracer/eval-task/update_eval_task/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "name": "test2",
+      "spansLimit": 7,
+      "samplingRate": 50,
+      "evals": [
+          "0dfc07f8-40d3-4fbe-a915-90624fec09d6",
+          "33af790e-d176-4876-b3bb-c088ef1819bf",
+          "a6e0c8fe-4f40-4195-9000-1edd07632c62",
+          "c2e03a62-0479-4ed3-8ac6-077177e47575",
+          "251c72e9-1444-45d6-a461-6d3a432c333b"
+      ],
+      "runType": "historical",
+      "filters": {
+          "project_id": "41503414-f181-455f-90bc-e6cd5b89f50a",
+          "observationType": [
+              "agent"
+          ],
+          "dateRange": [
+              "2024-11-08T10:04:37.000Z",
+              "2025-05-08T18:29:59.000Z"
+          ]
+      },
+      "eval_task_id": "75d45a37-35f5-4423-b687-a4fea9c00d95",
+    "edit_type": "edit_rerun"
+  }
+}
+
+docs {
+  For deleting and starting fresh: use edit_type = "fresh_run" and for edit and rerun, use edit_type = "edit_rerun"
+  Change spans_limit and sampling rate to check  following behaviour:
+  1. When span limit and sampling rate is unchanged, eval is added, new eval runs on processed spans
+  2. When span limit is increased, sampling rate is unchanged, eval is added, existing eval runs on new spans only(span limit - processed spans) while new eval runs on all
+  3. When span limit is decreased, sampling rate is unchanged, eval is added, new evals runs on a sample of processed spans of sample size min(span limit, sampling rate)
+  4. When span limit is unchanged, sampling rate is increased, eval is added, new evals runs on new spans if max spans > old SR and max spans <= SR
+  5. When span limit is unchanged, sampling rate is decreased, eval is added, new evals runs on sample of processed spns = sample size
+  6. When span limit is increased, sampling rate is decreased, eval is added, new evals runs only if old max spans < new sampling rate
+  7. When span limit is increased, sampling rate is increased, eval is added, new evals runs on min(max spans, sampling rate)-processed_spans
+  8. When span limit is decreased, sampling rate is increased, eval is added, new evals runs on sample of processed spans,sample size= span limit
+  9. When span limit is decreased,sampling rate is decreased, eval is added, new evals runs on sample of processed spans, sample size = min(span limit, sapling rate)
+
+  To check removal of evals from task and observe homepage, remove id of eval from payload and update task
+
+  10. New continous task now runs only on spans added after task creation
+  11. Continous task doesn’t update to pending for each cycle until repicked
+  12. Pause and unpause apis are working
+}

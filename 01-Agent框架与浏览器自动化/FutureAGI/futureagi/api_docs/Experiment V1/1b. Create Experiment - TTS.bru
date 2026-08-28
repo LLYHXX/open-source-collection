@@ -1,0 +1,90 @@
+meta {
+  name: Create Experiment - TTS
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/experiments/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "dataset_id": "d45c7229-b80a-4f77-bc97-94b720eea501",
+    "column_id": "103d6aa0-dc9c-4a55-a30a-79992036ba49",
+    "name": "TTS exp 2",
+    "prompt_config": [
+      {
+        "name": "rp1",
+        "version": "",
+        "model_type": "tts",
+        "messages": [
+          {
+            "role": "system",
+            "content": [{"type": "text", "text": ""}]
+          },
+          {
+            "role": "user",
+            "content": [{"type": "text", "text": "I am going to talk about {{103d6aa0-dc9c-4a55-a30a-79992036ba49}}\n"}]
+          }
+        ],
+        "model": [
+          {"name": "openai/tts-1-hd", "config": {"voice": "alloy"}},
+          {"name": "openai/tts-1-hd", "config": {"voice": "echo"}},
+          {"name": "openai/tts-1-hd", "config": {"voice": "fable"}},
+          {"name": "openai/tts-1-hd", "config": {"voice": "onyx"}},
+          {"name": "openai/tts-1", "config": {"voice": "alloy"}},
+          {"name": "eleven_flash_v2_5", "config": {"voice": "Alice"}},
+          {"name": "eleven_flash_v2_5", "config": {"voice": "Charlie"}},
+          {"name": "eleven_flash_v2_5", "config": {"voice": "Callum"}}
+        ],
+        "model_params": {
+          "openai/tts-1-hd": {
+            "temperature": 0.5,
+            "providers": "openai",
+            "logo_url": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+          },
+          "openai/tts-1": {
+            "temperature": 0.5,
+            "providers": "openai",
+            "logo_url": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+          },
+          "eleven_flash_v2_5": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.45,
+            "providers": "elevenlabs",
+            "logo_url": "https://fi-content-dev.s3.ap-south-1.amazonaws.com/provider-logos/elevenlabs-small.png"
+          }
+        },
+        "configuration": {
+          "tool_choice": "auto",
+          "tools": []
+        },
+        "output_format": "audio"
+      }
+    ],
+    "user_eval_template_ids": [
+      "6ced8388-be14-44a7-bcd5-420ab0b96a08"
+    ]
+  }
+}
+
+docs {
+  ## Create Experiment - TTS (V1)
+
+  Creates a TTS experiment. Models are object arrays with `name` + `config` (voice selection).
+  model_params are keyed by base model name (not per-voice).
+  output_format is "audio".
+
+  ### Response
+  ```json
+  {"message": "Experiment created successfully.", "status": 200}
+  ```
+}

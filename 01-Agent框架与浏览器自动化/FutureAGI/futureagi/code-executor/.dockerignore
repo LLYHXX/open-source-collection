@@ -1,0 +1,78 @@
+# ============================================================================
+# code-executor/.dockerignore
+# Slims the build context for `docker build ./futureagi/code-executor`.
+# This image runs a sandboxed Python/JS executor (nsjail + FastAPI). The
+# build context is small to begin with (config/, server.py) — we just keep
+# dev/test artifacts and docs out of the image.
+# ============================================================================
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv / pip caches
+.uv-cache/
+pip-wheel-metadata/
+
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage-reports/
+tests/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Logs & runtime artifacts
+*.log
+logs/
+
+# Process core dumps
+core
+!**/core/
+core.[0-9]*
+
+# Docs
+README.md
+docs/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docker files
+Dockerfile
+Dockerfile.*
+docker-compose*.yml
+.dockerignore
+
+# IDE / editor / OS
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+.DS_Store
+**/.DS_Store

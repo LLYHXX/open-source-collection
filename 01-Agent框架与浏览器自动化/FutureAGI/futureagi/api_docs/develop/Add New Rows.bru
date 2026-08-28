@@ -1,0 +1,65 @@
+meta {
+  name: Add New Rows
+  type: http
+  seq: 18
+}
+
+post {
+
+  url: http://localhost:8000/model-hub/datasets/5ada6f68-bf23-401f-a559-3927e3d30f9d/conditional-column/
+
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+
+  token: {{access_token}}
+
+}
+
+body:json {
+  {
+
+    "config": [
+      {
+        "branch_type": "if",
+        "condition": "{{2775e4e1-4b21-42d6-9d24-c2bab6a40450}} contains francisco",
+        "branch_node_config": {
+          "type": "entity_extraction",
+          "config": {
+            "column_id": "{{2775e4e1-4b21-42d6-9d24-c2bab6a40450}}",
+            "instruction": "extract all names",
+            "language_model_id": "gpt-4o-mini"
+          }
+        }
+      },
+      {
+        "branch_type": "elif",
+        "condition": "{{2775e4e1-4b21-42d6-9d24-c2bab6a40450}} contains three",
+        "branch_node_config": {
+          "type": "entity_extraction",
+          "config": {
+            "column_id": "{{2775e4e1-4b21-42d6-9d24-c2bab6a40450}}",
+            "instruction": "extract all city",
+            "language_model_id": "gpt-4o-mini"
+          }
+        }
+      },
+      {
+        "branch_type": "else",
+        "branch_node_config": {
+          "type": "entity_extraction",
+          "config": {
+            "column_id": "{{2775e4e1-4b21-42d6-9d24-c2bab6a40450}}",
+            "instruction": "extract all country",
+            "language_model_id": "gpt-4o-mini"
+          }
+        }
+      }
+    ],
+    "new_column_name": "col2222"
+
+  }
+
+}

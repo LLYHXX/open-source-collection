@@ -1,0 +1,82 @@
+meta {
+  name: Create Experiment - LLM
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/experiments/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "dataset_id": "d45c7229-b80a-4f77-bc97-94b720eea501",
+    "column_id": "103d6aa0-dc9c-4a55-a30a-79992036ba49",
+    "name": "Exp1",
+    "prompt_config": [
+      {
+        "name": "P1",
+        "version": "",
+        "model_type": "llm",
+        "messages": [
+          {
+            "role": "system",
+            "content": [{"type": "text", "text": ""}]
+          },
+          {
+            "role": "user",
+            "content": [{"type": "text", "text": "Write sentence about {{103d6aa0-dc9c-4a55-a30a-79992036ba49}}\n"}]
+          }
+        ],
+        "model": ["gpt-5-nano", "gpt-5"],
+        "model_params": {
+          "gpt-5": {
+            "temperature": 0.5,
+            "max_tokens": 4085,
+            "top_p": 1,
+            "presence_penalty": 1,
+            "frequency_penalty": 1,
+            "response_format": "json",
+            "providers": "openai",
+            "logo_url": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+          },
+          "gpt-5-nano": {
+            "temperature": 0.5,
+            "max_tokens": 4085,
+            "top_p": 1,
+            "presence_penalty": 1,
+            "frequency_penalty": 1,
+            "response_format": "json",
+            "providers": "openai",
+            "logo_url": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+          }
+        },
+        "configuration": {
+          "tool_choice": "auto",
+          "tools": []
+        },
+        "output_format": "string"
+      }
+    ],
+    "user_eval_template_ids": [
+      "6ced8388-be14-44a7-bcd5-420ab0b96a08"
+    ]
+  }
+}
+
+docs {
+  ## Create Experiment - LLM (V1)
+
+  Creates an LLM experiment. Models are string arrays. Supports multiple prompt_config entries.
+
+  ### Response
+  ```json
+  {"message": "Experiment created successfully.", "status": 200}
+  ```
+}

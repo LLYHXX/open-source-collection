@@ -1,0 +1,28 @@
+# Add serving service to test infrastructure
+# Usage: docker compose -f docker-compose.test.yml -f docker-compose.test-serving.yml -p futureagi-test up -d
+#
+# This extends docker-compose.test.yml with the model serving service.
+# NOTE: First build takes ~10-15 minutes due to ML dependencies (torch, transformers, etc.)
+
+services:
+  test-serving:
+    build:
+      context: model_serving/
+      dockerfile: Dockerfile.base
+    container_name: test-serving
+    working_dir: /app/embedding
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./model_serving:/app/embedding
+    environment:
+      - OTEL_ENABLED=false
+      - LOG_LEVEL=INFO
+    command: gunicorn -w 1 -t 300 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8080 app.main:app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped

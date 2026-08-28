@@ -1,0 +1,18 @@
+meta {
+  name: idp-upload
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/saml2_auth/idp-uploads/
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  file: @file(/Users/apple/Downloads/SAML Metadata.xml)
+  identity_type: 2
+  name: Provider
+  is_enabled: true
+}

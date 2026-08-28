@@ -1,0 +1,442 @@
+"""
+Tests for LangextractSink adapter.
+
+Unit tests for the langextract observability integration, focusing on:
+- LangextractSink implements TraceSinkProtocol correctly
+- Event-to-extraction mapping is accurate
+- HTML output is generated correctly
+- Lazy imports work properly
+"""
+
+import pytest
+import tempfile
+import time
+import builtins
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from praisonaiagents.trace.protocol import ActionEvent, ActionEventType
+
+
+_REAL_IMPORT = builtins.__import__
+
+
+def _import_with_langextract_failure(name, global_vars=None, local_vars=None, fromlist=(), level=0):
+    """Import hook that fails only for langextract."""
+    if name == "langextract":
+        raise ImportError("No module named 'langextract'")
+    return _REAL_IMPORT(name, global_vars, local_vars, fromlist, level)
+
+
+@pytest.fixture
+def sample_events():
+    """Sample ActionEvents for testing."""
+    ts = time.time()
+    return [
+        ActionEvent(
+            event_type=ActionEventType.AGENT_START.value,
+            timestamp=ts,
+            agent_name="test_agent",
+            metadata={"input": "Test input for the agent to process"}
+        ),
+        ActionEvent(
+            event_type=ActionEventType.TOOL_START.value,
+            timestamp=ts + 1,
+            agent_name="test_agent",
+            tool_name="search",
+            tool_args={"query": "test query"}
+        ),
+        ActionEvent(
+            event_type=ActionEventType.TOOL_END.value,
+            timestamp=ts + 2,
+            agent_name="test_agent",
+            tool_name="search",
+            duration_ms=100.0,
+            status="ok",
+            tool_result_summary="Found 5 results"
+        ),
+        ActionEvent(
+            event_type=ActionEventType.OUTPUT.value,
+            timestamp=ts + 3,
+            agent_name="test_agent",
+            metadata={"content": "Final agent output based on search results"}
+        ),
+        ActionEvent(
+            event_type=ActionEventType.AGENT_END.value,
+            timestamp=ts + 4,
+            agent_name="test_agent",
+            duration_ms=500.0,
+            status="ok"
+        )
+    ]
+
+
+class TestLangextractSink:
+    """Test LangextractSink implementation."""
+
+    def test_lazy_import_without_langextract(self):
+        """Test that LangextractSink can be imported without langextract installed."""
+        # This should work even if langextract is not available
+        from praisonai.observability import LangextractSink, LangextractSinkConfig
+        
+        config = LangextractSinkConfig()
+        sink = LangextractSink(config=config)
+        
+        # Basic properties should work
+        assert sink._config.enabled is True
+        assert sink._closed is False
+
+    def test_sink_config_defaults(self):
+        """Test LangextractSinkConfig default values."""
+        from praisonai.observability import LangextractSinkConfig
+        
+        config = LangextractSinkConfig()
+        assert config.output_path == "praisonai-trace.html"
+        assert config.jsonl_path is None
+        assert config.document_id == "praisonai-run"
+        assert config.auto_open is False
+        assert config.include_llm_content is True
+        assert config.include_tool_args is True
+        assert config.enabled is True
+
+    def test_sink_implements_protocol(self):
+        """Test that LangextractSink implements TraceSinkProtocol."""
+        from praisonai.observability import LangextractSink
+        from praisonaiagents.trace.protocol import TraceSinkProtocol
+        
+        sink = LangextractSink()
+        assert isinstance(sink, TraceSinkProtocol)
+        
+        # Protocol methods should exist
+        assert hasattr(sink, 'emit')
+        assert hasattr(sink, 'flush')
+        assert hasattr(sink, 'close')
+
+    def test_event_accumulation(self, sample_events):
+        """Test that events are accumulated correctly."""
+        from praisonai.observability import LangextractSink
+        
+        sink = LangextractSink()
+        
+        # Emit all events
+        for event in sample_events:
+            sink.emit(event)
+        
+        # Events should be stored
+        assert len(sink._events) == len(sample_events)
+        assert sink._source_text == "Test input for the agent to process"
+
+    def test_disabled_sink_ignores_events(self, sample_events):
+        """Test that disabled sink ignores all events."""
+        from praisonai.observability import LangextractSink, LangextractSinkConfig
+        
+        config = LangextractSinkConfig(enabled=False)
+        sink = LangextractSink(config=config)
+        
+        # Emit events
+        for event in sample_events:
+            sink.emit(event)
+        
+        # No events should be stored
+        assert len(sink._events) == 0
+        assert sink._source_text is None
+
+    def test_events_to_extractions_mapping(self, sample_events):
+        """Test that ActionEvents are mapped to langextract extractions correctly."""
+        from praisonai.observability import LangextractSink
+        
+        # Mock langextract module
+        mock_lx = Mock()
+        mock_extraction = Mock()
+        mock_lx.data.Extraction = Mock(return_value=mock_extraction)
+        
+        sink = LangextractSink()
+        for event in sample_events:
+            sink.emit(event)
+        
+        # Test the mapping function
+        extractions = list(sink._events_to_extractions(mock_lx, "Test input text", sink._events))
+        
+        # AGENT_END is intentionally skipped in current implementation
+        assert len(extractions) == 4
+        
+        # Check that each event type creates an extraction
+        assert mock_lx.data.Extraction.call_count == 4
+
+    @patch('praisonai.observability.langextract.webbrowser.open')
+    def test_render_with_mock_langextract(self, mock_browser, sample_events):
+        """Test rendering with mocked langextract."""
+        import sys
+        from praisonai.observability import LangextractSink, LangextractSinkConfig
+        
+        # Mock langextract module
+        mock_lx = Mock()
+        mock_doc = Mock()
+        mock_html = Mock()
+        mock_html.data = "<html>Test HTML content</html>"
+        
+        mock_lx.data.AnnotatedDocument = Mock(return_value=mock_doc)
+        mock_lx.data.Extraction = Mock()
+        mock_lx.io.save_annotated_documents = Mock()
+        mock_lx.visualize = Mock(return_value=mock_html)
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "test.html"
+            config = LangextractSinkConfig(
+                output_path=str(output_path),
+                auto_open=True
+            )
+            sink = LangextractSink(config=config)
+            
+            # Emit events
+            for event in sample_events:
+                sink.emit(event)
+            
+            # Mock the langextract import directly
+            with patch.dict(sys.modules, {"langextract": mock_lx}):
+                sink.close()
+            
+            # Verify HTML file was written
+            assert output_path.exists()
+            content = output_path.read_text()
+            assert "Test HTML content" in content
+            
+            # Verify browser was opened
+            mock_browser.assert_called_once()
+
+    def test_close_idempotent(self, sample_events):
+        """Test that close() can be called multiple times safely."""
+        from praisonai.observability import LangextractSink, LangextractSinkConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "trace.html"
+            sink = LangextractSink(config=LangextractSinkConfig(output_path=str(output_path)))
+            for event in sample_events:
+                sink.emit(event)
+
+            # Mock langextract to avoid import error
+            mock_lx = Mock()
+            with patch.dict("sys.modules", {"langextract": mock_lx}):
+                mock_lx.data.AnnotatedDocument = Mock()
+                mock_lx.data.Extraction = Mock()
+                mock_lx.io.save_annotated_documents = Mock()
+                mock_lx.visualize = Mock(return_value=Mock(data="<html></html>"))
+
+                # First close should work
+                sink.close()
+                assert sink._closed is True
+
+                # Second close should be no-op
+                sink.close()
+                assert sink._closed is True
+
+    def test_flush_no_op(self):
+        """Test that flush() is a no-op."""
+        from praisonai.observability import LangextractSink
+        
+        sink = LangextractSink()
+        # Should not raise any exception
+        sink.flush()
+
+    def test_import_error_handling(self, sample_events):
+        """Test graceful handling of langextract import error."""
+        from praisonai.observability import LangextractSink
+        
+        sink = LangextractSink()
+        for event in sample_events:
+            sink.emit(event)
+        
+        # Force ImportError for optional dependency
+        with patch("builtins.__import__", side_effect=_import_with_langextract_failure):
+            # Should not raise, just log warning
+            sink.close()
+            assert sink._closed is True
+
+
+class TestLangextractCLI:
+    """Test langextract CLI commands."""
+
+    @pytest.mark.parametrize("command", ["view", "render"])
+    def test_cli_commands_exist(self, command):
+        """Test that CLI commands are registered."""
+        from praisonai.cli.commands.langextract import app
+        
+        # Check that the command exists
+        registered = app.registered_commands
+        command_objects = registered.values() if hasattr(registered, "values") else registered
+        commands = {cmd.name for cmd in command_objects}
+        assert command in commands
+
+    def test_view_command_missing_file(self):
+        """Test view command with missing JSONL file."""
+        # First mock the imports to avoid ImportError
+        mock_lx = Mock()
+        with patch.dict("sys.modules", {"langextract": mock_lx}):
+            from praisonai.cli.commands.langextract import view
+            import typer
+            
+            with pytest.raises(typer.Exit):
+                view(Path("/nonexistent/file.jsonl"))
+
+    def test_render_command_missing_yaml(self):
+        """Test render command with missing YAML file."""
+        # First mock the imports to avoid ImportError
+        mock_lx = Mock()
+        mock_observability = Mock()
+        mock_praisonai = Mock()
+        with patch.dict("sys.modules", {
+            "langextract": mock_lx,
+            "praisonai.observability": mock_observability,
+            "praisonai": mock_praisonai
+        }):
+            from praisonai.cli.commands.langextract import render
+            import typer
+            
+            with pytest.raises(typer.Exit):
+                render(Path("/nonexistent/workflow.yaml"))
+
+
+class TestLangextractObservabilitySetup:
+    """Test CLI observability setup."""
+
+    def test_observe_langextract_calls_setup(self):
+        """Test that --observe langextract calls the setup function."""
+        import praisonai.cli.app as cli_app
+        mock_ctx = Mock(invoked_subcommand="test")
+
+        with patch.object(cli_app, "_setup_langextract_observability") as mock_setup:
+            # Mock all the required arguments with defaults
+            cli_app.main_callback(
+                ctx=mock_ctx, 
+                observe="langextract",
+                version=False,
+                output_format=cli_app.OutputFormat.text,
+                json_output=False,
+                no_color=False,
+                quiet=False,
+                verbose=False,
+                screen_reader=False
+            )
+
+        # Setup should have been called
+        mock_setup.assert_called_once()
+
+    def test_observe_invalid_provider_error(self):
+        """Test that invalid observe provider raises error."""
+        import typer
+        import praisonai.cli.app as cli_app
+        mock_ctx = Mock(invoked_subcommand="test")
+
+        with patch('sys.argv', ['praisonai', '--observe', 'invalid-provider']):
+            with pytest.raises(typer.BadParameter, match="Unsupported observe provider"):
+                cli_app.main_callback(
+                    ctx=mock_ctx, 
+                    observe="invalid-provider",
+                    version=False,
+                    output_format=cli_app.OutputFormat.text,
+                    json_output=False,
+                    no_color=False,
+                    quiet=False,
+                    verbose=False,
+                    screen_reader=False
+                )
+
+
+class TestLangextractContextBridge:
+    """Regression tests for the ContextTraceEmitter bridge.
+
+    The base agent runtime (chat_mixin, tool_execution, unified_execution_mixin)
+    emits ``ContextEvent``s only.  Without the bridge, a single-agent run
+    produces zero events in the langextract sink.
+    """
+
+    def test_context_sink_returns_bridge(self):
+        from praisonai.observability import LangextractSink
+        sink = LangextractSink()
+        bridge = sink.context_sink()
+        assert hasattr(bridge, "emit")
+        assert hasattr(bridge, "flush")
+        assert hasattr(bridge, "close")
+
+    def test_bridge_maps_context_events_to_action_events(self):
+        from praisonai.observability import LangextractSink
+        from praisonaiagents.trace.context_events import (
+            ContextEvent,
+            ContextEventType,
+        )
+
+        sink = LangextractSink()
+        bridge = sink.context_sink()
+
+        bridge.emit(ContextEvent(
+            event_type=ContextEventType.AGENT_START,
+            timestamp=1.0, session_id="s",
+            agent_name="writer",
+            data={"input": "Write a haiku"},
+        ))
+        bridge.emit(ContextEvent(
+            event_type=ContextEventType.TOOL_CALL_START,
+            timestamp=2.0, session_id="s",
+            agent_name="writer",
+            data={"tool_name": "search", "arguments": {"q": "x"}},
+        ))
+        bridge.emit(ContextEvent(
+            event_type=ContextEventType.TOOL_CALL_END,
+            timestamp=3.0, session_id="s",
+            agent_name="writer",
+            data={"tool_name": "search", "result": "ok", "duration_ms": 12.0},
+        ))
+        bridge.emit(ContextEvent(
+            event_type=ContextEventType.LLM_RESPONSE,
+            timestamp=4.0, session_id="s",
+            agent_name="writer",
+            data={"response_content": "final haiku"},
+        ))
+        bridge.emit(ContextEvent(
+            event_type=ContextEventType.AGENT_END,
+            timestamp=5.0, session_id="s",
+            agent_name="writer",
+            data={},
+        ))
+
+        types = [e.event_type for e in sink._events]
+        assert "agent_start" in types
+        assert "tool_start" in types
+        assert "tool_end" in types
+        assert "output" in types
+        assert "agent_end" in types
+        assert sink._source_text == "Write a haiku"
+
+    def test_setup_observability_registers_context_emitter(self):
+        """`--observe langextract` must install the bridge on the context emitter."""
+        import praisonai.cli.app as cli_app
+        from praisonaiagents.trace.context_events import get_context_emitter, set_context_emitter
+
+        previous_emitter = get_context_emitter()
+        try:
+            # Make test deterministic even when optional dependency is not installed.
+            with patch("importlib.util.find_spec", return_value=object()), \
+                 patch("atexit.register"):
+                cli_app._setup_langextract_observability(verbose=False)
+            emitter = get_context_emitter()
+            assert emitter.enabled, "context emitter should be enabled after setup"
+        finally:
+            set_context_emitter(previous_emitter)
+            assert get_context_emitter() is previous_emitter
+
+    def test_setup_observability_without_langextract_leaves_context_emitter_unchanged(self):
+        """Setup should be a no-op when optional langextract dependency is unavailable."""
+        import praisonai.cli.app as cli_app
+        from praisonaiagents.trace.context_events import get_context_emitter, set_context_emitter
+
+        previous_emitter = get_context_emitter()
+        try:
+            with patch("importlib.util.find_spec", return_value=None):
+                cli_app._setup_langextract_observability(verbose=False)
+            assert get_context_emitter() is previous_emitter
+        finally:
+            set_context_emitter(previous_emitter)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

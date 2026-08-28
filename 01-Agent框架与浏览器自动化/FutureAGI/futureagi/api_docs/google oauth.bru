@@ -1,0 +1,39 @@
+meta {
+  name: google oauth
+  type: http
+  seq: 10
+}
+
+post {
+  url: https://accounts.google.com/o/oauth2/token
+  body: json
+  auth: bearer
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+  Content-Type: application/json
+  Cookie: {{xsrf_cookie}}
+  Location: http://localhost:8000
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "grant_type": "authorization_code",
+    "client_id": "{{google_oauth_client_id}}",
+    "client_secret": "{{google_oauth_client_secret}}",
+    "code": "{{google_oauth_code}}",
+    "redirect_uri": "https://dca4-182-69-182-169.ngrok-free.app/saml2_auth/auth/callback/"
+  }
+}
+
+body:multipart-form {
+  file: @file(/home/vivek/Downloads/SAML Metadata.xml)
+  identity_type: OKTA
+  is_enabled: True
+  name: localhost:8000
+}

@@ -1,0 +1,26 @@
+meta {
+  name: enhanced get team users with workspace filter
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/accounts/team/users/
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+query {
+  workspace_id: "{{workspace_id}}"
+  search_query: ""
+  is_active: "true"
+  page_size: "10"
+  page: "1"
+}

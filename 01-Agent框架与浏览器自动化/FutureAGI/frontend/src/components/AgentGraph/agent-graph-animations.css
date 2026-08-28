@@ -1,0 +1,15 @@
+/* Shared keyframe animations for the AgentGraph execution visualization */
+
+/* Edge: dashes flowing along the path */
+@keyframes dash-flow {
+  to {
+    stroke-dashoffset: -14;
+  }
+}
+
+/* Node: dashes marching around the border */
+@keyframes dash-around {
+  to {
+    stroke-dashoffset: -24;
+  }
+}

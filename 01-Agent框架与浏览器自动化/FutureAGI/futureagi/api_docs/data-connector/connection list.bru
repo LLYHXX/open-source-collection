@@ -1,0 +1,21 @@
+meta {
+  name: connection list
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/data-connector/connection/
+  body: none
+  auth: bearer
+}
+
+headers {
+  ~X-Api-Key: {{api_key}}
+  ~X-Secret-Key: {{secret_key}}
+  ~token: {{access_token}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

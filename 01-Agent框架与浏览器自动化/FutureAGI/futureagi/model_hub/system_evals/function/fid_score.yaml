@@ -1,0 +1,88 @@
+eval_id: 125
+name: fid_score
+description: Computes the Frechet Inception Distance (FID) between two sets of images. FID measures the similarity between
+  two distributions of images - lower scores indicate more similar distributions.
+criteria: Check if the generated images are similar to the reference images based on FID score. Lower FID scores indicate
+  better quality and more similar image distributions.
+eval_tags:
+- Image
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - real_images
+  - fake_images
+  output: numeric
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    real_images: List of PIL images representing the real/reference distribution
+    fake_images: List of PIL images representing the generated/fake distribution
+  code: |
+    import json
+    import math
+
+    def evaluate(real_images, fake_images, **kwargs):
+        """Compute FID score from pre-computed Inception features.
+
+        Expects _real_features and _fake_features in kwargs (pre-computed by engine).
+        """
+        fid_error = kwargs.get("_fid_error")
+        if fid_error:
+            return {"result": None, "reason": fid_error}
+
+        precomputed = kwargs.get("_fid_precomputed_score")
+        if precomputed is not None:
+            return {"result": round(float(precomputed), 4), "reason": f"FID score: {float(precomputed):.3f} (lower is better)"}
+
+        real_features = kwargs.get("_real_features")
+        fake_features = kwargs.get("_fake_features")
+
+        if real_features and fake_features:
+            if isinstance(real_features, str):
+                real_features = json.loads(real_features)
+            if isinstance(fake_features, str):
+                fake_features = json.loads(fake_features)
+
+            try:
+                import numpy as np
+
+                real = np.array(real_features, dtype=np.float64)
+                fake = np.array(fake_features, dtype=np.float64)
+
+                if real.shape[0] < 2 or fake.shape[0] < 2:
+                    return {"result": None, "reason": "Need at least 2 samples per distribution for FID"}
+
+                mu_r = np.mean(real, axis=0)
+                mu_f = np.mean(fake, axis=0)
+                sigma_r = np.cov(real, rowvar=False)
+                sigma_f = np.cov(fake, rowvar=False)
+
+                diff = mu_r - mu_f
+                mean_diff_sq = np.dot(diff, diff)
+                covmean_sq = sigma_r @ sigma_f
+
+                eigenvalues, eigenvectors = np.linalg.eigh(covmean_sq)
+                eigenvalues = np.maximum(eigenvalues, 0)
+                sqrt_eigenvalues = np.sqrt(eigenvalues)
+                covmean = eigenvectors @ np.diag(sqrt_eigenvalues) @ eigenvectors.T
+
+                fid = mean_diff_sq + np.trace(sigma_r + sigma_f - 2 * covmean)
+                fid = float(max(0, fid))
+
+                return {"result": round(fid, 4), "reason": f"FID score: {fid:.3f} (lower is better)"}
+
+            except Exception as e:
+                return {"result": None, "reason": f"FID computation error: {str(e)}"}
+
+        return {"result": None, "reason": "FID requires pre-computed Inception features. Enable preprocessing in eval config or use the Agent evaluator."}
+  param_modalities:
+    real_images: &id001
+    - IMAGE
+    - IMAGES
+    fake_images: *id001

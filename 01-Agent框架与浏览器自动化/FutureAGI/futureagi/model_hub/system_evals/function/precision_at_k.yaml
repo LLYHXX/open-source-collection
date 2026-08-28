@@ -1,0 +1,65 @@
+eval_id: 132
+name: precision_at_k
+description: 'Precision@K: Out of the top K retrieved chunks, what fraction is actually relevant.'
+criteria: 'Retrieval Precision@K: low precision means retriever is returning noise.'
+eval_tags:
+- RAG
+- Retrieval Systems
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - hypothesis
+  - reference
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  function_params_schema:
+    k:
+      type: integer
+      default: null
+      nullable: true
+      minimum: 1
+  config_params_desc:
+    hypothesis: Retrieved chunks in ranked order (array/JSON string).
+    reference: Ground-truth relevant chunks (array/JSON string).
+    k: How many top results to evaluate (K). Leave empty to use the full retrieved list.
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        import ast
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return val
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                try:
+                    return ast.literal_eval(val)
+                except (ValueError, SyntaxError):
+                    pass
+                return [val]
+            return list(val)
+        reference = _parse(kwargs.get("reference", expected))
+        hypothesis = _parse(kwargs.get("hypothesis", output))
+        k = kwargs.get("k", None)
+        if k is not None:
+            k = int(k)
+            hypothesis = hypothesis[:k]
+        if not hypothesis:
+            return {"score": 0.0, "reason": "No retrieved items to evaluate"}
+        ground_truth_set = set(str(x) for x in reference)
+        retrieved_top_k = [str(x) for x in hypothesis]
+        true_positives = sum(1 for item in retrieved_top_k if item in ground_truth_set)
+        score = true_positives / len(retrieved_top_k)
+        k_label = k if k is not None else len(retrieved_top_k)
+        return {"score": float(score), "reason": f"Precision@{k_label}: {score:.3f} ({true_positives}/{len(retrieved_top_k)} retrieved items are relevant)"}

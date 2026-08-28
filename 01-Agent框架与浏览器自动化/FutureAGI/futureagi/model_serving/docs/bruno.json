@@ -1,0 +1,64 @@
+{
+  "version": "1",
+  "name": "Model Serving API",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ],
+  "preRequestScript": "",
+  "postRequestScript": "",
+  "envs": [
+    {
+      "name": "Development",
+      "variables": [
+        {
+          "name": "base_url",
+          "value": "http://localhost:8080",
+          "enabled": true,
+          "secret": false
+        },
+        {
+          "name": "api_version",
+          "value": "v1",
+          "enabled": true,
+          "secret": false
+        }
+      ]
+    },
+    {
+      "name": "Docker",
+      "variables": [
+        {
+          "name": "base_url",
+          "value": "http://localhost:8080",
+          "enabled": true,
+          "secret": false
+        },
+        {
+          "name": "api_version",
+          "value": "v1",
+          "enabled": true,
+          "secret": false
+        }
+      ]
+    },
+    {
+      "name": "Production",
+      "variables": [
+        {
+          "name": "base_url",
+          "value": "https://your-model-serving-domain.com",
+          "enabled": true,
+          "secret": false
+        },
+        {
+          "name": "api_version",
+          "value": "v1",
+          "enabled": true,
+          "secret": false
+        }
+      ]
+    }
+  ]
+}

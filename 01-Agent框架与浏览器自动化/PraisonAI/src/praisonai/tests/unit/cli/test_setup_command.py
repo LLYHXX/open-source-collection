@@ -1,0 +1,376 @@
+"""
+Unit tests for the setup command.
+
+Tests the setup command functionality including non-interactive mode,
+file writing, idempotency, and provider matrix.
+"""
+
+import os
+import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+import typer.testing
+from typer.testing import CliRunner
+
+from praisonai.cli.commands.setup import app
+
+runner = CliRunner()
+
+def _provider_detect_keys():
+    """Every provider credential env-var the setup wizard auto-detects.
+
+    Derived from ``PROVIDER_ENV_CATALOGUE`` so the interactive-path tests blank
+    out *all* catalogued keys (not just the historical four); otherwise a stray
+    catalogued key on the CI host (e.g. OPENROUTER_API_KEY) would trigger the
+    non-interactive auto-detect path and change the assertion. Falls back to the
+    historical four if the catalogue is unavailable.
+    """
+    try:
+        from praisonai.llm.catalogue import provider_env_vars
+
+        vars_ = provider_env_vars()
+        if vars_:
+            return tuple(vars_)
+    except Exception:
+        pass
+    return (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    )
+
+
+_PROVIDER_DETECT_KEYS = _provider_detect_keys()
+
+
+@pytest.fixture
+def temp_praison_home():
+    """Provide a temporary directory for ~/.praisonai/"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with patch.dict(os.environ, {"PRAISONAI_HOME": temp_dir}):
+            yield Path(temp_dir)
+
+
+@pytest.fixture
+def mock_input():
+    """Mock user inputs for interactive prompts."""
+    with patch("builtins.input") as mock:
+        yield mock
+
+
+@pytest.fixture
+def mock_getpass():
+    """Mock password input for API keys."""
+    with patch("getpass.getpass") as mock:
+        yield mock
+
+
+class TestSetupCommand:
+    """Test cases for the setup command."""
+
+    def test_setup_command_exists(self):
+        """Test that the setup command is registered."""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "Interactive onboarding" in result.stdout or "configuration wizard" in result.stdout
+
+    def test_setup_non_interactive_openai(self, temp_praison_home):
+        """Test setup in non-interactive mode with OpenAI provider."""
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "openai",
+            "--api-key", "sk-test123",
+            "--model", "gpt-4o-mini"
+        ])
+        
+        assert result.exit_code == 0
+        assert "Setup complete" in result.stdout
+        
+        # Check that .env file was created
+        env_file = temp_praison_home / ".env"
+        assert env_file.exists()
+        
+        # Check file permissions (should be 600)
+        if os.name != "nt" and not sys.platform.startswith("win"):
+            assert oct(env_file.stat().st_mode)[-3:] == "600"
+        
+        # Check file contents
+        env_content = env_file.read_text()
+        assert "OPENAI_API_KEY=sk-test123" in env_content
+
+    def test_setup_mirrors_key_into_credential_store(self, temp_praison_home):
+        """setup should also populate the unified CredentialStore.
+
+        This closes the historic split where `setup` wrote only to
+        ~/.praisonai/.env while `auth`/injection read the CredentialStore,
+        so a key set via `setup` was invisible to those code paths. The store
+        is anchored under PRAISONAI_HOME so it stays in one base directory.
+        """
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "openai",
+            "--api-key", "sk-test1234567890abcdef",
+            "--model", "gpt-4o-mini",
+        ])
+        assert result.exit_code == 0
+
+        from praisonai.cli.configuration.credentials import CredentialStore
+
+        store = CredentialStore(temp_praison_home / "credentials.json")
+        cred = store.get_credential("openai")
+        assert cred is not None
+        assert cred.api_key == "sk-test1234567890abcdef"
+        assert cred.model == "gpt-4o-mini"
+
+    def test_setup_key_visible_to_default_store(self):
+        """A key set via `setup` (default home) must be visible to the default
+        `CredentialStore()` used by `auth list` / `inject_credentials_into_env`.
+
+        Without PRAISONAI_HOME, setup and the auth/inject read paths must
+        converge on the same ~/.praisonai/credentials.json. This guards against
+        a regression where setup wrote to an explicit path that the default
+        store (and therefore auth/inject) never reads.
+        """
+        with tempfile.TemporaryDirectory() as temp_home:
+            fake_home = Path(temp_home)
+            # No PRAISONAI_HOME override: exercise the default-home path where
+            # praison_home == ~/.praisonai and setup uses the default store.
+            env = {k: v for k, v in os.environ.items() if k != "PRAISONAI_HOME"}
+            with patch.dict(os.environ, env, clear=True), \
+                    patch("pathlib.Path.home", return_value=fake_home):
+                result = runner.invoke(app, [
+                    "--non-interactive",
+                    "--provider", "openai",
+                    "--api-key", "sk-default1234567890abcdef",
+                    "--model", "gpt-4o-mini",
+                ])
+                assert result.exit_code == 0
+
+                from praisonai.cli.configuration.credentials import CredentialStore
+
+                # The default store (what auth/inject use) must resolve the key.
+                cred = CredentialStore().get_credential("openai")
+                assert cred is not None
+                assert cred.api_key == "sk-default1234567890abcdef"
+
+    def test_setup_migrates_legacy_credentials(self):
+        """Running `setup` must migrate pre-existing legacy `auth` credentials.
+
+        Reproduces the reviewer scenario: a user configured a provider via
+        `praisonai auth` (legacy ~/.praison/credentials.json) then runs
+        `praisonai setup` for a *different* provider. The legacy entry must not
+        be silently shadowed — it should be migrated onto the canonical file so
+        both providers remain visible to the default store.
+        """
+        import json
+
+        with tempfile.TemporaryDirectory() as temp_home:
+            fake_home = Path(temp_home)
+            legacy = fake_home / ".praison" / "credentials.json"
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            legacy.write_text(json.dumps({
+                "anthropic": {"api_key": "sk-ant-legacy", "auth_method": "apikey"}
+            }))
+
+            env = {k: v for k, v in os.environ.items() if k != "PRAISONAI_HOME"}
+            with patch.dict(os.environ, env, clear=True), \
+                    patch("pathlib.Path.home", return_value=fake_home):
+                result = runner.invoke(app, [
+                    "--non-interactive",
+                    "--provider", "openai",
+                    "--api-key", "sk-new1234567890abcdef",
+                    "--model", "gpt-4o-mini",
+                ])
+                assert result.exit_code == 0
+
+                from praisonai.cli.configuration.credentials import CredentialStore
+
+                store = CredentialStore()
+                providers = set(store.list_providers())
+                # Both the newly set and the pre-existing legacy key survive.
+                assert "openai" in providers
+                assert "anthropic" in providers
+                assert store.get_credential("anthropic").api_key == "sk-ant-legacy"
+
+    def test_setup_non_interactive_anthropic(self, temp_praison_home):
+        """Test setup in non-interactive mode with Anthropic provider."""
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "anthropic",
+            "--api-key", "sk-ant-test123",
+            "--model", "claude-3-5-sonnet-latest"
+        ])
+        
+        assert result.exit_code == 0
+        assert "Setup complete" in result.stdout
+        
+        env_file = temp_praison_home / ".env"
+        assert env_file.exists()
+        
+        env_content = env_file.read_text()
+        assert "ANTHROPIC_API_KEY=sk-ant-test123" in env_content
+
+    def test_setup_non_interactive_google(self, temp_praison_home):
+        """Test setup in non-interactive mode with Google provider."""
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "google",
+            "--api-key", "AIzatest123",
+            "--model", "gemini-2.0-flash"
+        ])
+        
+        assert result.exit_code == 0
+        env_file = temp_praison_home / ".env"
+        env_content = env_file.read_text()
+        assert "GEMINI_API_KEY=AIzatest123" in env_content
+
+    def test_setup_non_interactive_ollama(self, temp_praison_home):
+        """Test setup in non-interactive mode with Ollama (no API key needed)."""
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "ollama",
+            "--model", "llama3.2"
+        ])
+        
+        assert result.exit_code == 0
+
+    def test_setup_creates_directory_structure(self, temp_praison_home):
+        """Test that setup creates the required directory structure."""
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "openai",
+            "--api-key", "sk-test123"
+        ])
+        
+        assert result.exit_code == 0
+        
+        # Check that directories are created
+        assert (temp_praison_home / "logs").is_dir()
+        assert (temp_praison_home / "sessions").is_dir()
+
+    def test_setup_idempotent(self, temp_praison_home):
+        """Test that running setup multiple times is idempotent."""
+        # First run
+        result1 = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "openai",
+            "--api-key", "sk-test123"
+        ])
+        assert result1.exit_code == 0
+        
+        # Second run should not fail
+        result2 = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "openai",  
+            "--api-key", "sk-test456"  # Different key to test overwrite
+        ])
+        assert result2.exit_code == 0
+        
+        # Check that the new key is used
+        env_file = temp_praison_home / ".env"
+        env_content = env_file.read_text()
+        assert "OPENAI_API_KEY=sk-test456" in env_content
+
+    def test_setup_preserves_existing_env_vars(self, temp_praison_home):
+        """Test that setup preserves existing environment variables."""
+        # Create existing .env file
+        env_file = temp_praison_home / ".env"
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_text("EXISTING_VAR=existing_value\n")
+        
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "openai",
+            "--api-key", "sk-test123"
+        ])
+        
+        assert result.exit_code == 0
+        
+        # Check that existing var is preserved
+        env_content = env_file.read_text()
+        assert "EXISTING_VAR=existing_value" in env_content
+        assert "OPENAI_API_KEY=sk-test123" in env_content
+
+    @patch("rich.prompt.Prompt.ask")
+    @patch("rich.prompt.Confirm.ask")
+    @patch("getpass.getpass")
+    def test_setup_interactive_mode(self, mock_getpass, mock_confirm, mock_prompt, temp_praison_home):
+        """Test setup in interactive mode (manual provider path, no env auto-detect)."""
+        mock_prompt.side_effect = ["1", "gpt-4o-mini"]
+        mock_getpass.return_value = "sk-" + "x" * 24
+        mock_confirm.side_effect = [True, False]
+
+        env_overrides = {key: "" for key in _PROVIDER_DETECT_KEYS}
+        with patch.dict(os.environ, env_overrides, clear=False):
+            result = runner.invoke(app, ["--no-verify"])
+
+        assert result.exit_code == 0
+        assert "Setup complete" in result.stdout
+
+        env_file = temp_praison_home / ".env"
+        assert env_file.exists()
+        env_content = env_file.read_text()
+        assert "OPENAI_API_KEY=sk-" in env_content
+
+    def test_setup_missing_required_args(self, monkeypatch):
+        """Test that setup fails when required args are missing in non-interactive mode."""
+        # Ensure no provider API key is present in the environment
+        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "openai"
+            # Missing --api-key
+        ])
+
+        assert result.exit_code != 0
+        combined = result.stdout + result.stderr
+        assert "API key is required" in combined or "required" in combined
+
+    def test_setup_invalid_provider(self):
+        """Test that setup fails with invalid provider."""
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "invalid-provider",
+            "--api-key", "test"
+        ])
+        
+        assert result.exit_code != 0
+
+    def test_setup_env_file_permissions(self, temp_praison_home):
+        """Test that .env file is created with secure permissions."""
+        result = runner.invoke(app, [
+            "--non-interactive",
+            "--provider", "openai",
+            "--api-key", "sk-test123"
+        ])
+        
+        assert result.exit_code == 0
+        
+        env_file = temp_praison_home / ".env"
+        # Check that file is readable only by owner (600 permissions)
+        if os.name != "nt" and not sys.platform.startswith("win"):
+            stat_mode = env_file.stat().st_mode
+            # Last 3 octal digits should be 600
+            assert oct(stat_mode)[-3:] == "600"
+
+    def test_setup_with_existing_env_var(self, temp_praison_home):
+        """Test setup when API key already exists in environment."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-env-existing"}):
+            # In this case, setup should still work and create .env file
+            result = runner.invoke(app, [
+                "--non-interactive", 
+                "--provider", "openai",
+                "--api-key", "sk-test123"
+            ])
+            
+            assert result.exit_code == 0
+            
+            env_file = temp_praison_home / ".env"
+            env_content = env_file.read_text()
+            assert "OPENAI_API_KEY=sk-test123" in env_content

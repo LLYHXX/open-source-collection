@@ -1,0 +1,234 @@
+.tree-node {
+  position: relative;
+}
+
+.tree-node__content {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background: transparent;
+  transition: all 0.2s ease;
+}
+
+.tree-node__content--clickable {
+  cursor: pointer;
+}
+
+.tree-node__content--selected {
+  border-color: #60a5fa;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.tree-node__content:hover:not(.tree-node__content--selected) {
+  background: #f3f4f6;
+}
+
+/* Connecting lines - centered with 20px icon (10px center) + 16px padding = 26px from left */
+.tree-node__vertical-line {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 120%;
+  background: #e5e7eb;
+}
+
+.tree-node__horizontal-line {
+  position: absolute;
+  height: 1px;
+  background: #e5e7eb;
+}
+
+.tree-node__connector-line {
+  position: absolute;
+  width: 1px;
+  background: #e5e7eb;
+}
+
+/* Chevron button */
+.tree-node__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tree-node__toggle:hover {
+  background: #f3f4f6;
+}
+
+.tree-node__toggle-icon {
+  width: 20px;
+  height: 20px;
+  color: #6b7280;
+  transition: transform 0.2s ease;
+}
+
+.tree-node__toggle-icon--collapsed {
+  transform: rotate(180deg);
+}
+
+/* Node info */
+.tree-node__info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 4px;
+}
+
+.tree-node__name {
+  font-weight: 500;
+  color: #111827;
+}
+
+/* Children container */
+.tree-node__children {
+  margin-top: 8px;
+}
+
+.tree-node__child {
+  margin-top: 8px;
+}
+
+.tree-node__child:first-child {
+  margin-top: 0;
+}
+
+/* Root level connector - centered with icon (16px padding + 10px half-icon = 26px) */
+.tree-view__root-connector {
+  position: absolute;
+  left: 26px;
+  width: 1px;
+  background: #e5e7eb;
+}
+
+/* TreeView container */
+.tree-view {
+  padding-bottom: 24px;
+}
+
+.tree-view__item {
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.tree-view__item:last-child {
+  margin-bottom: 0;
+}
+
+/* Node Icon */
+.node-icon {
+  display: flex;
+  height: 40px;
+  width: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.node-icon--agent {
+  background: #dbeafe;
+  color: #2563eb;
+}
+
+.node-icon--tool {
+  background: #ffedd5;
+  color: #ea580c;
+}
+
+.node-icon--prompt {
+  background: #ede9fe;
+  color: #7c3aed;
+}
+
+.node-icon--eval {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+/* Node Metadata */
+.node-metadata {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.node-metadata__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.node-metadata__icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* Dark theme — driven by the data-theme attribute set by ThemeProvider */
+[data-theme="dark"] .tree-node__content--selected {
+  border-color: #60a5fa;
+  background: #18181b;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+[data-theme="dark"]
+  .tree-node__content:hover:not(.tree-node__content--selected) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .tree-node__vertical-line,
+[data-theme="dark"] .tree-node__horizontal-line,
+[data-theme="dark"] .tree-node__connector-line,
+[data-theme="dark"] .tree-view__root-connector {
+  background: #27272a;
+}
+
+[data-theme="dark"] .tree-node__toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .tree-node__toggle-icon {
+  color: #a1a1aa;
+}
+
+[data-theme="dark"] .tree-node__name {
+  color: #fafafa;
+}
+
+[data-theme="dark"] .node-metadata {
+  color: #a1a1aa;
+}
+
+[data-theme="dark"] .node-icon--agent {
+  background: rgba(37, 99, 235, 0.2);
+  color: #93c5fd;
+}
+
+[data-theme="dark"] .node-icon--tool {
+  background: rgba(234, 88, 12, 0.2);
+  color: #fdba74;
+}
+
+[data-theme="dark"] .node-icon--prompt {
+  background: rgba(124, 58, 237, 0.2);
+  color: #c4b5fd;
+}
+
+[data-theme="dark"] .node-icon--eval {
+  background: rgba(22, 163, 74, 0.2);
+  color: #86efac;
+}

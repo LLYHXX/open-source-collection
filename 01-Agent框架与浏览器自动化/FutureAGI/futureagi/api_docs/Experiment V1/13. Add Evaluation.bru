@@ -1,0 +1,50 @@
+meta {
+  name: Add Evaluation to Experiment
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/experiments/{{experimentId}}/add-eval/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "template_id": "uuid-template",
+    "name": "My Evaluation",
+    "config": {
+      "mapping": {
+        "output": "uuid-column"
+      },
+      "config": {},
+      "reasonColumn": true
+    },
+    "save_as_template": false,
+    "run": true
+  }
+}
+
+docs {
+  ## Add Evaluation to Experiment (V1)
+
+  Creates and adds a new evaluation to an experiment.
+  Used by EvaluationDrawer.jsx.
+
+  ### Request Body
+  - `template_id` — Base eval template UUID
+  - `name` — Evaluation name
+  - `config` — Evaluation configuration with column mappings
+  - `save_as_template` — Whether to save as reusable template (optional)
+  - `run` — Whether to immediately run the evaluation (optional)
+
+  ### Response
+  ```json
+  {"message": "Evaluation added successfully.", "status": 200}
+  ```
+}

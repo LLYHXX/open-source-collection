@@ -1,0 +1,24 @@
+meta {
+  name: Add Existing Rows
+  type: http
+  seq: 34
+}
+
+post {
+  url: {{host}}/model-hub/develops/7a5d4f23-a8da-4630-93b3-1f07e5f7d7ad/add_rows_from_existing_dataset/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "source_dataset_id": "46bd91a5-2781-4b62-91c6-35e3b7fd0c8f",
+    "column_mapping": {
+      "baab4467-3a10-41a7-b5e8-5a0b58176503": "769f2ed4-5e67-4d09-b5c2-4130f9f4acdc"
+    }
+  }
+}

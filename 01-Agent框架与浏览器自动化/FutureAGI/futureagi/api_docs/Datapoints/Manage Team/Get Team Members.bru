@@ -1,0 +1,15 @@
+meta {
+  name: Get Team Members
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/accounts/team/users/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

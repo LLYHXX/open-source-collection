@@ -1,0 +1,403 @@
+/*
+ * The Reading Room — Starlight skin for The Librarian docs.
+ *
+ * Maps Starlight's `--sl-*` design tokens onto the dashboard's editorial
+ * "Reading Room" system (DESIGN.md): warm-paper Manuscript (light) and
+ * candlelit-teal Scriptorium (dark), Fraunces / Newsreader / IBM Plex Mono.
+ *
+ * Accessibility (WCAG 2.1 AA): the dashboard's brand verdigris (#3f9c8e) only
+ * reaches 2.93:1 on warm paper, so it FAILS as link/UI text. The light-mode
+ * rubric accent is darkened to a deeper patina-teal (#2c7468 ≈ 4.9:1 on
+ * #f5f1e8) — still unmistakably verdigris, but AA-compliant. The dark theme's
+ * cyan (#7dd3c0) already clears AA on the deep-teal field (~8.5:1) and is kept
+ * as-is. The contrast of these overrides is verified by tests/a11y.spec.ts
+ * (axe-core, wcag2aa) over both palettes.
+ */
+
+/* ---- Typography: the three-face editorial system ---------------------- */
+
+:root {
+  --sl-font: "Newsreader", Georgia, serif;
+  --sl-font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* Fraunces is the display face: page titles, prose headings, the hero. */
+:root {
+  --reading-room-display: "Fraunces", Georgia, serif;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.site-title,
+.hero h1,
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3,
+.sl-markdown-content h4,
+.sl-markdown-content h5,
+.sl-markdown-content h6 {
+  font-family: var(--reading-room-display);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* ---- Scriptorium (dark, the Starlight default `:root`) ---------------- */
+
+:root,
+::backdrop {
+  /* Neutral ramp: parchment ink on a deep-teal field. */
+  --sl-color-white: #f4ecd9;
+  --sl-color-gray-1: #e8d9b8;
+  --sl-color-gray-2: #ddcfaf;
+  --sl-color-gray-3: #b9ab8c;
+  --sl-color-gray-4: #8a9a90;
+  --sl-color-gray-5: #2d4d59;
+  --sl-color-gray-6: #1a3a48;
+  --sl-color-black: #0e2a36;
+
+  /* Rubric accent: cyan (the verdigris family, lit for the cool field). */
+  --sl-color-accent-low: #163f43;
+  --sl-color-accent: #7dd3c0;
+  --sl-color-accent-high: #a6e4d6;
+
+  /* Semantic surfaces — warm objects in a cool room. `--sl-color-bg` follows
+     `--sl-color-black` via Starlight's own indirection, so it re-resolves to
+     the paper field when `[data-theme='light']` overrides black below. */
+  --sl-color-text: #e8d9b8;
+  --sl-color-text-accent: #7dd3c0;
+  --sl-color-bg-nav: #163847;
+  --sl-color-bg-sidebar: #163847;
+  --sl-color-bg-inline-code: #1a3a48;
+  --sl-color-hairline-light: #2d4d59;
+  --sl-color-hairline: #1a3a48;
+  --sl-color-hairline-shade: #0a2029;
+}
+
+/* ---- Manuscript (light) ----------------------------------------------- */
+
+:root[data-theme="light"],
+[data-theme="light"] ::backdrop {
+  /* Neutral ramp: warm ink on warm paper. gray-2 (body) and gray-3 (muted)
+     are held dark enough to clear 4.5:1 on #f5f1e8. */
+  --sl-color-white: #1a1612;
+  --sl-color-gray-1: #2a2218;
+  --sl-color-gray-2: #3d3528;
+  --sl-color-gray-3: #5d554b;
+  --sl-color-gray-4: #857c6c;
+  --sl-color-gray-5: #d8cfbd;
+  --sl-color-gray-6: #ede7d8;
+  --sl-color-gray-7: #faf7f0;
+  --sl-color-black: #f5f1e8;
+
+  /* Rubric accent: a deepened verdigris that clears AA on paper. */
+  --sl-color-accent-low: #d7e8e3;
+  --sl-color-accent: #2c7468;
+  --sl-color-accent-high: #1f5449;
+
+  /* Semantic surfaces. */
+  --sl-color-text: #3d3528;
+  --sl-color-text-accent: #2c7468;
+  --sl-color-bg-nav: #faf7f0;
+  --sl-color-bg-sidebar: #faf7f0;
+  --sl-color-bg-inline-code: #ede7d8;
+  --sl-color-hairline-light: #e3dccb;
+  --sl-color-hairline: #e3dccb;
+  --sl-color-hairline-shade: #ede7d8;
+}
+
+/* ---- Code blocks (Expressive Code) — dark-mode contrast --------------- */
+
+/*
+ * The Starlight dark code theme renders comment tokens in a muted grey
+ * (#919f9f). On the default dark code background (--sl-color-gray-6, #1a3a48)
+ * that is only 4.39:1 — it FAILS WCAG AA for body text. Darkening the dark-mode
+ * code surface to #0b242e (a subtle inset below the deep-teal page field) lifts
+ * it to ~5.9:1, AA-compliant, while the 1px frame border keeps the block legible
+ * against the page. Both the editor frame (`edBg`/`codeBg`, used by JSON/TOML
+ * etc.) and the terminal frame (`trmBg`, used by sh/bash blocks) are covered.
+ * Scoped to dark only (`:not([data-theme=light])` out-specifies the EC `:root`
+ * defaults); light mode is untouched. Verified for both palettes by
+ * tests/a11y.spec.ts.
+ */
+:root:not([data-theme="light"]) {
+  --ec-codeBg: #0b242e;
+  --ec-frm-edBg: #0b242e;
+  --ec-frm-edTabBarBg: #0b242e;
+  --ec-frm-trmBg: #0b242e;
+}
+
+/* ---- On-brand pass: retire the "default Starlight" tells ---------------- */
+
+/*
+ * The mapping above wires the neutral ramp, accent, surfaces and fonts, but
+ * several Starlight defaults still showed through (impeccable critique,
+ * 2026-06-30): rainbow card/aside hues, rounded + drop-shadowed cards, no
+ * copper structural accent, and rounded search/code frames. The dashboard and
+ * marketing surfaces are flat, sharp-cornered, and spend exactly two metals —
+ * a verdigris rubric (action/state) and copper (structure). This section
+ * brings the docs into line. Contrast of every new combination is re-checked
+ * by tests/a11y.spec.ts over both palettes.
+ */
+
+/* Copper — the structural-hardware accent, identical to the dashboard
+ * (`apps/dashboard/styles/tokens.css` --ink-copper) and the marketing site
+ * (`--copper`). Verdigris is its oxidised form; copper carries gilt rules and
+ * frames, never action or state. */
+:root,
+::backdrop {
+  --reading-room-copper: #d49872; /* polished copper for the cool field */
+  --reading-room-copper-soft: rgba(212, 152, 114, 0.34);
+}
+:root[data-theme="light"],
+[data-theme="light"] ::backdrop {
+  --reading-room-copper: #b87333; /* structural copper on warm paper */
+  --reading-room-copper-soft: rgba(184, 115, 51, 0.32);
+}
+
+/* Flat by default (DESIGN.md retires drop shadows for hairlines) and sharp
+ * corners everywhere Starlight exposes a radius token. */
+:root {
+  --sl-shadow-sm: none;
+  --sl-shadow-md: none;
+  --sl-shadow-lg: none;
+  --sl-search-corners: 0px;
+  --header-border-radius: 0px;
+  --ec-brdRad: 0px; /* Expressive-Code frame corners */
+}
+
+/* Collapse Starlight's five semantic hue families — used by BOTH the home
+ * <CardGrid> and prose asides — onto the two-metal system. Informational hues
+ * (note/tip) → verdigris; cautionary hues (caution/danger) → copper. Each
+ * aside keeps its title + icon, so meaning never rests on colour alone. The
+ * values reference theme tokens, so one block serves both palettes. */
+:root,
+::backdrop {
+  --sl-color-blue: var(--sl-color-accent);
+  --sl-color-green: var(--sl-color-accent);
+  --sl-color-purple: var(--sl-color-accent);
+  --sl-color-orange: var(--reading-room-copper);
+  --sl-color-red: var(--reading-room-copper);
+
+  --sl-color-blue-low: var(--sl-color-gray-6);
+  --sl-color-green-low: var(--sl-color-gray-6);
+  --sl-color-purple-low: var(--sl-color-gray-6);
+  --sl-color-orange-low: var(--sl-color-gray-6);
+  --sl-color-red-low: var(--sl-color-gray-6);
+
+  --sl-color-blue-high: var(--sl-color-white);
+  --sl-color-green-high: var(--sl-color-white);
+  --sl-color-purple-high: var(--sl-color-white);
+  --sl-color-orange-high: var(--sl-color-white);
+  --sl-color-red-high: var(--sl-color-white);
+}
+
+/* Sharp + flat on the components Starlight ships rounded/lifted. */
+.sl-link-card,
+.card,
+.sl-link-button,
+.sl-badge,
+.card .icon,
+.sl-link-card .icon,
+site-search button[data-open-modal] {
+  border-radius: 0;
+}
+.sl-link-card,
+.card {
+  box-shadow: none;
+}
+
+/* The home card titles are <p class="title">, not headings, so they miss the
+ * Fraunces selector list above — route them to the display face. */
+.card .title,
+.sl-link-card .title {
+  font-family: var(--reading-room-display);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* A thin gilt rule under the top nav, echoing the marketing chapter rules. */
+.header {
+  border-bottom-color: var(--reading-room-copper-soft);
+}
+
+/* ---- Bespoke home (splash template) ------------------------------------ */
+
+/*
+ * Replace Starlight's stock rainbow card grid with an editorial index that
+ * echoes the marketing long-scroll: a copper rule, a plain-language intro, and
+ * a hairline-separated list of entries — scenes, not tiles. The frontmatter
+ * `hero` (wordmark + tagline + two actions) is kept and inherits the skin.
+ */
+.rr-home {
+  max-width: 50rem;
+  margin-inline: auto;
+}
+.rr-home-intro {
+  font-size: var(--sl-text-lg);
+  line-height: 1.6;
+  color: var(--sl-color-text);
+  border-top: 2px solid var(--reading-room-copper-soft);
+  padding-top: 1.5rem;
+  margin-top: 0;
+}
+.rr-home-index {
+  margin-top: 2.75rem;
+  border-top: 1px solid var(--sl-color-hairline);
+}
+.rr-home-entry {
+  display: grid;
+  gap: 0.3rem;
+  padding: 1.15rem 2.25rem 1.15rem 0;
+  border-bottom: 1px solid var(--sl-color-hairline);
+  text-decoration: none;
+  color: var(--sl-color-text);
+  position: relative;
+  transition: border-color 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rr-home-entry-title {
+  font-family: var(--reading-room-display);
+  font-weight: 500;
+  font-size: var(--sl-text-xl);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--sl-color-white);
+}
+.rr-home-entry-desc {
+  color: var(--sl-color-text);
+  line-height: 1.5;
+}
+.rr-home-entry::after {
+  content: "→";
+  position: absolute;
+  top: 1.15rem;
+  right: 0.25rem;
+  color: var(--reading-room-copper);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rr-home-entry:hover,
+.rr-home-entry:focus-visible {
+  border-bottom-color: var(--reading-room-copper);
+}
+.rr-home-entry:hover .rr-home-entry-title,
+.rr-home-entry:focus-visible .rr-home-entry-title {
+  color: var(--sl-color-text-accent);
+}
+.rr-home-entry:hover::after,
+.rr-home-entry:focus-visible::after {
+  transform: translateX(0.35rem);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rr-home-entry,
+  .rr-home-entry::after {
+    transition: none;
+  }
+}
+
+/* Asides: retire Starlight's thick coloured side-stripe (an impeccable absolute
+ * ban for callouts, and it spends the rubric accent decoratively) in favour of
+ * a full hairline-weight frame in the semantic metal. The background tint, the
+ * icon, and the bold title still carry the meaning — so it never rests on a
+ * stripe colour alone. */
+.starlight-aside {
+  border-inline-start: none;
+  border: 1px solid var(--sl-color-asides-border);
+}
+
+/* Flatten Expressive-Code's terminal frame: drop the faux window-button "traffic
+ * light" dots (decorative chrome) to match the bare, hairline-bounded command
+ * block on the marketing site. Corners are already squared via --ec-brdRad. */
+:root {
+  --ec-frm-trmTtbDotsOpa: 0;
+}
+
+/* ---- Image lightbox (native <dialog>; see components/Footer.astro) ------ */
+
+/* A theme-aware veil behind the enlarged image. */
+:root,
+::backdrop {
+  --reading-room-scrim: rgba(6, 27, 34, 0.74); /* deep-teal (Scriptorium) */
+}
+:root[data-theme="light"],
+[data-theme="light"] ::backdrop {
+  --reading-room-scrim: rgba(26, 22, 18, 0.62); /* ink veil over warm paper */
+}
+
+/* The zoom-in affordance on enlargeable content images. */
+.sl-markdown-content img[data-rr-lightbox] {
+  cursor: zoom-in;
+}
+
+dialog.rr-lightbox {
+  max-width: 94vw;
+  max-height: 94vh;
+  margin: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+}
+dialog.rr-lightbox::backdrop {
+  background: var(--reading-room-scrim);
+  backdrop-filter: blur(2px);
+}
+
+/* The enlarged image sits in a copper-mounted frame, echoing the gilt-mounted
+ * figures on the marketing site. Sharp corners, flat. */
+.rr-lightbox-figure {
+  position: relative;
+  margin: 0;
+  padding: clamp(8px, 1vw, 14px);
+  background: var(--sl-color-bg);
+  border: 1px solid var(--reading-room-copper-soft);
+}
+.rr-lightbox-img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: calc(94vh - 2rem);
+}
+.rr-lightbox-close {
+  position: absolute;
+  top: clamp(8px, 1vw, 14px);
+  right: clamp(8px, 1vw, 14px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  color: var(--sl-color-white);
+  background: var(--sl-color-bg);
+  border: 1px solid var(--reading-room-copper-soft);
+  cursor: pointer;
+}
+.rr-lightbox-close:hover,
+.rr-lightbox-close:focus-visible {
+  color: var(--sl-color-text-accent);
+  border-color: var(--reading-room-copper);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  dialog.rr-lightbox[open] {
+    animation: rr-lightbox-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  dialog.rr-lightbox[open]::backdrop {
+    animation: rr-lightbox-fade 180ms ease;
+  }
+}
+@keyframes rr-lightbox-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+@keyframes rr-lightbox-fade {
+  from {
+    opacity: 0;
+  }
+}

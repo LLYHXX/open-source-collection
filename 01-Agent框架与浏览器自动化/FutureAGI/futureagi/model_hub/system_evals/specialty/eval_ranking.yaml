@@ -1,0 +1,79 @@
+eval_id: 61
+name: eval_ranking
+description: Provides ranking score for each context based on specified criteria
+criteria: "You are evaluating how relevant and useful a set of contexts are for answering\
+  \ the given input query. Follow this multi-step evaluation process:\n\n## Step 1:\
+  \ Query Decomposition\n\nDecompose the input query into subqueries. For each subquery:\n\
+  - Assign a relevance weight (0.0\u20131.0) representing how much of the original\
+  \ query it covers.\n- The sum of all weights must equal 1.0.\n- If the query cannot\
+  \ be decomposed, use it as a single subquery with weight 1.0.\n- Note any dependency\
+  \ between subqueries (e.g., subquery B depends on the answer to subquery A).\n\n\
+  ## Step 2: Per-Document Analysis\n\nParse the context into a list of documents.\
+  \ For each document, evaluate:\n\n1. **Relevancy** (0 or 1): Does this document\
+  \ contain information that helps answer the query?\n2. **Information Gained** (0\u2013\
+  4): How much new information does this document add beyond what previous documents\
+  \ provided?\n   - 0: No new information\n   - 1: Minimal new information\n   - 2:\
+  \ Some useful information\n   - 3: Significant new information\n   - 4: Comprehensive\
+  \ answer to the query\n3. **Subquery Relevance**: For each subquery, score relevance\
+  \ (0 or 1) of the document. Track which documents have been considered for each\
+  \ subquery.\n\n## Step 3: Score Calculation\n\nFor each document, compute:\n- `final_relevance\
+  \ = min(subquery_relevances) * document_relevancy`\n- `subqueries_answered = sum(subquery_relevances)`\n\
+  \nThe overall score is the weighted average of final_relevance across all documents,\
+  \ normalized to 0.0\u20131.0:\n- Score 0.0 if no documents are relevant.\n- Score\
+  \ 0.5 if documents are partially relevant with moderate information gain.\n- Score\
+  \ 1.0 if documents comprehensively answer all subqueries.\n\n## Step 4: Summary\n\
+  \nFor each document, report: Document N (brief title): Final score X.X\n\nThen provide\
+  \ an overall assessment explaining which documents were most/least useful and why.\n\
+  \n## Anti-bias Rules\n\n- Process documents in order, tracking cumulative information.\n\
+  - A document that repeats prior information scores lower on information gained.\n\
+  - A short but directly relevant document scores higher than a long tangential one.\n\
+  - Evaluate relevancy to the ACTUAL query, not to the general topic.\n\n## Inputs\n\
+  \n<input>{{input}}</input>\n\n<context>{{context}}</context>"
+eval_tags:
+- RAG
+- Retrieval Systems
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - context
+  output: score
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    input: The input to be evaluated
+    context: The contexts to be ranked
+  rule_prompt: "You are evaluating how relevant and useful a set of contexts are for\
+    \ answering the given input query. Follow this multi-step evaluation process:\n\
+    \n## Step 1: Query Decomposition\n\nDecompose the input query into subqueries.\
+    \ For each subquery:\n- Assign a relevance weight (0.0\u20131.0) representing\
+    \ how much of the original query it covers.\n- The sum of all weights must equal\
+    \ 1.0.\n- If the query cannot be decomposed, use it as a single subquery with\
+    \ weight 1.0.\n- Note any dependency between subqueries (e.g., subquery B depends\
+    \ on the answer to subquery A).\n\n## Step 2: Per-Document Analysis\n\nParse the\
+    \ context into a list of documents. For each document, evaluate:\n\n1. **Relevancy**\
+    \ (0 or 1): Does this document contain information that helps answer the query?\n\
+    2. **Information Gained** (0\u20134): How much new information does this document\
+    \ add beyond what previous documents provided?\n   - 0: No new information\n \
+    \  - 1: Minimal new information\n   - 2: Some useful information\n   - 3: Significant\
+    \ new information\n   - 4: Comprehensive answer to the query\n3. **Subquery Relevance**:\
+    \ For each subquery, score relevance (0 or 1) of the document. Track which documents\
+    \ have been considered for each subquery.\n\n## Step 3: Score Calculation\n\nFor\
+    \ each document, compute:\n- `final_relevance = min(subquery_relevances) * document_relevancy`\n\
+    - `subqueries_answered = sum(subquery_relevances)`\n\nThe overall score is the\
+    \ weighted average of final_relevance across all documents, normalized to 0.0\u2013\
+    1.0:\n- Score 0.0 if no documents are relevant.\n- Score 0.5 if documents are\
+    \ partially relevant with moderate information gain.\n- Score 1.0 if documents\
+    \ comprehensively answer all subqueries.\n\n## Step 4: Summary\n\nFor each document,\
+    \ report: Document N (brief title): Final score X.X\n\nThen provide an overall\
+    \ assessment explaining which documents were most/least useful and why.\n\n## Anti-bias\
+    \ Rules\n\n- Process documents in order, tracking cumulative information.\n- A\
+    \ document that repeats prior information scores lower on information gained.\n\
+    - A short but directly relevant document scores higher than a long tangential one.\n\
+    - Evaluate relevancy to the ACTUAL query, not to the general topic.\n\n## Inputs\n\
+    \n<input>{{input}}</input>\n\n<context>{{context}}</context>"

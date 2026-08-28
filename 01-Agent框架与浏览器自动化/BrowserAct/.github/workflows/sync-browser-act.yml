@@ -1,0 +1,54 @@
+name: Sync browser-act to plugin repo
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'browser-act/**'
+  workflow_dispatch:
+
+concurrency:
+  group: sync-browser-act
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: browser-act/claude-code-browser-act
+          token: ${{ secrets.TARGET_REPO_TOKEN }}
+          path: target
+          fetch-depth: 0
+
+      - name: Sync browser-act folder
+        run: |
+          set -euo pipefail
+          TARGET_DIR="target/plugins/browser-act/skills/browser-act"
+          mkdir -p "$(dirname "$TARGET_DIR")"
+          rm -rf "$TARGET_DIR"
+          mkdir -p "$TARGET_DIR"
+          rsync -a --delete source/browser-act/ "$TARGET_DIR/"
+
+      - name: Commit and push
+        working-directory: target
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A plugins/browser-act/skills/browser-act
+          if git diff --cached --quiet; then
+            echo "No changes to sync."
+            exit 0
+          fi
+          SHORT_SHA="${GITHUB_SHA::7}"
+          git commit -m "sync: browser-act from ${GITHUB_REPOSITORY}@${SHORT_SHA}"
+          git push origin HEAD:main

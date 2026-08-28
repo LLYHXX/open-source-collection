@@ -1,0 +1,75 @@
+meta {
+  name: List Personas with Filters
+  type: http
+  seq: 1
+}
+
+get {
+  url: http://localhost:8000/simulate/api/personas/?type=custom&search=engineer&limit=20&page=1
+  auth: bearer
+}
+
+params:query {
+  type: custom
+  search: engineer
+  limit: 20
+  page: 1
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  name: List Personas with Filters
+  description: Get all accessible personas (system + workspace) with pagination and filters
+
+  Query Parameters:
+  - type: Filter by persona type ('prebuilt' for system, 'custom' for workspace)
+  - search: Search by name, description, or keywords
+  - page: Page number for pagination
+  - limit: Number of items per page (page_size)
+
+  Response Example:
+  {
+    "status": true,
+    "result": {
+      "count": 3,
+      "next": null,
+      "previous": null,
+      "total_pages": 1,
+      "current_page": 1,
+      "results": [
+        {
+          "id": "uuid",
+          "persona_type": "workspace",
+          "persona_type_display": "Workspace",
+          "name": "Software Engineer",
+          "description": "A senior software engineer with expertise in backend development",
+          "gender": "male",
+          "age_group": "30-40",
+          "occupation": "Software Developer",
+          "location": "San Francisco",
+          "personality": "Analytical",
+          "communication_style": "Direct",
+          "multilingual": false,
+          "languages": ["English"],
+          "accent": "American",
+          "conversation_speed": "1.0",
+          "background_sound": false,
+          "finished_speaking_sensitivity": 5,
+          "interrupt_sensitivity": 5,
+          "keywords": ["engineer", "technical", "backend"],
+          "metadata": {
+            "skill_level": "senior",
+            "years_experience": 10
+          },
+          "additional_instruction": "Speak clearly and use technical terminology when appropriate",
+          "is_default": false,
+          "created_at": "2025-10-29T10:00:00Z",
+          "updated_at": "2025-10-29T10:00:00Z"
+        }
+      ]
+    }
+  }
+}

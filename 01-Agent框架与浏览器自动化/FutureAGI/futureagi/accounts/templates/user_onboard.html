@@ -1,0 +1,67 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}Welcome to Future AGI{% endblock %}
+{% block preheader %}Your Future AGI account is ready. Sign in with your temporary credentials.{% endblock %}
+{% block txid %}◦ WELCOME / INBOUND{% endblock %}
+{% block content %}
+  <span class="eyebrow" style="display:inline-block; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#c7c7cc; background:rgba(255,255,255,0.03); border:1px solid #3f3f46; padding:5px 10px; border-radius:999px; margin-bottom:20px;">
+    <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:#fafafa; margin-right:8px; vertical-align:middle; box-shadow:0 0 8px rgba(255,255,255,0.7);"></span>Account Online
+  </span>
+
+  <h1 class="hx" style="font-family:'Inter',sans-serif; font-size:28px; line-height:1.22; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:16px 0 14px 0;">
+    Welcome aboard, {{ first_name }}.
+  </h1>
+
+  <p class="px" style="font-family:'Inter',sans-serif; font-size:16px; line-height:1.65; color:#d4d4d8; margin:0 0 24px 0;">
+    Your workspace is live. Trace, evaluate, and optimize every agent — detect what broke, learn why, and feed the fix back so every version ships smarter.
+  </p>
+
+  <!-- Credentials panel -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 24px 0 8px 0;">
+    <tr>
+      <td style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:12px; padding: 20px 22px;">
+        <p style="margin:0 0 12px 0; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+          <span style="display:inline-block; width:5px; height:5px; background:#fafafa; border-radius:50%; margin-right:8px; vertical-align:middle;"></span>Temporary Credentials
+        </p>
+        <span class="chip" style="display:inline-block; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:14px; background:#000000; border:1px solid #3f3f46; color:#fafafa; padding:9px 14px; border-radius:6px; letter-spacing:0.03em;">{{ generated_password }}</span>
+        <p style="margin:14px 0 0 0; font-family:'Inter',sans-serif; font-size:13px; line-height:1.55; color:#a1a1aa;">
+          Rotate this from account settings after you sign in.
+        </p>
+      </td>
+    </tr>
+  </table>
+
+  <div style="margin: 28px 0 12px 0;">
+    {% include "billing/_button.html" with url=app_url|add:"/dashboard" text="Launch dashboard →" variant="primary" %}
+  </div>
+
+  <hr style="border:none; border-top:1px solid #27272a; margin:36px 0 26px 0;">
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 0 0 8px 0;">
+    <tr>
+      <td width="32" style="padding: 0 0 14px 0;">&nbsp;</td>
+      <td style="padding: 0 0 14px 0; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">· FLIGHT PLAN</td>
+    </tr>
+    <tr>
+      <td width="32" valign="top" style="padding: 10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:#71717a; letter-spacing:0.08em; border-top:1px solid #27272a;">01</td>
+      <td valign="top" style="padding: 10px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.55; color:#d4d4d8; border-top:1px solid #27272a;">
+        Send your first trace with our SDK — <a href="https://docs.futureagi.com/docs/sdk" style="color:#fafafa; text-decoration:underline; text-underline-offset:3px; text-decoration-color:#52525b; font-weight:500;">quickstart</a>
+      </td>
+    </tr>
+    <tr>
+      <td width="32" valign="top" style="padding: 10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:#71717a; letter-spacing:0.08em; border-top:1px solid #27272a;">02</td>
+      <td valign="top" style="padding: 10px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.55; color:#d4d4d8; border-top:1px solid #27272a;">
+        Wire an <a href="https://docs.futureagi.com/docs/evaluation" style="color:#fafafa; text-decoration:underline; text-underline-offset:3px; text-decoration-color:#52525b; font-weight:500;">eval</a> to catch hallucinations before they reach users
+      </td>
+    </tr>
+    <tr>
+      <td width="32" valign="top" style="padding: 10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:#71717a; letter-spacing:0.08em; border-top:1px solid #27272a;">03</td>
+      <td valign="top" style="padding: 10px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.55; color:#d4d4d8; border-top:1px solid #27272a;">
+        Set a <a href="https://docs.futureagi.com/docs/observe" style="color:#fafafa; text-decoration:underline; text-underline-offset:3px; text-decoration-color:#52525b; font-weight:500;">monitor</a> so broken versions never ship
+      </td>
+    </tr>
+  </table>
+
+  <p style="font-family:'Inter',sans-serif; font-size:13px; line-height:1.65; color:#a1a1aa; margin:32px 0 0 0;">
+    — The Future AGI Team
+  </p>
+{% endblock %}

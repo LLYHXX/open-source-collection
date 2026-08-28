@@ -1,0 +1,69 @@
+meta {
+  name: Create Agent Version
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8000/simulate/agent-definitions/3b0e0672-feb3-434f-9c6f-6eef1553ab7c/versions/create/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "description": "Enhanced customer service with improved empathy and product knowledge",
+    "release_notes": "This version includes:\n- Improved empathy responses\n- Enhanced product knowledge base\n- Better escalation handling\n- Updated greeting scripts",
+    "status": "draft"
+  }
+}
+
+docs {
+  name: Create Agent Version
+  description: Create a new version of an agent definition with automatic version numbering
+  request: {
+    "description": "Enhanced customer service with improved empathy and product knowledge",
+    "release_notes": "This version includes:\n- Improved empathy responses\n- Enhanced product knowledge base\n- Better escalation handling\n- Updated greeting scripts",
+    "status": "draft"
+  }
+  response: {
+    "message": "Agent version created successfully",
+    "version": {
+      "id": "new-version-uuid",
+      "version_number": 4,
+      "version_name": "v4",
+      "version_name_display": "v4",
+      "status": "draft",
+      "status_display": "Draft",
+      "score": null,
+      "test_count": 0,
+      "pass_rate": null,
+      "description": "Enhanced customer service with improved empathy and product knowledge",
+      "release_notes": "This version includes:\n- Improved empathy responses\n- Enhanced product knowledge base\n- Better escalation handling\n- Updated greeting scripts",
+      "agent_definition": "agent-uuid-here",
+      "organization": "org-uuid-here",
+      "configuration_snapshot": {
+        "id": "agent-uuid-here",
+        "agent_name": "Customer Service Rep",
+        "contact_number": "+1 555-0123",
+        "inbound": true,
+        "description": "Friendly customer service agent for handling support inquiries with empathy and efficiency",
+        "assistant_id": "asst_customer_001",
+        "language": "en",
+        "websocket_url": "wss://example.com/ws",
+        "websocket_headers": {},
+        "organization": "org-uuid-here",
+        "created_at": "2025-01-15T09:15:00Z",
+        "updated_at": "2025-01-20T10:30:00Z"
+      },
+      "is_active": false,
+      "is_latest": true,
+      "created_at": "2025-01-21T14:45:00Z",
+      "updated_at": "2025-01-21T14:45:00Z"
+    }
+  }
+}

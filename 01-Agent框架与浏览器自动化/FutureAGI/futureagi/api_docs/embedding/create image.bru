@@ -1,0 +1,17 @@
+meta {
+  name: create image
+  type: http
+  seq: 5
+}
+
+post {
+  url: http://localhost:8080/model/v1/embed/image
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "image": "https://fi-customer-data-dev.s3.ap-south-1.amazonaws.com/tempcust/002968fd-8b13-40e1-b936-ab65a20da091"
+  }
+}

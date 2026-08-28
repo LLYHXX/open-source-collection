@@ -1,0 +1,30 @@
+meta {
+  name: Preview User Eval
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}/model-hub/develops/e0739ae4-b90e-4b5f-9151-43c59514cf7f/preview_run_eval/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_id": "e3ddd5cd-9a56-41ce-99b0-ea3364d47f3f",
+    "config": {
+      "mapping": {
+        "response": "51869c51-f92b-4f9e-937a-543748414b8f",
+        "query" : "00fecac9-3ecf-4d77-bda4-188b141da2ce"
+      },
+      "config": {
+        "model":"gpt-4o-mini"
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+meta {
+  name: 07 - Error - Invalid Numeric Parameters
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{host}}/usage/workspace-usage-summary/?month=invalid&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: invalid
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Workspace Usage Summary - Non-Numeric Parameters
+
+  ### Test Scenario
+  - Month parameter contains non-numeric value
+  - Tests data type validation
+
+  ### Expected Response
+  - Status: 400 Bad Request
+  - Response structure:
+    ```json
+    {
+      "status": false,
+      "message": "Error message about invalid parameter"
+    }
+    ```
+
+  ### Notes
+  - Both month and year must be valid integers
+  - Tests parameter type validation
+}

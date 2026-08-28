@@ -1,0 +1,26 @@
+id: swagger-ui-exposure
+info:
+  name: Swagger / OpenAPI UI Exposure
+  severity: medium
+  description: API docs UI exposed (schema leak / attack surface map)
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/swagger-ui.html"
+      - "{{BaseURL}}/swagger/"
+      - "{{BaseURL}}/swagger-ui/"
+      - "{{BaseURL}}/api-docs"
+      - "{{BaseURL}}/v2/api-docs"
+      - "{{BaseURL}}/v3/api-docs"
+      - "{{BaseURL}}/openapi.json"
+    matchers:
+      - type: word
+        words:
+          - "swagger"
+          - "openapi"
+          - "SwaggerUI"
+          - "\"paths\""
+        condition: or
+      - type: status
+        status:
+          - 200

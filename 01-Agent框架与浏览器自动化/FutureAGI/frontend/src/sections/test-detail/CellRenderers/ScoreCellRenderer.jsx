@@ -1,0 +1,64 @@
+import React from "react";
+import PropTypes from "prop-types";
+import { Box, LinearProgress, Skeleton, Typography } from "@mui/material";
+import { ShowComponent } from "../../../components/show";
+import { getCsatScoreColor } from "src/components/CallLogsDrawer/common";
+import { CallExecutionLoadingStatus, TestRunLoadingStatus } from "../common";
+
+const ScoreCellRenderer = ({ value, data }) => {
+  const color = getCsatScoreColor(value);
+  if (value === null || value === undefined) {
+    const callLoading = CallExecutionLoadingStatus.includes(
+      data?.status?.toLowerCase?.(),
+    );
+    const runLoading = TestRunLoadingStatus.includes(
+      data?.overall_status?.toLowerCase?.(),
+    );
+    if (callLoading || runLoading) {
+      return (
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            height: "100%",
+            width: "100%",
+          }}
+        >
+          <Skeleton sx={{ width: "100%", height: "20px" }} variant="rounded" />
+        </Box>
+      );
+    }
+    return <Typography typography="s1">- </Typography>;
+  }
+  return (
+    <Box sx={{ display: "flex", alignItems: "center", width: "100%", gap: 2 }}>
+      <Typography
+        typography="s1"
+        fontWeight={"fontWeightBold"}
+        color={value !== null ? color : null}
+      >
+        {value === null ? "Score not available" : `${value}`}
+      </Typography>
+      <ShowComponent condition={value !== null}>
+        <LinearProgress
+          value={(value / 10) * 100}
+          variant="determinate"
+          sx={{
+            width: "30%",
+            height: "10px",
+            "& .MuiLinearProgress-bar": {
+              backgroundColor: color,
+            },
+          }}
+        />
+      </ShowComponent>
+    </Box>
+  );
+};
+
+ScoreCellRenderer.propTypes = {
+  value: PropTypes.number,
+  data: PropTypes.object,
+};
+
+export default ScoreCellRenderer;

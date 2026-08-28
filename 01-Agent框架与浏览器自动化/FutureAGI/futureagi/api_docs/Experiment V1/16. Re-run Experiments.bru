@@ -1,0 +1,42 @@
+meta {
+  name: Re-run Experiments
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/experiments/re-run/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "experiment_ids": [
+      "uuid-experiment-1"
+    ],
+    "use_temporal": true,
+    "max_concurrent_rows": 10
+  }
+}
+
+docs {
+  ## Re-run Experiments (V1)
+
+  Re-runs one or more experiments. Uses Temporal by default, falls back to Celery.
+  Used by DevelopBar.jsx.
+
+  ### Request Body
+  - `experiment_ids` — Array of experiment UUIDs to re-run (required)
+  - `use_temporal` — Use Temporal workflows, default true (optional)
+  - `max_concurrent_rows` — Max rows processed concurrently, default 10 (optional)
+
+  ### Response
+  ```json
+  {"message": "Re-Run has started for the experiments.", "status": 200}
+  ```
+}

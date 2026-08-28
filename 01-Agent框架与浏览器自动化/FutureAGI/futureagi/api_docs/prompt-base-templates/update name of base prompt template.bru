@@ -1,0 +1,21 @@
+meta {
+  name: update name of base prompt template
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{host}}/model-hub/prompt-base-templates/d2ffa97c-5e69-44d7-9373-72a8d7a64828/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "name": "hello123"
+    }
+}

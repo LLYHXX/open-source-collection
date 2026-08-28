@@ -1,0 +1,23 @@
+meta {
+  name: Get Graph Detail
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/agent-playground/graphs/:id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  graph_id: a7d635c7-550f-48d1-81c8-749ffebc6783
+}

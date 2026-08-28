@@ -1,0 +1,64 @@
+eval_id: 120
+name: customer_agent_human_escalation
+description: Tracks if the bot escalates to a human agent appropriately based on user frustration, complexity of queries,
+  or specific keywords.
+criteria: "You are evaluating whether the agent appropriately escalates to a human when the situation warrants it.\n\n## Criteria\n\
+  \n1. Escalation triggers: The agent should escalate when it detects user frustration, repeated failures, or queries beyond\
+  \ its capabilities.\n   - Pass: Escalates after two failed resolution attempts with an increasingly frustrated customer.\n\
+  \   - Fail: Customer explicitly asks for a human three times and the agent ignores the request.\n\n2. Timing: Escalation\
+  \ should not be too early (before attempting to help) or too late (after the customer is already angry).\n   - Pass: Attempts\
+  \ to help first, then escalates when it cannot resolve the issue.\n   - Fail: Immediately escalates without attempting to\
+  \ help, or waits until the customer is furious.\n\n3. Communication: The agent should explain why it is escalating and set\
+  \ expectations.\n   - Pass: \"I want to connect you with a specialist who can better assist you.\"\n   - Fail: \"Transferring\
+  \ now.\" (no explanation or context)\n\n## Anti-bias Rules\n\n- If no escalation-worthy situation arises, absence of escalation\
+  \ IS correct and should pass.\n- DO NOT penalize the agent for attempting to resolve before escalating; that's preferred\
+  \ behavior.\n- A short clear escalation message scores higher than a long one that delays the handoff.\n\n## Scoring\n\n\
+  Return 'Passed' if escalation happens when needed with clear communication (or correctly doesn't happen when not needed).\
+  \ Return 'Failed' if the agent fails to escalate when clearly needed, escalates prematurely, or escalates without explanation.\n\
+  \n## Inputs\n\n<conversation>{{conversation}}</conversation>"
+eval_tags:
+- Agents
+- Conversation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - conversation
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    conversation: The conversation to be evaluated
+  param_modalities:
+    conversation:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether the agent appropriately escalates to a human when the situation warrants it.\n\n\
+    ## Criteria\n\n1. Escalation triggers: The agent should escalate when it detects user frustration, repeated failures,\
+    \ or queries beyond its capabilities.\n   - Pass: Escalates after two failed resolution attempts with an increasingly\
+    \ frustrated customer.\n   - Fail: Customer explicitly asks for a human three times and the agent ignores the request.\n\
+    \n2. Timing: Escalation should not be too early (before attempting to help) or too late (after the customer is already\
+    \ angry).\n   - Pass: Attempts to help first, then escalates when it cannot resolve the issue.\n   - Fail: Immediately\
+    \ escalates without attempting to help, or waits until the customer is furious.\n\n3. Communication: The agent should\
+    \ explain why it is escalating and set expectations.\n   - Pass: \"I want to connect you with a specialist who can better\
+    \ assist you.\"\n   - Fail: \"Transferring now.\" (no explanation or context)\n\n## Anti-bias Rules\n\n- If no escalation-worthy\
+    \ situation arises, absence of escalation IS correct and should pass.\n- DO NOT penalize the agent for attempting to resolve\
+    \ before escalating; that's preferred behavior.\n- A short clear escalation message scores higher than a long one that\
+    \ delays the handoff.\n\n## Scoring\n\nReturn 'Passed' if escalation happens when needed with clear communication (or\
+    \ correctly doesn't happen when not needed). Return 'Failed' if the agent fails to escalate when clearly needed, escalates\
+    \ prematurely, or escalates without explanation.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"

@@ -1,0 +1,21 @@
+meta {
+  name: Start Evals Run
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/model-hub/develops/e0739ae4-b90e-4b5f-9151-43c59514cf7f/start_evals_process/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "user_eval_ids" : ["2839f630-001e-49ef-8b36-0dedbfd41cc5"]
+  }
+}

@@ -1,0 +1,92 @@
+eval_id: 175
+name: trajectory_match
+description: Validates agent action/tool call sequences. Supports strict (same order), unordered (any order), subset (expected
+  in actual), and superset (actual in expected) matching modes.
+criteria: Measures how well an agent's actual execution trajectory matches the expected sequence of actions.
+eval_tags:
+- Agents
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config:
+    mode:
+      type: option
+      default: strict
+  config_params_desc:
+    output: 'Actual trajectory (JSON array of action names or objects with "name" field)'
+    expected: 'Expected trajectory (same format)'
+    mode: 'Matching mode: strict (same order), unordered, subset, superset'
+  config_params_option:
+    mode:
+    - strict
+    - unordered
+    - subset
+    - superset
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, str):
+                try:
+                    val = json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    return [v.strip() for v in val.split(",") if v.strip()]
+            if isinstance(val, list):
+                r = []
+                for item in val:
+                    if isinstance(item, dict):
+                        r.append(item.get("name", item.get("action", str(item))))
+                    else:
+                        r.append(str(item))
+                return r
+            return [str(val)]
+        actual = _parse(kwargs.get("output", output))
+        exp = _parse(kwargs.get("expected", expected))
+        mode = str(kwargs.get("mode", "strict")).lower()
+        if not exp:
+            s = 1.0 if not actual else 0.0
+            return {"score": s, "reason": f"No expected actions"}
+        if mode == "strict":
+            if actual == exp:
+                return {"score": 1.0, "reason": f"Strict match: {len(exp)} actions"}
+            common = 0
+            for a, e in zip(actual, exp):
+                if a == e:
+                    common += 1
+                else:
+                    break
+            s = common / max(len(exp), len(actual))
+            return {"score": float(s), "reason": f"Strict: {common}/{len(exp)} prefix match"}
+        elif mode == "unordered":
+            a_set, e_set = set(actual), set(exp)
+            inter = a_set & e_set
+            union = a_set | e_set
+            s = len(inter) / len(union) if union else 1.0
+            return {"score": float(s), "reason": f"Unordered: {len(inter)}/{len(union)}"}
+        elif mode == "subset":
+            e_set, a_set = set(exp), set(actual)
+            if e_set.issubset(a_set):
+                return {"score": 1.0, "reason": "All expected found"}
+            missing = e_set - a_set
+            s = 1.0 - len(missing) / len(e_set)
+            return {"score": float(s), "reason": f"Subset: missing {missing}"}
+        elif mode == "superset":
+            a_set, e_set = set(actual), set(exp)
+            if a_set.issubset(e_set):
+                return {"score": 1.0, "reason": "All actual within expected"}
+            extra = a_set - e_set
+            s = 1.0 - len(extra) / len(a_set)
+            return {"score": float(s), "reason": f"Superset: extra {extra}"}
+        return {"score": 0.0, "reason": f"Unknown mode: {mode}"}

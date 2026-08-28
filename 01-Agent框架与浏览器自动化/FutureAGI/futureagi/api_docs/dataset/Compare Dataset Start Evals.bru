@@ -1,0 +1,22 @@
+meta {
+  name: Compare Dataset Start Evals
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{host}}/model-hub/datasets/f76d0463-32a7-4c0f-97ad-7be7c9c71945/compare-datasets/start-eval/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_ids": ["19f1c30a-9071-4a29-b319-b720f571d789", "f76d0463-32a7-4c0f-97ad-7be7c9c71945"],
+    "user_eval_names": ["tyu"]
+  }
+}

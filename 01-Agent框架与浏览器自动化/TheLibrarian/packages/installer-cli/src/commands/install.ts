@@ -1,0 +1,258 @@
+// `librarian install [harness…]` orchestration.
+//
+// Flow:
+//   1. Resolve config. If the MCP URL or token is unset, prompt for them
+//      (token is a SECRET prompt — never echoed) and persist via `setConfig`,
+//      which also (re)applies the managed shell block for the user's shell.
+//   2. Choose harnesses: explicit args win; otherwise an interactive
+//      multi-select over the harnesses whose native CLI is on PATH (file-based
+//      harnesses always offered). Non-interactive falls back to all available.
+//   3. For each chosen harness, run its native `install(cfg)`:
+//        - a "CLI not found" error → SKIP with a note (not a failure);
+//        - any OTHER error → attempt `uninstall()` to avoid a half-applied
+//          state (spec §9), record it failed, and continue.
+//   4. Print a summary (installed / skipped / failed) + a restart hint.
+
+import { deriveServerUrl, readConfig, setConfig, type LibrarianConfig } from "../config.js";
+import type { Shell } from "../env.js";
+import { which } from "../exec.js";
+import { HARNESS_CLI } from "../harnesses/cli.js";
+import { allHarnesses, isHarnessId, type HarnessModule } from "../harnesses/index.js";
+import type { Prompter } from "../prompt.js";
+import { messageOf, toHarnessConfig } from "./shared.js";
+
+export interface InstallDeps {
+  home?: string | undefined;
+  shell?: Shell | undefined;
+  prompter: Prompter;
+  /**
+   * The process environment to read existing `LIBRARIAN_*` vars from (BUG 2).
+   * Injectable so tests never read the real `process.env`. Defaults to
+   * `process.env`. The token value is never logged.
+   */
+  env?: NodeJS.ProcessEnv | undefined;
+}
+
+export interface InstallOutcome {
+  installed: string[];
+  skipped: { id: string; reason: string }[];
+  failed: { id: string; reason: string }[];
+  output: string;
+}
+
+/** Run the install orchestration over the (possibly empty) named harnesses. */
+export async function runInstall(named: string[], deps: InstallDeps): Promise<InstallOutcome> {
+  const lines: string[] = [];
+
+  // 1) Resolve config in-memory, prompting for any missing secret/URL. We do
+  //    NOT persist `~/.librarian/env` or rewrite the shell rc block yet — that
+  //    is deferred until at least one harness install succeeds (S1), so a total
+  //    failure leaves no global side effect. The harness installs consume the
+  //    in-memory cfg, never the env file, so deferring is safe.
+  const { cfg, changed } = await resolveConfig(deps);
+
+  // 2) Choose harnesses.
+  const chosen = await chooseHarnesses(named, deps, lines);
+  if (chosen.length === 0) {
+    lines.push("No harnesses selected — nothing to do.");
+    return { installed: [], skipped: [], failed: [], output: lines.join("\n") };
+  }
+
+  // 3) Install each, with per-harness skip / rollback.
+  const harnessCfg = toHarnessConfig(cfg);
+  const installed: string[] = [];
+  const skipped: { id: string; reason: string }[] = [];
+  const failed: { id: string; reason: string }[] = [];
+
+  for (const harness of chosen) {
+    try {
+      await harness.install(harnessCfg);
+      installed.push(harness.id);
+    } catch (error) {
+      const reason = messageOf(error);
+      if (isCliNotFound(reason)) {
+        skipped.push({ id: harness.id, reason });
+        continue;
+      }
+      // Mid-install failure → roll back so we don't leave a half-applied
+      // state (spec §9). Best-effort: a failed rollback is noted, not fatal.
+      let rollbackNote = "";
+      try {
+        await harness.uninstall();
+        rollbackNote = " (rolled back)";
+      } catch (rollbackError) {
+        rollbackNote = ` (rollback also failed: ${messageOf(rollbackError)})`;
+      }
+      failed.push({ id: harness.id, reason: `${reason}${rollbackNote}` });
+    }
+  }
+
+  // 4) Now that at least one harness may have succeeded, persist the config
+  //    (writes `~/.librarian/env` + the managed shell block). Deferred from
+  //    step 1 so a run where EVERY harness failed leaves no global side effect
+  //    (S1). Only persist when the values actually changed — keeps re-runs
+  //    idempotent and quiet.
+  if (installed.length > 0 && changed) {
+    setConfig({ mcpUrl: cfg.mcpUrl, token: cfg.token }, { home: deps.home, shell: deps.shell });
+    lines.unshift("Saved config to ~/.librarian/env and updated the shell block.", "");
+  }
+
+  // 5) Summary + restart hint.
+  renderSummary(lines, { installed, skipped, failed });
+  return { installed, skipped, failed, output: lines.join("\n") };
+}
+
+/**
+ * Resolve the config to install with, prompting for whatever is missing.
+ * Returns the in-memory config and whether it differs from what's persisted
+ * (so the caller can defer the actual `setConfig` write until a harness
+ * install has succeeded — S1). Does NOT touch the filesystem.
+ *
+ * Source precedence (BUG 2 — reuse existing `LIBRARIAN_*`):
+ *   1. `~/.librarian/env` already has BOTH values → use them, no prompts.
+ *   2. Otherwise, consult `process.env` (injected as `deps.env`):
+ *        - BOTH `LIBRARIAN_MCP_URL` + `LIBRARIAN_AGENT_TOKEN` present → offer
+ *          to reuse them (URL shown in full, token redacted to
+ *          `LIBRARIAN_AGENT_TOKEN=set` — the value is NEVER displayed). Accept
+ *          → use them; decline → prompt for fresh values.
+ *        - Only ONE present → prefill it as that prompt's default so the user
+ *          can accept with enter; prompt for the other.
+ *        - Neither → prompt for both (unchanged behaviour).
+ * The token value is never logged.
+ */
+async function resolveConfig(
+  deps: InstallDeps,
+): Promise<{ cfg: LibrarianConfig; changed: boolean }> {
+  const existing = readConfig(deps.home);
+  const env = deps.env ?? process.env;
+  const envUrl = (env.LIBRARIAN_MCP_URL ?? "").trim();
+  const envToken = (env.LIBRARIAN_AGENT_TOKEN ?? "").trim();
+
+  let mcpUrl = existing?.mcpUrl ?? "";
+  let token = existing?.token ?? "";
+
+  // When both env vars are present we offer to reuse them as a pair; if the
+  // user DECLINES we prompt for fresh values WITHOUT prefilling the rejected
+  // env defaults. A single env var, by contrast, prefills its prompt's default.
+  let declinedEnvPair = false;
+
+  // (2) Only consult the environment when the persisted config is incomplete.
+  if ((!mcpUrl || !token) && envUrl && envToken) {
+    // Both present → offer to reuse them, showing the URL but redacting the
+    // token (only that it's set, never its value).
+    const question = [
+      "Found these in your environment:",
+      `  LIBRARIAN_MCP_URL=${envUrl}`,
+      "  LIBRARIAN_AGENT_TOKEN=set",
+      "Use the LIBRARIAN_MCP_URL and LIBRARIAN_AGENT_TOKEN from your environment? [Y/n]",
+    ].join("\n");
+    const answer = await deps.prompter.promptText(question, { default: "y" });
+    if (isYes(answer)) {
+      if (!mcpUrl) mcpUrl = envUrl;
+      if (!token) token = envToken;
+    } else {
+      declinedEnvPair = true;
+    }
+  }
+
+  // Prompt for anything still missing. When exactly one env var is present (and
+  // we didn't just decline the both-present pair), prefill it as the prompt's
+  // default so the user can accept it with a bare enter.
+  if (!mcpUrl) {
+    const opts = envUrl && !declinedEnvPair ? { default: envUrl } : undefined;
+    mcpUrl = await deps.prompter.promptText("MCP URL", opts);
+  }
+  if (!token) {
+    // A secret prompt never echoes a default, but a present env token can still
+    // back an empty reply — so pass it as the default invisibly.
+    const opts =
+      envToken && !declinedEnvPair ? { default: envToken, secret: true } : { secret: true };
+    token = await deps.prompter.promptText("Agent token", opts);
+  }
+
+  const changed = mcpUrl !== existing?.mcpUrl || token !== existing?.token;
+  const cfg: LibrarianConfig = { mcpUrl, token, serverUrl: deriveServerUrl(mcpUrl) };
+  return { cfg, changed };
+}
+
+/** A yes/no answer parser — empty (bare enter) counts as yes given a "y" default. */
+function isYes(answer: string): boolean {
+  const a = answer.trim().toLowerCase();
+  return a === "" || a === "y" || a === "yes";
+}
+
+/**
+ * Resolve the harness set to install into:
+ *   - explicit args (validated) win;
+ *   - otherwise interactive multi-select over harnesses whose CLI is present
+ *     (file-based harnesses always offered).
+ */
+async function chooseHarnesses(
+  named: string[],
+  deps: InstallDeps,
+  lines: string[],
+): Promise<HarnessModule[]> {
+  if (named.length > 0) {
+    const valid: HarnessModule[] = [];
+    for (const id of named) {
+      if (isHarnessId(id)) {
+        valid.push(allHarnesses.find((h) => h.id === id) as HarnessModule);
+      } else {
+        lines.push(`Skipping unknown harness: ${id}`);
+      }
+    }
+    return valid;
+  }
+
+  // Default set: harnesses whose CLI is on PATH, plus file-based ones.
+  const available: HarnessModule[] = [];
+  for (const harness of allHarnesses) {
+    const cli = HARNESS_CLI[harness.id];
+    if (cli === null || (await which(cli))) available.push(harness);
+  }
+  if (available.length === 0) {
+    lines.push("No harness CLIs detected on PATH.");
+    return [];
+  }
+
+  const selectedIds = await deps.prompter.selectHarnesses(
+    available.map((h) => ({ id: h.id, label: h.displayName })),
+  );
+  return available.filter((h) => selectedIds.includes(h.id));
+}
+
+function renderSummary(
+  lines: string[],
+  outcome: {
+    installed: string[];
+    skipped: { id: string; reason: string }[];
+    failed: { id: string; reason: string }[];
+  },
+): void {
+  lines.push("", "Install summary:");
+  if (outcome.installed.length > 0) {
+    lines.push(`  Installed: ${outcome.installed.join(", ")}`);
+  }
+  for (const s of outcome.skipped) {
+    lines.push(`  Skipped ${s.id}: ${s.reason}`);
+  }
+  for (const f of outcome.failed) {
+    lines.push(`  Failed ${f.id}: ${f.reason}`);
+  }
+  if (
+    outcome.installed.length === 0 &&
+    outcome.failed.length === 0 &&
+    outcome.skipped.length === 0
+  ) {
+    lines.push("  (nothing installed)");
+  }
+  lines.push(
+    "",
+    "Restart your shell or run `source ~/.librarian/env` to load the new environment.",
+  );
+}
+
+/** True iff the error message is a harness "CLI not found on PATH" signal. */
+function isCliNotFound(message: string): boolean {
+  return /not found on path/i.test(message) || /cli not found/i.test(message);
+}

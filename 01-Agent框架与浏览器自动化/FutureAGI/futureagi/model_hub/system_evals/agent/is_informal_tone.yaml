@@ -1,0 +1,58 @@
+eval_id: 97
+name: is_informal_tone
+description: Detects whether the tone is informal or casual (e.g., use of slang, contractions, emoji).
+criteria: "You are evaluating whether the output uses an informal or casual tone.\n\n## Criteria\n\n1. Contractions: Check\
+  \ for \"you're,\" \"don't,\" \"can't,\" \"it's,\" \"we'll\" which signal informal writing.\n   - Pass: \"You're gonna love\
+  \ this feature!\"\n   - Fail: \"You will appreciate this feature.\"\n\n2. Slang and colloquialisms: Look for \"gonna,\"\
+  \ \"wanna,\" \"cool,\" \"awesome,\" \"no worries,\" \"kinda.\"\n   - Pass: \"That's pretty cool, right?\"\n   - Fail: \"\
+  That is quite impressive.\"\n\n3. Casual markers: Detect emojis, casual greetings (\"hey,\" \"hi there,\" \"what's up\"\
+  ), or exclamation marks used conversationally.\n   - Pass: \"Hey there! Let me help you out.\"\n   - Fail: \"Hello. I will\
+  \ assist you with your inquiry.\"\n\n## Anti-bias Rules\n\n- \"Hello\" is a formal greeting; \"Hey\" or \"Hi there\" are\
+  \ informal. DO NOT classify \"Hello\" as informal.\n- A single contraction in otherwise formal text does NOT make the tone\
+  \ informal; look for a pattern.\n- Evaluate the dominant tone impression of the output as a whole.\n\n## Scoring\n\nReturn\
+  \ 'Passed' if the output exhibits clear informal tone markers (contractions, slang, emojis, casual phrasing). Return 'Failed'\
+  \ if the tone is formal, neutral, or academic with no informal indicators.\n\n## Inputs\n\n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Chatbot behaviors
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    output: The output to be evaluated for tone formality
+  param_modalities:
+    output:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether the output uses an informal or casual tone.\n\n## Criteria\n\n1. Contractions:\
+    \ Check for \"you're,\" \"don't,\" \"can't,\" \"it's,\" \"we'll\" which signal informal writing.\n   - Pass: \"You're\
+    \ gonna love this feature!\"\n   - Fail: \"You will appreciate this feature.\"\n\n2. Slang and colloquialisms: Look for\
+    \ \"gonna,\" \"wanna,\" \"cool,\" \"awesome,\" \"no worries,\" \"kinda.\"\n   - Pass: \"That's pretty cool, right?\"\n\
+    \   - Fail: \"That is quite impressive.\"\n\n3. Casual markers: Detect emojis, casual greetings (\"hey,\" \"hi there,\"\
+    \ \"what's up\"), or exclamation marks used conversationally.\n   - Pass: \"Hey there! Let me help you out.\"\n   - Fail:\
+    \ \"Hello. I will assist you with your inquiry.\"\n\n## Anti-bias Rules\n\n- \"Hello\" is a formal greeting; \"Hey\" or\
+    \ \"Hi there\" are informal. DO NOT classify \"Hello\" as informal.\n- A single contraction in otherwise formal text does\
+    \ NOT make the tone informal; look for a pattern.\n- Evaluate the dominant tone impression of the output as a whole.\n\
+    \n## Scoring\n\nReturn 'Passed' if the output exhibits clear informal tone markers (contractions, slang, emojis, casual\
+    \ phrasing). Return 'Failed' if the tone is formal, neutral, or academic with no informal indicators.\n\n## Inputs\n\n\
+    <output>{{output}}</output>"

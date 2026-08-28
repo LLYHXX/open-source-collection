@@ -1,0 +1,24 @@
+meta {
+  name: List KB dropdown
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{host}}/model-hub/knowledge-base/list/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  Tested api for listing kbs for first time user screen.
+  Response:
+  {
+    "status": true,
+    "result": {}
+  }
+}

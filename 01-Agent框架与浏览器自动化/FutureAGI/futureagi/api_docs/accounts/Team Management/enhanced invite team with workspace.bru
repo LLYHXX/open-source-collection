@@ -1,0 +1,43 @@
+meta {
+  name: enhanced invite team with workspace creation
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/accounts/team/users/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "workspace": {
+      "name": "project-beta",
+      "display_name": "Project Beta",
+      "description": "New development workspace for Project Beta"
+    },
+    "members": [
+      {
+        "email": "developer1@example.com",
+        "name": "Developer One",
+        "organization_role": "MEMBER",
+        "workspace_role": "WORKSPACE_ADMIN"
+      },
+      {
+        "email": "developer2@example.com",
+        "name": "Developer Two",
+        "organization_role": "MEMBER",
+        "workspace_role": "WORKSPACE_MEMBER"
+      }
+    ]
+  }
+}

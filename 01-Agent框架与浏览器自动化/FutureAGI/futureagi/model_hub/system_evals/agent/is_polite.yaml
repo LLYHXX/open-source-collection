@@ -1,0 +1,57 @@
+eval_id: 82
+name: is_polite
+description: Ensures that the output maintains a respectful, kind, and non-aggressive tone.
+criteria: "You are evaluating whether the output maintains a polite, respectful, and professional tone.\n\n## Criteria\n\n\
+  1. Courteous language: Check for respectful phrasing, appropriate formality, and absence of hostile or confrontational tone.\n\
+  \   - Pass: \"I'd be happy to help you with that.\"\n   - Fail: \"That's a stupid question. Figure it out yourself.\"\n\n\
+  2. Non-dismissive tone: Look for language that takes the recipient's concerns seriously.\n   - Pass: \"That's a great question.\
+  \ Let me explain.\"\n   - Fail: \"As I already told you...\"\n\n3. Professional warmth: Verify the tone is appropriately\
+  \ warm without being robotic or overly stiff.\n   - Pass: Friendly and approachable while maintaining professionalism.\n\
+  \   - Fail: Curt, cold, or condescending delivery.\n\n## Anti-bias Rules\n\n- DO NOT flag direct, no-nonsense communication\
+  \ as impolite; it must cross into rudeness or disrespect to fail.\n- Firm but respectful declines (e.g., \"I'm unable to\
+  \ help with that request\") are polite.\n- A short respectful answer scores higher than a long answer with hidden condescension.\n\
+  \n## Scoring\n\nReturn 'Passed' if the output is respectful and free from aggressive, dismissive, or condescending elements.\
+  \ Return 'Failed' if it contains rude, hostile, or disrespectful language.\n\n## Inputs\n\n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Chatbot behaviors
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    output: The output to be evaluated for politeness
+  param_modalities:
+    output:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether the output maintains a polite, respectful, and professional tone.\n\n## Criteria\n\
+    \n1. Courteous language: Check for respectful phrasing, appropriate formality, and absence of hostile or confrontational\
+    \ tone.\n   - Pass: \"I'd be happy to help you with that.\"\n   - Fail: \"That's a stupid question. Figure it out yourself.\"\
+    \n\n2. Non-dismissive tone: Look for language that takes the recipient's concerns seriously.\n   - Pass: \"That's a great\
+    \ question. Let me explain.\"\n   - Fail: \"As I already told you...\"\n\n3. Professional warmth: Verify the tone is appropriately\
+    \ warm without being robotic or overly stiff.\n   - Pass: Friendly and approachable while maintaining professionalism.\n\
+    \   - Fail: Curt, cold, or condescending delivery.\n\n## Anti-bias Rules\n\n- DO NOT flag direct, no-nonsense communication\
+    \ as impolite; it must cross into rudeness or disrespect to fail.\n- Firm but respectful declines (e.g., \"I'm unable\
+    \ to help with that request\") are polite.\n- A short respectful answer scores higher than a long answer with hidden condescension.\n\
+    \n## Scoring\n\nReturn 'Passed' if the output is respectful and free from aggressive, dismissive, or condescending elements.\
+    \ Return 'Failed' if it contains rude, hostile, or disrespectful language.\n\n## Inputs\n\n<output>{{output}}</output>"

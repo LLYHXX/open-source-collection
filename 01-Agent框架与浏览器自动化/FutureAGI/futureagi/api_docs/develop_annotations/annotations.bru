@@ -1,0 +1,21 @@
+meta {
+  name: annotations
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/model-hub/develops/d4996d4f-d78a-47d6-8b44-760ed6cd8f43/add_empty_rows/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "num_rows" : 2
+  }
+}

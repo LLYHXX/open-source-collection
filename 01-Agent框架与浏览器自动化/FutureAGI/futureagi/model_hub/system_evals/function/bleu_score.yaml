@@ -1,0 +1,75 @@
+eval_id: 101
+name: bleu_score
+description: Computes a bleu score between the expected gold answer and the model output.
+criteria: Check if the generated caption or description is similar to the reference caption or description. If the generated
+  caption or description is not similar to the reference caption or description then return Failed else return Passed
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - reference
+  - hypothesis
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        # Pure-Python BLEU-4 with smoothing (no nltk required).
+        import math
+        from collections import Counter
+        reference = kwargs.get("reference", expected or "")
+        hypothesis = kwargs.get("hypothesis", output or "")
+        if not reference or not hypothesis:
+            return {"score": 0.0, "reason": "Missing reference or hypothesis"}
+        ref_tokens = str(reference).split()
+        hyp_tokens = str(hypothesis).split()
+        if not hyp_tokens:
+            return {"score": 0.0, "reason": "Empty hypothesis"}
+
+        def _ngrams(tokens, n):
+            return [tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)]
+
+        def _modified_precision(ref, hyp, n):
+            ref_ngrams = Counter(_ngrams(ref, n))
+            hyp_ngrams = Counter(_ngrams(hyp, n))
+            if not hyp_ngrams:
+                return 0.0, 0
+            clipped = 0
+            total = sum(hyp_ngrams.values())
+            for ng, count in hyp_ngrams.items():
+                clipped += min(count, ref_ngrams.get(ng, 0))
+            return clipped, total
+
+        # Compute 1..4-gram precisions with +1 smoothing (Laplace) to avoid log(0).
+        weights = [0.25, 0.25, 0.25, 0.25]
+        log_precisions = []
+        for n in range(1, 5):
+            clipped, total = _modified_precision(ref_tokens, hyp_tokens, n)
+            if total == 0:
+                # No n-grams of this order in hypothesis.
+                precision = 1e-9
+            else:
+                precision = (clipped + 1) / (total + 1)  # add-1 smoothing
+            log_precisions.append(math.log(precision))
+
+        # Brevity penalty
+        ref_len = len(ref_tokens)
+        hyp_len = len(hyp_tokens)
+        if hyp_len > ref_len:
+            bp = 1.0
+        elif hyp_len == 0:
+            bp = 0.0
+        else:
+            bp = math.exp(1 - ref_len / hyp_len)
+
+        score = bp * math.exp(sum(w * lp for w, lp in zip(weights, log_precisions)))
+        score = max(0.0, min(1.0, score))
+        return {"score": float(score), "reason": f"BLEU-4 score: {score:.4f} (bp={bp:.3f})"}

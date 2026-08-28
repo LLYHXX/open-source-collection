@@ -1,0 +1,927 @@
+import React from "react";
+import SvgColor from "src/components/svg-color";
+import { z } from "zod";
+import CallLogsCellRenderer from "./CallLogs/CallLogsCellRenderer";
+import VoiceCostCell from "./CallLogs/VoiceCostCell";
+import VoiceLatencyCell from "./CallLogs/VoiceLatencyCell";
+import VoiceTokenCell from "./CallLogs/VoiceTokenCell";
+import TalkRatioCell from "./CallLogs/TalkRatioCell";
+import EvalCellRenderer from "../test-detail/CellRenderers/EvalCellRenderer";
+import CallLogsHeaderCellRenderer from "./CallLogs/CallLogsHeaderCellRenderer";
+import { useQuery } from "@tanstack/react-query";
+import axios, { endpoints } from "src/utils/axios";
+import { Box, Skeleton } from "@mui/material";
+import EvaluationCell from "src/sections/projects/LLMTracing/Renderers/EvaluationCell";
+import { AGENT_TYPES, isLiveKitProvider, VOICE_TRANSPORT } from "./constants";
+import AnnotationHeaderCellRenderer from "./CallLogs/AnnotationHeaderCellRenderer";
+import NewAnnotationCellRenderer from "./NewAnnotationCellRenderer";
+
+export const agentDefinitionSections = [
+  {
+    id: "basic-info",
+    title: "Basic Info",
+  },
+  {
+    id: "configuration ",
+    title: "Configuration",
+  },
+  {
+    id: "behavior-config",
+    title: "Behaviour",
+  },
+];
+
+export const stepFields = [
+  ["agentType", "agentName", "languages"],
+  [
+    "provider",
+    "assistantId",
+    "apiEndpoint",
+    "authenticationMethod",
+    "apiKey",
+    "countryCode",
+    "contactNumber",
+    "observabilityEnabled",
+    "model",
+  ],
+  [
+    "description",
+    "knowledgeBase",
+    "inbound",
+    "targetSpeaksFirst",
+    "commitMessage",
+  ],
+];
+
+export const emptyAgentSteps = [
+  {
+    id: "agent-definition",
+    title: "Agent Definition",
+    subtitle:
+      "Set up and manage AI agent configuration for testing and communication",
+    icon: "/assets/icons/navbar/ic_project.svg",
+  },
+  {
+    id: "agent-scenarios",
+    title: "Agent Scenarios",
+    subtitle: "Create and customize test scenarios for your AI agents",
+    icon: "/assets/icons/navbar/ic_sessions.svg",
+  },
+  {
+    id: "tests-and-observability",
+    title: "Tests and Observability",
+    subtitle: "Monitor, test, and analyze your AI agent's performance",
+    icon: "/assets/icons/navbar/ic_run.svg",
+  },
+];
+
+// New schema including all fields in the accordions
+export const createAgentDefinitionSchema = (options) => {
+  const keysRequired = options?.keysRequired || false;
+  const agentDefinitionId = options?.agentDefinitionId;
+  return z
+    .object({
+      // Basic Information
+      agentType: z.string().min(1, "Agent type is required"),
+      agentName: z.string().min(1, "Agent name is required"),
+      languages: z
+        .array(z.string())
+        .min(1, "At least one language is required"),
+
+      // Configuration
+      provider: z.string().optional(),
+      // Required-ness lives in the superRefine below, which can see the provider.
+      assistantId: z.string().optional(),
+      // apiEndpoint: z.string().optional(),
+      authenticationMethod: z.string().optional(),
+      apiKey: z.string().optional(),
+      observabilityEnabled: z.boolean().default(false),
+      username: z.string().optional(),
+      password: z.string().optional(),
+      token: z.string().optional(),
+      headers: z
+        .array(
+          z.object({
+            key: z.string(),
+            value: z.string(),
+          }),
+        )
+        .optional(),
+
+      // Behaviour
+      description: z.string().min(1, "Description is required"),
+      knowledgeBase: z.string().optional(),
+      countryCode: z.string().optional(),
+      contactNumber: z.string().optional(),
+      // Form-only: chooses how the test call reaches the agent. Never sent to
+      // the backend, which derives the mode from contact_number.
+      voiceTransport: z
+        .enum([VOICE_TRANSPORT.WEBRTC, VOICE_TRANSPORT.TELEPHONY])
+        .default(VOICE_TRANSPORT.WEBRTC),
+      inbound: z.boolean(),
+      targetSpeaksFirst: z.boolean().optional().default(false),
+      commitMessage: z.string().min(1, "Commit message is required"),
+      model: z.string().optional(),
+      modelDetails: z.any().optional().nullable(),
+
+      // LiveKit fields
+      livekitUrl: z.string().optional(),
+      livekitApiKey: z.string().optional(),
+      livekitApiSecret: z.string().optional(),
+      livekitAgentName: z.string().optional(),
+      livekitConfigJson: z.any().optional().nullable(),
+      // NOTE: max is not enforced here — the backend caps via
+      // DEFAULT_ORG_LIMIT exposed on /accounts/user-info/. The UI reads the
+      // value from `useAuthContext().orgLimit` and sets `inputProps.max` on
+      // the TextField. The server-side IntegerField validator is the
+      // authoritative cap; zod only guards the lower bound.
+      livekitMaxConcurrency: z.coerce
+        .number()
+        .min(1, "Must be at least 1")
+        .optional()
+        .nullable(),
+    })
+    .superRefine(async (data, ctx) => {
+      // LiveKit authenticates with livekit_api_key/secret and has no Assistant
+      // ID, so it is exempt from the provider-key requirement.
+      if (keysRequired && !isLiveKitProvider(data.provider)) {
+        if (!data.assistantId) {
+          ctx.addIssue({
+            path: ["assistantId"],
+            message: "Assistant ID is required",
+            code: z.ZodIssueCode.custom,
+          });
+        }
+        if (!data.apiKey) {
+          ctx.addIssue({
+            path: ["apiKey"],
+            message: "API key is required",
+            code: z.ZodIssueCode.custom,
+          });
+        }
+      }
+
+      // The transport toggle decides whether a phone number is collected at
+      // all. In webrtc mode the number is cleared on submit, so anything left
+      // in the field is ignored rather than validated.
+      if (
+        data.agentType === AGENT_TYPES.VOICE &&
+        !isLiveKitProvider(data.provider) &&
+        data.voiceTransport === VOICE_TRANSPORT.TELEPHONY
+      ) {
+        const hasCountryCode = !!data.countryCode?.trim();
+        const hasContactNumber = !!data.contactNumber?.trim();
+        if (!hasCountryCode) {
+          ctx.addIssue({
+            path: ["countryCode"],
+            message: "Country code is required for a phone simulation",
+            code: z.ZodIssueCode.custom,
+          });
+        }
+        if (!hasContactNumber) {
+          ctx.addIssue({
+            path: ["contactNumber"],
+            message: "Contact number is required for a phone simulation",
+            code: z.ZodIssueCode.custom,
+          });
+        }
+        if (hasContactNumber) {
+          const trimmedNumber = data.contactNumber.trim();
+          if (!/^\d+$/.test(trimmedNumber)) {
+            ctx.addIssue({
+              path: ["contactNumber"],
+              message: "Contact number must contain only digits",
+              code: z.ZodIssueCode.custom,
+            });
+          } else if (trimmedNumber.length < 10) {
+            ctx.addIssue({
+              path: ["contactNumber"],
+              message: "Contact number must be at least 10 digits",
+              code: z.ZodIssueCode.custom,
+            });
+          } else if (trimmedNumber.length > 12) {
+            ctx.addIssue({
+              path: ["contactNumber"],
+              message: "Contact number cannot exceed 12 digits",
+              code: z.ZodIssueCode.custom,
+            });
+          }
+        }
+      }
+
+      if (isLiveKitProvider(data.provider)) {
+        if (!data.livekitUrl || data.livekitUrl.trim() === "") {
+          ctx.addIssue({
+            path: ["livekitUrl"],
+            message: "LiveKit Server URL is required",
+            code: z.ZodIssueCode.custom,
+          });
+        }
+        if (!data.livekitApiKey || data.livekitApiKey.trim() === "") {
+          ctx.addIssue({
+            path: ["livekitApiKey"],
+            message: "LiveKit API Key is required",
+            code: z.ZodIssueCode.custom,
+          });
+        }
+        if (!data.livekitApiSecret || data.livekitApiSecret.trim() === "") {
+          ctx.addIssue({
+            path: ["livekitApiSecret"],
+            message: "LiveKit API Secret is required",
+            code: z.ZodIssueCode.custom,
+          });
+        }
+        if (!data.livekitAgentName || data.livekitAgentName.trim() === "") {
+          ctx.addIssue({
+            path: ["livekitAgentName"],
+            message: "Agent Name is required",
+            code: z.ZodIssueCode.custom,
+          });
+        }
+      } else if (data.provider === "others") {
+        // if (data.authenticationMethod === "api_key") {
+        //   if (!data.username || data.username.trim() === "") {
+        //     ctx.addIssue({
+        //       path: ["username"],
+        //       message: "Username is required",
+        //       code: z.ZodIssueCode.custom,
+        //     });
+        //   }
+        //   if (!data.password || data.password.trim() === "") {
+        //     ctx.addIssue({
+        //       path: ["password"],
+        //       message: "Password is required",
+        //       code: z.ZodIssueCode.custom,
+        //     });
+        //   }
+        // } else if (data.authenticationMethod === "bearer_token") {
+        //   if (!data.token || data.token.trim() === "") {
+        //     ctx.addIssue({
+        //       path: ["token"],
+        //       message: "Token is required",
+        //       code: z.ZodIssueCode.custom,
+        //     });
+        //   }
+        // }
+      } else {
+        if (
+          data.agentType === AGENT_TYPES.VOICE &&
+          (data.observabilityEnabled || keysRequired || !data.inbound)
+        ) {
+          if (!data?.authenticationMethod) {
+            ctx.addIssue({
+              path: ["authenticationMethod"],
+              message: "Authentication method is required",
+              code: z.ZodIssueCode.custom,
+            });
+          }
+          if (!data.provider || data.provider.trim() === "") {
+            ctx.addIssue({
+              path: ["provider"],
+              message: "Please select a provider",
+              code: z.ZodIssueCode.custom,
+            });
+          }
+          if (!data.apiKey) {
+            ctx.addIssue({
+              path: ["apiKey"],
+              message: "API key is required",
+              code: z.ZodIssueCode.custom,
+            });
+          } else {
+            if (!data.provider) {
+              ctx.addIssue({
+                path: ["provider"],
+                message: "Please select a provider",
+                code: z.ZodIssueCode.custom,
+              });
+            }
+            try {
+              await axios.post(endpoints.agentDefinitions.verifyApiKey, {
+                provider: data.provider,
+                api_key: data.apiKey,
+                ...(agentDefinitionId && { agent_id: agentDefinitionId }),
+              });
+            } catch (error) {
+              ctx.addIssue({
+                path: ["apiKey"],
+                message: "Invalid API key",
+                code: z.ZodIssueCode.custom,
+              });
+            }
+          }
+          if (!data.assistantId) {
+            ctx.addIssue({
+              path: ["assistantId"],
+              message: "Assistant ID is required",
+              code: z.ZodIssueCode.custom,
+            });
+          } else {
+            if (!data.provider) {
+              ctx.addIssue({
+                path: ["provider"],
+                message: "Please select a provider",
+                code: z.ZodIssueCode.custom,
+              });
+            } else if (!data.apiKey) {
+              ctx.addIssue({
+                path: ["apiKey"],
+                message: "Please enter a valid API key",
+                code: z.ZodIssueCode.custom,
+              });
+            } else {
+              try {
+                await axios.post(endpoints.agentDefinitions.verifyAssistantId, {
+                  provider: data.provider,
+                  api_key: data.apiKey,
+                  assistant_id: data.assistantId,
+                  ...(agentDefinitionId && { agent_id: agentDefinitionId }),
+                });
+              } catch (error) {
+                ctx.addIssue({
+                  path: ["assistantId"],
+                  message: "Invalid assistant ID",
+                  code: z.ZodIssueCode.custom,
+                });
+              }
+            }
+          }
+        }
+      }
+    });
+};
+
+export const defaultAgentDefinitionValues = {
+  agentType: "",
+  agentName: "",
+  provider: "",
+  apiKey: "",
+  assistantId: "",
+  description: "",
+  languages: ["en"],
+  knowledgeBase: "",
+  countryCode: "",
+  contactNumber: "",
+  inbound: true,
+  targetSpeaksFirst: false,
+  commitMessage: "",
+  observabilityEnabled: false,
+  token: "",
+  authenticationMethod: "",
+  username: "",
+  password: "",
+  livekitUrl: "",
+  livekitApiKey: "",
+  livekitApiSecret: "",
+  livekitAgentName: "",
+  livekitConfigJson: "",
+  livekitMaxConcurrency: 5,
+  _livekitCredentialsValid: false,
+};
+
+export const icon = (name) => (
+  <SvgColor
+    src={`/assets/icons/agent/${name}.svg`}
+    sx={{ width: 20, height: 20 }}
+  />
+);
+
+export const generateEvalColumnsFromConfig = (items = []) => {
+  if (!items.length) return [];
+
+  // Return flat columns (not grouped). AG Grid column groups in this
+  // project were being silently dropped — flattening sidesteps that and
+  // matches how the `list_spans_observe` trace list renders eval columns.
+  return items.map((item) => {
+    const evalId = item.id;
+    const displayName = item.name?.replace(/_/g, " ") || evalId;
+    const isReason = item.source_field === "reason";
+    const dataKey = isReason ? item.parent_eval_id : evalId;
+
+    // CHOICES evals render one column per choice (id `${configId}**${choice}`)
+    // carrying the per-choice percentage as a FLAT row key — the same contract
+    // list_traces_of_session uses. Nested `eval_outputs` is keyed by config id
+    // and never matches a per-choice column id, so read the flat key directly.
+    if (evalId.includes("**")) {
+      return {
+        headerName: displayName,
+        field: evalId,
+        flex: 1,
+        minWidth: 140,
+        hide: item.is_visible === false,
+        headerComponent: CallLogsHeaderCellRenderer,
+        headerComponentParams: { displayName },
+        valueGetter: (params) => {
+          const v = params.data?.[evalId];
+          return v === null || v === undefined || v === "" ? null : Number(v);
+        },
+        // Reuse the trace list's eval cell for identical rendering (percentage
+        // + interpolated background). The per-choice value is numeric, so it
+        // takes the numeric-percentage path.
+        cellRenderer: (params) => (
+          <EvaluationCell
+            value={params.value}
+            column={{
+              outputType: item.output_type,
+              reverseOutput: item.reverse_output,
+            }}
+          />
+        ),
+      };
+    }
+
+    return {
+      headerName: displayName,
+      field: `eval_outputs.${evalId}`,
+      flex: 1,
+      minWidth: isReason ? 240 : 140,
+      hide: item.is_visible === false,
+      headerComponent: CallLogsHeaderCellRenderer,
+      headerComponentParams: { displayName },
+      valueGetter: (params) => params.data?.eval_outputs?.[dataKey] || {},
+      cellRenderer: (params) => {
+        const evalData = params?.data?.eval_outputs?.[dataKey] || {};
+        if (isReason) {
+          const reason = evalData?.reason;
+          return (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                height: "100%",
+                width: "100%",
+                padding: "4px 8px",
+                color: "text.primary",
+              }}
+            >
+              {reason || "-"}
+            </Box>
+          );
+        }
+        // PASS_FAIL carries a numeric pass rate — route it through the score
+        // (percentage) renderer so it shows "X%" instead of the pill path,
+        // which string-matches "fail" and would render 0% as a false "Pass".
+        const rawType = evalData?.output_type;
+        const isPassFail =
+          String(rawType || "")
+            .toLowerCase()
+            .replace(/[/ ]/g, "_") === "pass_fail";
+        return (
+          <EvalCellRenderer
+            value={{
+              ...evalData,
+              type: isPassFail ? "percentage" : rawType,
+              value: evalData.output,
+            }}
+          />
+        );
+      },
+    };
+  });
+};
+
+const LoadingSkeleton = () => {
+  return (
+    <Skeleton
+      variant="rectangular"
+      width="80%"
+      sx={{
+        mx: 1,
+        borderRadius: 0.5,
+      }}
+      height={15}
+    />
+  );
+};
+const generateAnnotationColumnsFromConfig = (
+  items = [],
+  expandedMetrics = [],
+) => {
+  if (!items.length) {
+    return [];
+  }
+
+  const grouping = {};
+  for (const eachCol of items) {
+    if (!grouping[eachCol?.group_by]) {
+      grouping[eachCol?.group_by] = [eachCol];
+    } else {
+      grouping[eachCol?.group_by].push(eachCol);
+    }
+  }
+
+  return Object.values(grouping).flatMap((metrics) =>
+    metrics.flatMap((metric) => {
+      const metricId = metric?.id;
+      const displayName = metric?.name?.replace(/_/g, " ") || metricId;
+      const outputType = metric?.annotation_label_type;
+      const settings = metric?.settings || {};
+      const isExpanded =
+        outputType === "text" || expandedMetrics.includes(metricId);
+
+      if (!isExpanded) {
+        return {
+          headerName: displayName,
+          field: `annotation_outputs.${metricId}`,
+          flex: 1,
+          minWidth: 200,
+          headerComponent: AnnotationHeaderCellRenderer,
+          headerComponentParams: {
+            displayName: displayName,
+            metricId,
+            isTextType: outputType === "text",
+            showActions: true,
+          },
+          valueGetter: (params) => {
+            const metricData = params?.data?.annotation_outputs?.[metricId];
+            if (!metricData) return null;
+            if (metricData.score !== undefined) return metricData.score;
+            const { annotators: _, ...aggregates } = metricData;
+            return Object.keys(aggregates)?.length > 0 ? aggregates : null;
+          },
+          cellRenderer: NewAnnotationCellRenderer,
+          cellRendererParams: {
+            annotationType: outputType,
+            isAverage: true,
+            settings,
+          },
+        };
+      }
+
+      // Expanded columns stay flat so AG Grid does not create a tall global
+      // grouped-header row that makes unrelated columns look oversized.
+      const metricAnnotators = Object.values(metric?.annotators || {});
+
+      const avgColumn = {
+        headerName: "Avg",
+        field: `annotation_outputs.${metricId}.score`,
+        flex: 1,
+        minWidth: 200,
+        headerComponent: AnnotationHeaderCellRenderer,
+        headerComponentParams: {
+          displayName,
+          metricId,
+          isTextType: false,
+          subLabel: "Avg",
+          subLabelType: "average",
+          showActions: true,
+        },
+        valueGetter: (params) => {
+          const metricData = params?.data?.annotation_outputs?.[metricId];
+          if (!metricData) return null;
+          if (metricData?.score !== undefined) return metricData?.score;
+          const { annotators: _, ...aggregates } = metricData;
+          return Object.keys(aggregates)?.length > 0 ? aggregates : null;
+        },
+        cellRenderer: NewAnnotationCellRenderer,
+        cellRendererParams: {
+          annotationType: outputType,
+          isAverage: true,
+          settings,
+        },
+      };
+
+      const annotatorColumns = metricAnnotators.map((annotator) => ({
+        headerName: annotator?.user_name,
+        field: `annotation_outputs.${metricId}.annotators.${annotator?.user_id}`,
+        flex: 1,
+        minWidth: 200,
+        ...(outputType === "text" ? { wrapText: true, autoHeight: true } : {}),
+        headerComponent: AnnotationHeaderCellRenderer,
+        headerComponentParams: {
+          displayName,
+          metricId,
+          isTextType: outputType === "text",
+          subLabel: annotator?.user_name,
+          subLabelType: "person",
+          showActions: outputType === "text",
+        },
+        valueGetter: (params) => {
+          const annotatorData =
+            params?.data?.annotation_outputs?.[metricId]?.annotators?.[
+              annotator.user_id
+            ];
+          if (!annotatorData) return null;
+          if (annotatorData?.score !== undefined) return annotatorData?.score;
+
+          return annotatorData.value ?? null;
+        },
+        cellRenderer: NewAnnotationCellRenderer,
+        cellRendererParams: {
+          annotationType: outputType,
+          isAverage: false,
+          settings,
+        },
+      }));
+
+      return [
+        ...(outputType !== "text" ? [avgColumn] : []),
+        ...annotatorColumns,
+      ];
+    }),
+  );
+};
+
+// Generate AG Grid columns from evalOutputs
+export const getCallLogsColumnDefs = (
+  _rows = [],
+  isLoading = false,
+  agentType,
+  module = null,
+  config = null,
+  expandedMetrics = [],
+) => {
+  const evalItems = [];
+  const annotationItems = [];
+  (config || []).forEach((item) => {
+    if (item.annotation_label_type === null) evalItems.push(item);
+    else annotationItems.push(item);
+  });
+
+  const evalColumns = generateEvalColumnsFromConfig(evalItems);
+  const annotationColumns =
+    module !== "simulate"
+      ? generateAnnotationColumnsFromConfig(annotationItems, expandedMetrics)
+      : [];
+  const baseColumns = [
+    // ── Identity ──────────────────────────────────────────────────────
+    {
+      headerName:
+        agentType === AGENT_TYPES.CHAT ? "Chat Details" : "Call Details",
+      field: "call_summary",
+      flex: 2,
+      minWidth: 200,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Status",
+      field: "status",
+      flex: 0,
+      minWidth: 100,
+      width: 140,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Duration",
+      field: "duration_seconds",
+      flex: 0,
+      minWidth: 90,
+      cellRenderer: CallLogsCellRenderer,
+    },
+
+    // ── Performance ───────────────────────────────────────────────────
+    {
+      headerName: "Avg Latency",
+      field: "avg_agent_latency_ms",
+      flex: 0,
+      minWidth: 140,
+      cellRenderer: VoiceLatencyCell,
+    },
+    {
+      headerName: "Turn Count",
+      field: "turn_count",
+      flex: 0,
+      minWidth: 110,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Talk Ratio",
+      field: "talk_ratio",
+      flex: 0,
+      minWidth: 120,
+      cellRenderer: TalkRatioCell,
+      hide: true,
+    },
+
+    // ── Resources ─────────────────────────────────────────────────────
+    {
+      headerName: "Tokens",
+      field: "gen_ai.usage.total_tokens",
+      flex: 0,
+      minWidth: 220,
+      cellRenderer: VoiceTokenCell,
+    },
+    {
+      headerName: "Cost",
+      field: "cost_cents",
+      flex: 0,
+      minWidth: 120,
+      cellRenderer: VoiceCostCell,
+    },
+
+    // ── Conversation quality ──────────────────────────────────────────
+    {
+      headerName: "User Interrupts",
+      field: "user_interruption_count",
+      flex: 0,
+      minWidth: 140,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Agent Interrupts",
+      field: "ai_interruption_count",
+      flex: 0,
+      minWidth: 140,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Ended Reason",
+      field: "ended_reason",
+      flex: 1,
+      minWidth: 120,
+      cellRenderer: CallLogsCellRenderer,
+    },
+
+    // ── Secondary (visible, further right) ────────────────────────────
+    {
+      headerName: "Participant",
+      field: "customer_name",
+      flex: 1,
+      minWidth: 120,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Type",
+      field: "call_type",
+      flex: 0,
+      minWidth: 90,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "User WPM",
+      field: "user_wpm",
+      flex: 0,
+      minWidth: 110,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Agent WPM",
+      field: "bot_wpm",
+      flex: 0,
+      minWidth: 110,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Agent Talk (%)",
+      field: "agent_talk_percentage",
+      flex: 0,
+      minWidth: 130,
+      valueGetter: (params) => {
+        const direct = params.data?.agent_talk_percentage;
+        if (direct != null) return direct;
+        const ratio = params.data?.talk_ratio;
+        if (ratio && typeof ratio === "object") return ratio.bot_pct;
+        return null;
+      },
+      cellRenderer: CallLogsCellRenderer,
+    },
+
+    // ── Technical (hidden by default, togglable via display panel) ────
+    {
+      headerName: "Customer Phone",
+      field: "phone_number",
+      flex: 1,
+      minWidth: 120,
+      hide: true,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Call ID",
+      field: "call_id",
+      flex: 1,
+      minWidth: 120,
+      hide: true,
+      cellRenderer: CallLogsCellRenderer,
+    },
+    {
+      headerName: "Response Time",
+      field: "response_time_ms",
+      flex: 0,
+      minWidth: 110,
+      hide: true,
+      cellRenderer: CallLogsCellRenderer,
+    },
+  ];
+
+  if (isLoading) {
+    return baseColumns.map((column) => ({
+      ...column,
+      cellRenderer: LoadingSkeleton,
+      valueGetter: undefined,
+    }));
+  }
+
+  return [...baseColumns, ...evalColumns, ...annotationColumns];
+};
+
+export const useAgentsList = () => {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["agents"],
+    queryFn: async () => {
+      let allAgents = [];
+      let page = 1;
+      let totalPages = null;
+
+      while (totalPages === null || page <= totalPages) {
+        const res = await axios.get(
+          `${endpoints.agentDefinitions.list}?page=${page}`,
+        );
+
+        allAgents = allAgents.concat(res.data.results);
+
+        if (totalPages === null) {
+          totalPages = res.data.total_pages;
+        }
+
+        if (page >= totalPages) {
+          break;
+        }
+
+        page += 1;
+      }
+
+      return allAgents;
+    },
+  });
+  return { agents: data || [], isLoading, error };
+};
+
+export const useCallLogs = ({
+  module,
+  id,
+  version,
+  page,
+  pageLimit,
+  params,
+  enabled = true,
+}) => {
+  const isProjectModule = module === "project";
+  const condition = isProjectModule ? !!id : !!id && !!version;
+  const queryKey = isProjectModule
+    ? ["callLogs", module, id, pageLimit, params, page]
+    : ["callLogs", module, id, version, pageLimit, params, page];
+  const getEndpoint = () =>
+    isProjectModule
+      ? endpoints.project.getCallLogs
+      : endpoints.agentDefinitions.getCallLogs(id, version);
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKey,
+    queryFn: () =>
+      axios.get(getEndpoint(), {
+        params: { page, page_size: pageLimit, ...params },
+      }),
+    enabled: condition && enabled,
+    select: (data) => data?.data,
+  });
+  return { queryKey, data, isLoading, error };
+};
+
+export const prefetchCallLogs = (
+  queryClient,
+  { module, id, version, page, pageLimit, params },
+) => {
+  const isProjectModule = module === "project";
+  const condition = isProjectModule ? !!id : !!id && !!version;
+  if (!condition) {
+    return;
+  }
+  const endpoint = isProjectModule
+    ? endpoints.project.getCallLogs
+    : endpoints.agentDefinitions.getCallLogs(id, version);
+  const queryKey = isProjectModule
+    ? ["callLogs", module, id, pageLimit, params, page]
+    : ["callLogs", module, id, version, pageLimit, params, page];
+  queryClient.prefetchQuery({
+    queryKey,
+    queryFn: () =>
+      axios.get(endpoint, {
+        params: { page, page_size: pageLimit, ...params },
+      }),
+  });
+};
+
+export const useCallExecutionDetail = (callExecutionId, enabled = false) => {
+  return useQuery({
+    queryKey: ["callExecutionDetail", callExecutionId],
+    queryFn: () =>
+      axios.get(endpoints.runTests.callExecutionDetail(callExecutionId)),
+    enabled: !!callExecutionId && enabled,
+    select: (data) => data?.data,
+    staleTime: 5 * 60 * 1000,
+    meta: { errorHandled: true },
+  });
+};
+
+export const useVoiceCallDetail = (traceId, enabled = false) => {
+  return useQuery({
+    queryKey: ["voiceCallDetail", traceId],
+    queryFn: () =>
+      axios.get(endpoints.project.getVoiceCallDetail, {
+        params: { trace_id: traceId },
+      }),
+    enabled: !!traceId && enabled,
+    select: (data) => data?.data?.result,
+    staleTime: 5 * 60 * 1000,
+    meta: { errorHandled: true },
+  });
+};

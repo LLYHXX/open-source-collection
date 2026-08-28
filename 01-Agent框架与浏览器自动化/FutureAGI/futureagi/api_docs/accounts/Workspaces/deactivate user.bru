@@ -1,0 +1,25 @@
+meta {
+  name: deactivate user
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{host}}/accounts/user/deactivate/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "user_id": "{{user_id}}"
+  }
+}

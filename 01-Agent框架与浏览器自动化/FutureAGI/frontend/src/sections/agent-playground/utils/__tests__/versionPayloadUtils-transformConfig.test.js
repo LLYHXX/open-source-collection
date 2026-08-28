@@ -1,0 +1,211 @@
+import { describe, it, expect } from "vitest";
+import { buildVersionPayload } from "../versionPayloadUtils";
+import { createPromptNode } from "./fixtures";
+
+// ---------------------------------------------------------------------------
+// Additional tests for buildPromptTemplateForApi (exercised through buildVersionPayload)
+// The current implementation outputs prompt_template (not config) for atomic nodes.
+// ---------------------------------------------------------------------------
+describe("buildPromptTemplateForApi – via buildVersionPayload", () => {
+  it("forwards numeric model parameters from configuration", () => {
+    const nodes = [
+      createPromptNode("p1", {
+        config: {
+          modelConfig: { model: "gpt-4", modelDetail: {} },
+          messages: [
+            { role: "user", content: [{ type: "text", text: "Hello" }] },
+          ],
+          payload: {
+            variable_names: {},
+            promptConfig: [
+              {
+                configuration: {
+                  temperature: 0.7,
+                  max_tokens: 200,
+                  top_p: 0.9,
+                  frequency_penalty: 0.1,
+                  presence_penalty: 0.2,
+                },
+              },
+            ],
+            ports: [],
+          },
+        },
+      }),
+    ];
+
+    const result = buildVersionPayload(nodes, []);
+    const pt = result.nodes[0].prompt_template;
+
+    expect(pt.temperature).toBe(0.7);
+    expect(pt.max_tokens).toBe(200);
+    expect(pt.top_p).toBe(0.9);
+    expect(pt.frequency_penalty).toBe(0.1);
+    expect(pt.presence_penalty).toBe(0.2);
+  });
+
+  it("forwards tools, responseFormat, toolChoice from configuration", () => {
+    const nodes = [
+      createPromptNode("p1", {
+        config: {
+          modelConfig: { model: "gpt-4", modelDetail: {} },
+          messages: [],
+          payload: {
+            promptConfig: [
+              {
+                configuration: {
+                  tools: [{ name: "search" }],
+                  responseFormat: "json_object",
+                  toolChoice: "auto",
+                },
+              },
+            ],
+            ports: [],
+          },
+        },
+      }),
+    ];
+
+    const result = buildVersionPayload(nodes, []);
+    const pt = result.nodes[0].prompt_template;
+
+    expect(pt.tools).toEqual([{ name: "search" }]);
+    expect(pt.response_format).toBe("json_object");
+    expect(pt.tool_choice).toBe("auto");
+  });
+
+  it("includes variable_names indirectly via model and messages", () => {
+    const nodes = [
+      createPromptNode("p1", {
+        config: {
+          modelConfig: { model: "gpt-4", modelDetail: {} },
+          messages: [
+            { role: "user", content: [{ type: "text", text: "{{name}}" }] },
+          ],
+          payload: {
+            variable_names: { name: "John" },
+            promptConfig: [],
+            ports: [],
+          },
+        },
+      }),
+    ];
+
+    const result = buildVersionPayload(nodes, []);
+    const pt = result.nodes[0].prompt_template;
+
+    // The prompt_template contains model and messages
+    expect(pt.model).toBe("gpt-4");
+    expect(pt.messages[0].content).toEqual([
+      { type: "text", text: "{{name}}" },
+    ]);
+  });
+
+  it("returns null prompt_template when node has no config data", () => {
+    // Build node manually to avoid createPromptNode defaults
+    const nodes = [
+      {
+        id: "p1",
+        type: "llm_prompt",
+        position: { x: 0, y: 0 },
+        data: { label: "Empty", config: {} },
+      },
+    ];
+
+    const result = buildVersionPayload(nodes, []);
+    expect(result.nodes[0].prompt_template).toBeNull();
+  });
+
+  it("returns null prompt_template when model is missing", () => {
+    const nodes = [
+      {
+        id: "p1",
+        type: "llm_prompt",
+        position: { x: 0, y: 0 },
+        data: {
+          label: "No model",
+          config: {
+            modelConfig: { model: null },
+            messages: [],
+          },
+        },
+      },
+    ];
+
+    const result = buildVersionPayload(nodes, []);
+    expect(result.nodes[0].prompt_template).toBeNull();
+  });
+
+  it("preserves content blocks as arrays in messages", () => {
+    const nodes = [
+      createPromptNode("p1", {
+        config: {
+          modelConfig: { model: "gpt-4", modelDetail: {} },
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Hello " },
+                { type: "text", text: "world" },
+              ],
+            },
+          ],
+          payload: { ports: [] },
+        },
+      }),
+    ];
+
+    const result = buildVersionPayload(nodes, []);
+    expect(result.nodes[0].prompt_template.messages[0].content).toEqual([
+      { type: "text", text: "Hello " },
+      { type: "text", text: "world" },
+    ]);
+  });
+
+  it("handles string content in messages", () => {
+    const nodes = [
+      createPromptNode("p1", {
+        config: {
+          modelConfig: { model: "gpt-4", modelDetail: {} },
+          messages: [{ role: "user", content: "plain string" }],
+          payload: { ports: [] },
+        },
+      }),
+    ];
+
+    const result = buildVersionPayload(nodes, []);
+    // String content gets wrapped in block array
+    expect(result.nodes[0].prompt_template.messages[0].content).toEqual([
+      { type: "text", text: "plain string" },
+    ]);
+  });
+
+  it("uses null for undefined numeric params", () => {
+    const nodes = [
+      createPromptNode("p1", {
+        config: {
+          modelConfig: { model: "gpt-4", modelDetail: {} },
+          messages: [],
+          payload: {
+            promptConfig: [
+              {
+                configuration: {
+                  temperature: 0.5,
+                  // max_tokens not set
+                },
+              },
+            ],
+            ports: [],
+          },
+        },
+      }),
+    ];
+
+    const result = buildVersionPayload(nodes, []);
+    const pt = result.nodes[0].prompt_template;
+
+    expect(pt.temperature).toBe(0.5);
+    // Unset params default to null
+    expect(pt.max_tokens).toBeNull();
+  });
+});

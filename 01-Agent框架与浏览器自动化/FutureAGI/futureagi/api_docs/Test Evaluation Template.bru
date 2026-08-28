@@ -1,0 +1,65 @@
+meta {
+  name: Test Evaluation Template
+  type: http
+  seq: 56
+}
+
+post {
+  url: {{host}}/model-hub/test-evaluation/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "name": "tester-eval",
+      "reasonColumn": false,
+      "evalTags": [
+          "OUTPUT_VALIDATION",
+          "AGENTS",
+          "IMAGE",
+          "AUDIO",
+          "CHATBOT_BEHAVIORS"
+      ],
+      "description": "Compare outputs",
+      "criteria": "If given a picture of an apple, how much more accurate is {{var1}} than {{var2}} for the said picture.",
+      "model": "turing_small",
+      "requiredKeys": [
+          "var1",
+          "var2"
+      ],
+      "optionalKeys": [],
+      "variableKeys": [],
+      "runPromptColumn": false,
+      "templateName": "better",
+      "mapping": {
+          "var1": "",
+          "var2": ""
+      },
+      "config": {
+          "model": "gpt-4o",
+          "reverseOutput": false,
+          "mapping": {
+              "var1": "this is apple",
+              "var2": "this is not an apple"
+          },
+          "reasonColumn": false
+      },
+      "output": "score",
+      "configParamsDesc": {},
+      "configParamsOption": {},
+      "choices": {},
+      "checkInternet": true,
+      "templateType": "Llm",
+      "outputType": "score",
+      "multiChoice": false,
+      "inputDataTypes": {
+          "var1": "text",
+          "var2": "text"
+      }
+  }
+}

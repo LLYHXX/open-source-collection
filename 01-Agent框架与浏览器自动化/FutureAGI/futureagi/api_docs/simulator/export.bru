@@ -1,0 +1,88 @@
+meta {
+  name: export
+  type: http
+  seq: 17
+}
+
+get {
+  url: http://localhost:8000/simulate/export/977841a1-417f-4bf7-a777-0ac261180a47/?type=testexecution
+  body: none
+  auth: bearer
+}
+
+params:query {
+  type: testexecution
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Get Test Execution Details
+  description: Get detailed information about a specific test execution
+  response: {
+    "id": "test-exec-1",
+    "run_test": {
+      "id": "run-test-1",
+      "name": "Customer Support Test",
+      "description": "Test customer support scenarios"
+    },
+    "status": "completed",
+    "started_at": "2025-01-29T14:30:00Z",
+    "completed_at": "2025-01-29T14:45:00Z",
+    "total_scenarios": 3,
+    "total_calls": 3,
+    "completed_calls": 3,
+    "failed_calls": 0,
+    "success_rate": 100.0,
+    "duration_seconds": 900,
+    "scenario_ids": ["scenario-1", "scenario-2", "scenario-3"],
+    "execution_metadata": {
+      "user_id": "user-123",
+      "organization_id": "org-123"
+    },
+    "calls": [
+      {
+        "id": "call-1247",
+        "phone_number": "+1234567890",
+        "vapi_call_id": "vapi-call-1247",
+        "status": "completed",
+        "started_at": "2025-01-29T14:32:15Z",
+        "completed_at": "2025-01-29T14:36:38Z",
+        "duration_seconds": 263,
+        "cost_cents": 45,
+        "overall_score": 4.7,
+        "scenario_name": "Password Reset",
+        "recording_url": "https://vapi.com/recordings/call-1247.mp3"
+      },
+      {
+        "id": "call-1248",
+        "phone_number": "+1234567891",
+        "vapi_call_id": "vapi-call-1248",
+        "status": "completed",
+        "started_at": "2025-01-29T14:40:00Z",
+        "completed_at": "2025-01-29T14:43:15Z",
+        "duration_seconds": 195,
+        "cost_cents": 38,
+        "overall_score": 4.2,
+        "scenario_name": "Product Inquiry",
+        "recording_url": "https://vapi.com/recordings/call-1248.mp3"
+      },
+      {
+        "id": "call-1249",
+        "phone_number": "+1234567892",
+        "vapi_call_id": "vapi-call-1249",
+        "status": "completed",
+        "started_at": "2025-01-29T14:42:00Z",
+        "completed_at": "2025-01-29T14:44:30Z",
+        "duration_seconds": 150,
+        "cost_cents": 32,
+        "overall_score": 4.5,
+        "scenario_name": "Technical Support",
+        "recording_url": "https://vapi.com/recordings/call-1249.mp3"
+      }
+    ],
+    "created_at": "2025-01-29T14:30:00Z"
+  }
+}

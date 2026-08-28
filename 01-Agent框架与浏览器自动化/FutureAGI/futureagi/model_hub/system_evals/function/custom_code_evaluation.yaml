@@ -1,0 +1,24 @@
+eval_id: 34
+name: custom_code_evaluation
+description: Executes custom Python code for evaluation
+eval_tags:
+- Code
+- Output Validation
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys: []
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config:
+    code:
+      type: code
+      default: null
+  config_params_desc:
+    code: The custom Python code to be executed for evaluation
+  config_params_constraints:
+    code: Function name should be main only. You can access any prompt run field using the kwargs.

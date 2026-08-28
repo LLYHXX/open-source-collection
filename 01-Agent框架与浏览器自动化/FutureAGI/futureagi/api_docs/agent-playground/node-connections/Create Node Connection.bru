@@ -1,0 +1,70 @@
+meta {
+  name: Create Node Connection
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/agent-playground/graphs/:graph_id/versions/:version_id/node-connections/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  version_id: {{version_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "id": "fe-generated-uuid",
+    "source_node_id": "source-node-uuid",
+    "target_node_id": "target-node-uuid"
+  }
+}
+
+vars:pre-request {
+  graph_id: 05fed664-761a-4355-ae8e-fa8616cf8861
+  version_id: 8b267ef1-e37e-43ed-89c5-c77d4b4c6535
+}
+
+docs {
+  # Create Node Connection
+
+  Create a new node connection (directed edge between nodes) in a draft version.
+
+  ## Path Parameters
+  - `graph_id` (required): UUID of the graph
+  - `version_id` (required): UUID of the draft version
+
+  ## Request Body
+  - `id` (required): FE-generated UUID for the connection
+  - `source_node_id` (required): UUID of the source node
+  - `target_node_id` (required): UUID of the target node
+
+  ## Response (201)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "<UUID>",
+      "source_node_id": "<UUID>",
+      "target_node_id": "<UUID>"
+    }
+  }
+  ```
+
+  ## Side Effects
+  - Dataset columns are synced (add-only) after connection creation. Connecting a port may change which input ports are "exposed" (unconnected), which affects which columns are visible for this version.
+
+  ## Errors
+  - `400`: Version is not DRAFT
+  - `400`: Self-connection (source == target)
+  - `400`: Duplicate connection already exists
+  - `400`: Node(s) don't belong to this version
+  - `404`: Node(s) not found
+}

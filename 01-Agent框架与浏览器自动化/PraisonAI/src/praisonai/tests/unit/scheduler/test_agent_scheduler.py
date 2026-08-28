@@ -1,0 +1,640 @@
+"""
+Unit tests for AgentScheduler.
+
+Tests for:
+- AgentScheduler initialization
+- Start/stop functionality
+- Execution logic
+- Callbacks
+- Threading
+- Statistics
+"""
+
+import pytest
+import time
+import threading
+from unittest.mock import Mock, patch, call
+from praisonai.scheduler.agent_scheduler import AgentScheduler, create_agent_scheduler
+
+
+def _stub_execute(scheduler, return_value="Success", side_effect=None):
+    """Stub executor.execute (AgentScheduler uses PraisonAgentExecutor, not agent.start)."""
+    execute = Mock(return_value=return_value, side_effect=side_effect)
+    scheduler._executor.execute = execute
+    return execute
+
+
+class TestAgentSchedulerInit:
+    """Test AgentScheduler initialization."""
+    
+    def test_init_with_agent_and_task(self):
+        """Test initialization with agent and task."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        assert scheduler.agent == mock_agent
+        assert scheduler.task == "Test task"
+        assert scheduler.is_running == False
+        assert scheduler._execution_count == 0
+        assert scheduler._success_count == 0
+        assert scheduler._failure_count == 0
+    
+    def test_init_with_config(self):
+        """Test initialization with optional config."""
+        mock_agent = Mock()
+        config = {"key": "value"}
+        scheduler = AgentScheduler(mock_agent, "Test task", config=config)
+        
+        assert scheduler.config == config
+    
+    def test_init_with_callbacks(self):
+        """Test initialization with callbacks."""
+        mock_agent = Mock()
+        on_success = Mock()
+        on_failure = Mock()
+        
+        scheduler = AgentScheduler(
+            mock_agent, 
+            "Test task",
+            on_success=on_success,
+            on_failure=on_failure
+        )
+        
+        assert scheduler.on_success == on_success
+        assert scheduler.on_failure == on_failure
+    
+    def test_init_default_values(self):
+        """Test initialization sets correct default values."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        assert scheduler.config == {}
+        assert scheduler.on_success is None
+        assert scheduler.on_failure is None
+        assert scheduler._stop_event is not None
+        assert scheduler._thread is None
+        assert scheduler._executor is not None
+
+
+class TestAgentSchedulerStartStop:
+    """Test AgentScheduler start and stop methods."""
+    
+    def test_start_with_valid_schedule(self):
+        """Test start() with valid schedule expression."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        result = scheduler.start("hourly", run_immediately=False)
+        
+        assert result == True
+        assert scheduler.is_running == True
+        assert scheduler._thread is not None
+        assert scheduler._thread.daemon == True
+        
+        scheduler.stop()
+    
+    def test_start_already_running(self):
+        """Test start() when already running returns False."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        scheduler.start("hourly", run_immediately=False)
+        result = scheduler.start("hourly", run_immediately=False)
+        
+        assert result == False
+        
+        scheduler.stop()
+    
+    def test_start_with_invalid_schedule(self):
+        """Test start() with invalid schedule returns False."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        result = scheduler.start("invalid_format")
+        
+        assert result == False
+        assert scheduler.is_running == False
+    
+    def test_stop_when_running(self):
+        """Test stop() when scheduler is running."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, return_value="result")
+        
+        scheduler.start("*/1s", run_immediately=False)
+        time.sleep(0.1)
+        result = scheduler.stop()
+        
+        assert result == True
+        assert scheduler.is_running == False
+    
+    def test_stop_when_not_running(self):
+        """Test stop() when scheduler is not running."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        result = scheduler.stop()
+        
+        assert result == True
+        assert scheduler.is_running == False
+    
+    def test_is_running_flag(self):
+        """Test is_running flag changes correctly."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        assert scheduler.is_running == False
+        
+        scheduler.start("hourly", run_immediately=False)
+        assert scheduler.is_running == True
+        
+        scheduler.stop()
+        assert scheduler.is_running == False
+
+
+class TestAgentSchedulerExecution:
+    """Test AgentScheduler execution methods."""
+    
+    def test_execute_once_success(self):
+        """Test execute_once() with successful execution."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        execute = _stub_execute(scheduler, return_value="Agent result")
+        result = scheduler.execute_once()
+        
+        assert result == "Agent result"
+        execute.assert_called_once_with("Test task")
+    
+    def test_execute_once_failure(self):
+        """Test execute_once() with failed execution."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, side_effect=Exception("Agent error"))
+        
+        with pytest.raises(Exception, match="Agent error"):
+            scheduler.execute_once()
+    
+    def test_execute_with_retry_success_first_try(self):
+        """Test _execute_with_retry() succeeds on first try."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, return_value="Success")
+        scheduler._execute_with_retry(max_retries=3)
+        
+        assert scheduler._success_count == 1
+        assert scheduler._failure_count == 0
+    
+    def test_execute_with_retry_success_on_retry(self):
+        """Test _execute_with_retry() succeeds on retry."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        execute = _stub_execute(
+            scheduler,
+            side_effect=[Exception("Fail 1"), "Success"],
+        )
+        scheduler._stop_event.wait = Mock(return_value=False)
+        scheduler._execute_with_retry(max_retries=3)
+        
+        assert scheduler._success_count == 1
+        assert scheduler._failure_count == 0
+        assert execute.call_count == 2
+    
+    def test_execute_with_retry_all_fail(self):
+        """Test _execute_with_retry() when all retries fail."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        execute = _stub_execute(scheduler, side_effect=Exception("Always fails"))
+        scheduler._stop_event.wait = Mock(return_value=False)
+        scheduler._execute_with_retry(max_retries=3)
+        
+        assert scheduler._success_count == 0
+        assert scheduler._failure_count == 1
+        assert execute.call_count == 3
+    
+    def test_execute_with_retry_backoff_uses_stop_event(self):
+        """Test _execute_with_retry() uses Event.wait() for backoff, not time.sleep()."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, side_effect=Exception("Always fails"))
+        scheduler._stop_event.wait = Mock(return_value=False)
+        scheduler._execute_with_retry(max_retries=3)
+        
+        # Should call Event.wait() twice (between attempt 1->2 and 2->3)
+        assert scheduler._stop_event.wait.call_count == 2
+        # Each wait should be called with a positive backoff delay
+        for call_args in scheduler._stop_event.wait.call_args_list:
+            wait_time = call_args[0][0]
+            assert wait_time > 0, "backoff delay must be positive"
+
+    def test_execute_with_retry_stops_immediately_on_stop_event(self):
+        """Test that _execute_with_retry() exits when stop() is called during backoff."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        execute = _stub_execute(scheduler, side_effect=Exception("Always fails"))
+        scheduler._stop_event.wait = Mock(return_value=True)
+        scheduler._execute_with_retry(max_retries=3)
+        
+        assert execute.call_count == 1
+
+    def test_execute_with_retry_timeout_returns_quickly(self):
+        """Test timeout handling does not block until worker completion."""
+        mock_agent = Mock()
+
+        def slow_execute(_task):
+            delay_event = threading.Event()
+            delay_event.wait(timeout=1.2)
+            return "late"
+
+        scheduler = AgentScheduler(mock_agent, "Test task", timeout=0.1)
+        _stub_execute(scheduler, side_effect=slow_execute)
+        scheduler._stop_event.wait = Mock(return_value=False)
+
+        start = time.time()
+        scheduler._execute_with_retry(max_retries=1)
+        duration = time.time() - start
+        timing_buffer_seconds = 1.0
+        max_expected_duration = scheduler.timeout + timing_buffer_seconds
+
+        assert scheduler._failure_count == 1
+        assert scheduler._success_count == 0
+        assert duration < max_expected_duration
+
+
+class TestAgentSchedulerCallbacks:
+    """Test AgentScheduler callback functionality."""
+    
+    def test_on_success_callback_invoked(self):
+        """Test on_success callback is invoked on success."""
+        mock_agent = Mock()
+        on_success = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task", on_success=on_success)
+        _stub_execute(scheduler, return_value="Success result")
+        scheduler.execute_once()
+        
+        on_success.assert_called_once_with("Success result")
+    
+    def test_on_failure_callback_invoked(self):
+        """Test on_failure callback is invoked on failure."""
+        mock_agent = Mock()
+        on_failure = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task", on_failure=on_failure)
+        _stub_execute(scheduler, side_effect=Exception("Error"))
+        scheduler._stop_event.wait = Mock(return_value=False)
+        scheduler._execute_with_retry(max_retries=2)
+        
+        on_failure.assert_called_once()
+    
+    def test_callback_with_none(self):
+        """Test execution works when callbacks are None."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, return_value="Success")
+        result = scheduler.execute_once()
+        
+        assert result == "Success"
+    
+    def test_callback_exception_handling(self):
+        """Test callback exceptions don't break execution."""
+        mock_agent = Mock()
+        on_success = Mock(side_effect=Exception("Callback error"))
+        scheduler = AgentScheduler(mock_agent, "Test task", on_success=on_success)
+        _stub_execute(scheduler, return_value="Success")
+        
+        # Should not raise exception even though callback fails
+        result = scheduler.execute_once()
+        assert result == "Success"
+
+
+class TestAgentSchedulerThreading:
+    """Test AgentScheduler threading functionality."""
+    
+    def test_thread_creation_on_start(self):
+        """Test thread is created when start() is called."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        scheduler.start("hourly", run_immediately=False)
+        
+        assert scheduler._thread is not None
+        assert isinstance(scheduler._thread, threading.Thread)
+        assert scheduler._thread.is_alive()
+        
+        scheduler.stop()
+    
+    def test_daemon_thread_flag(self):
+        """Test thread is created as daemon."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        scheduler.start("hourly", run_immediately=False)
+        
+        assert scheduler._thread.daemon == True
+        
+        scheduler.stop()
+    
+    def test_thread_cleanup_on_stop(self):
+        """Test thread is cleaned up on stop()."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, return_value="result")
+        
+        scheduler.start("*/1s", run_immediately=False)
+        time.sleep(0.1)
+        scheduler.stop()
+        
+        time.sleep(0.2)
+        assert scheduler._thread.is_alive() == False
+    
+    def test_graceful_shutdown_timeout(self):
+        """Test graceful shutdown with timeout."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, return_value="result")
+        
+        scheduler.start("hourly", run_immediately=False)
+        
+        start_time = time.time()
+        scheduler.stop()
+        duration = time.time() - start_time
+        
+        # Should complete quickly (within timeout)
+        assert duration < 11  # 10 second timeout + 1 second buffer
+
+
+class TestAgentSchedulerIntervals:
+    """Test AgentScheduler interval scheduling."""
+    
+    @patch('time.sleep')
+    def test_run_immediately_true(self, mock_sleep):
+        """Test run_immediately=True executes before schedule."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, return_value="result")
+        scheduler.start("hourly", run_immediately=True)
+        
+        time.sleep(0.1)
+        scheduler.stop()
+        
+        # Should have executed at least once immediately
+        assert scheduler._execution_count >= 1
+    
+    def test_run_immediately_false(self):
+        """Test run_immediately=False waits for interval."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, return_value="result")
+        initial_count = scheduler._execution_count
+        scheduler.start("hourly", run_immediately=False)
+        
+        time.sleep(0.05)  # Very short wait
+        scheduler.stop()
+        
+        # Should not have executed yet (hourly interval) or at most started one execution
+        assert scheduler._execution_count <= initial_count + 1
+    
+    def test_stop_event_interrupts_wait(self):
+        """Test stop_event interrupts interval wait."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        scheduler.start("hourly", run_immediately=False)
+        
+        start_time = time.time()
+        scheduler.stop()
+        duration = time.time() - start_time
+        
+        # Should stop quickly, not wait full hour
+        assert duration < 2
+
+
+class TestAgentSchedulerStatistics:
+    """Test AgentScheduler statistics tracking."""
+    
+    def test_get_stats_initial_state(self):
+        """Test get_stats() returns correct initial state."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        stats = scheduler.get_stats()
+        
+        assert stats['is_running'] == False
+        assert stats['total_executions'] == 0
+        assert stats['successful_executions'] == 0
+        assert stats['failed_executions'] == 0
+        assert stats['success_rate'] == 0
+    
+    @patch('time.sleep')
+    def test_execution_count_increment(self, mock_sleep):
+        """Test execution count increments."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, return_value="result")
+        scheduler._execute_with_retry(max_retries=1)
+        scheduler._execute_with_retry(max_retries=1)
+        
+        stats = scheduler.get_stats()
+        assert stats['total_executions'] == 2
+    
+    @patch('time.sleep')
+    def test_success_count_increment(self, mock_sleep):
+        """Test success count increments."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, return_value="result")
+        scheduler._execute_with_retry(max_retries=1)
+        
+        stats = scheduler.get_stats()
+        assert stats['successful_executions'] == 1
+    
+    @patch('time.sleep')
+    def test_failure_count_increment(self, mock_sleep):
+        """Test failure count increments."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(scheduler, side_effect=Exception("Error"))
+        scheduler._execute_with_retry(max_retries=1)
+        
+        stats = scheduler.get_stats()
+        assert stats['failed_executions'] == 1
+    
+    @patch('time.sleep')
+    def test_success_rate_calculation(self, mock_sleep):
+        """Test success rate is calculated correctly."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        _stub_execute(
+            scheduler,
+            side_effect=["success", Exception("fail"), "success"],
+        )
+        scheduler._execute_with_retry(max_retries=1)
+        scheduler._execute_with_retry(max_retries=1)
+        scheduler._execute_with_retry(max_retries=1)
+        
+        stats = scheduler.get_stats()
+        assert stats['total_executions'] == 3
+        assert stats['successful_executions'] == 2
+        assert stats['failed_executions'] == 1
+        assert stats['success_rate'] == pytest.approx(66.67, rel=0.1)
+    
+    def test_success_rate_with_zero_executions(self):
+        """Test success rate with zero executions."""
+        mock_agent = Mock()
+        scheduler = AgentScheduler(mock_agent, "Test task")
+        
+        stats = scheduler.get_stats()
+        assert stats['success_rate'] == 0
+
+
+class TestCreateAgentScheduler:
+    """Test create_agent_scheduler factory function."""
+    
+    def test_factory_creates_scheduler(self):
+        """Test factory function creates AgentScheduler."""
+        mock_agent = Mock()
+        scheduler = create_agent_scheduler(mock_agent, "Test task")
+        
+        assert isinstance(scheduler, AgentScheduler)
+        assert scheduler.agent == mock_agent
+        assert scheduler.task == "Test task"
+    
+    def test_factory_with_config(self):
+        """Test factory function with config."""
+        mock_agent = Mock()
+        config = {"key": "value"}
+        scheduler = create_agent_scheduler(mock_agent, "Test task", config=config)
+        
+        assert scheduler.config == config
+
+
+class TestDeliverResultSilence:
+    """Scheduled delivery honours the core intentional-silence contract."""
+
+    def _scheduler_with_stub_delivery(self):
+        scheduler = AgentScheduler(Mock(), "Test task", deliver="telegram:123")
+        scheduler._delivery = Mock()
+        return scheduler
+
+    @pytest.mark.parametrize("marker", ["NO_REPLY", "[SILENT]", "SILENT", " no_reply "])
+    def test_silence_marker_suppresses_delivery(self, marker):
+        """An exact silence marker suppresses delivery entirely."""
+        scheduler = self._scheduler_with_stub_delivery()
+        scheduler._deliver_result(marker)
+        scheduler._delivery.deliver.assert_not_called()
+
+    def test_ordinary_output_delivered(self):
+        """Non-marker output is delivered exactly as before."""
+        scheduler = self._scheduler_with_stub_delivery()
+        scheduler._deliver_result("2 urgent emails from Finance need reply")
+        scheduler._delivery.deliver.assert_called_once_with(
+            "2 urgent emails from Finance need reply"
+        )
+
+    def test_prose_mentioning_marker_delivered(self):
+        """Prose that merely mentions the token is not suppressed (exact-match)."""
+        scheduler = self._scheduler_with_stub_delivery()
+        scheduler._deliver_result("I think NO_REPLY is a good idea")
+        scheduler._delivery.deliver.assert_called_once()
+
+    def test_no_deliver_target_is_noop(self):
+        """No delivery target means nothing is sent even for ordinary output."""
+        scheduler = AgentScheduler(Mock(), "Test task")
+        scheduler._delivery = Mock()
+        scheduler._deliver_result("hello")
+        scheduler._delivery.deliver.assert_not_called()
+
+
+class TestDeliveryOutcomeAccounting:
+    """A failed scheduled delivery is truthful, not a silent success."""
+
+    def _scheduler(self, delivered, on_success=None, on_failure=None):
+        from praisonai.scheduler._base_scheduler import DeliveryOutcome  # noqa: F401
+        scheduler = AgentScheduler(
+            Mock(), "Test task", deliver="telegram:123",
+            on_success=on_success, on_failure=on_failure,
+        )
+        scheduler._delivery = Mock()
+        scheduler._delivery.deliver = Mock(return_value=delivered)
+        _stub_execute(scheduler, return_value="Daily summary")
+        return scheduler
+
+    def test_outcome_delivered_when_router_accepts(self):
+        from praisonai.scheduler._base_scheduler import DeliveryOutcome
+        scheduler = self._scheduler(delivered=True)
+        assert scheduler._deliver_result("hi") is DeliveryOutcome.DELIVERED
+
+    def test_outcome_undelivered_when_router_rejects(self):
+        from praisonai.scheduler._base_scheduler import DeliveryOutcome
+        scheduler = self._scheduler(delivered=False)
+        assert scheduler._deliver_result("hi") is DeliveryOutcome.UNDELIVERED
+
+    def test_outcome_not_configured_without_target(self):
+        from praisonai.scheduler._base_scheduler import DeliveryOutcome
+        scheduler = AgentScheduler(Mock(), "Test task")
+        assert scheduler._deliver_result("hi") is DeliveryOutcome.NOT_CONFIGURED
+
+    def test_outcome_suppressed_on_silence_marker(self):
+        from praisonai.scheduler._base_scheduler import DeliveryOutcome
+        scheduler = self._scheduler(delivered=True)
+        assert scheduler._deliver_result("NO_REPLY") is DeliveryOutcome.SUPPRESSED
+
+    def test_undelivered_run_fires_on_failure_not_on_success(self):
+        on_success = Mock()
+        on_failure = Mock()
+        scheduler = self._scheduler(
+            delivered=False, on_success=on_success, on_failure=on_failure
+        )
+        scheduler._execute_with_retry(max_retries=1)
+        on_success.assert_not_called()
+        on_failure.assert_called_once()
+        assert scheduler._undelivered_count == 1
+        stats = scheduler.get_stats()
+        assert stats["undelivered_deliveries"] == 1
+        assert stats["delivered_deliveries"] == 0
+
+    def test_delivered_run_fires_on_success(self):
+        on_success = Mock()
+        on_failure = Mock()
+        scheduler = self._scheduler(
+            delivered=True, on_success=on_success, on_failure=on_failure
+        )
+        scheduler._execute_with_retry(max_retries=1)
+        on_success.assert_called_once()
+        on_failure.assert_not_called()
+        assert scheduler._undelivered_count == 0
+        assert scheduler._delivered_count == 1
+        assert scheduler.get_stats()["delivered_deliveries"] == 1
+
+    def test_delivery_exception_is_undelivered_not_success(self):
+        on_success = Mock()
+        on_failure = Mock()
+        scheduler = AgentScheduler(
+            Mock(), "Test task", deliver="telegram:123",
+            on_success=on_success, on_failure=on_failure,
+        )
+        scheduler._delivery = Mock()
+        scheduler._delivery.deliver = Mock(side_effect=RuntimeError("boom"))
+        _stub_execute(scheduler, return_value="Daily summary")
+        scheduler._execute_with_retry(max_retries=1)
+        on_success.assert_not_called()
+        on_failure.assert_called_once()
+        assert scheduler._undelivered_count == 1
+
+    def test_not_configured_run_reports_zero_delivered(self):
+        on_success = Mock()
+        scheduler = AgentScheduler(Mock(), "Test task", on_success=on_success)
+        _stub_execute(scheduler, return_value="Daily summary")
+        scheduler._execute_with_retry(max_retries=1)
+        on_success.assert_called_once()
+        assert scheduler._delivered_count == 0
+        stats = scheduler.get_stats()
+        assert stats["delivered_deliveries"] == 0
+        assert stats["undelivered_deliveries"] == 0
+
+    def test_suppressed_run_reports_zero_delivered(self):
+        on_success = Mock()
+        scheduler = self._scheduler(delivered=True, on_success=on_success)
+        _stub_execute(scheduler, return_value="NO_REPLY")
+        scheduler._execute_with_retry(max_retries=1)
+        on_success.assert_called_once()
+        assert scheduler._delivered_count == 0
+        assert scheduler.get_stats()["delivered_deliveries"] == 0

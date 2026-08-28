@@ -1,0 +1,2298 @@
+import {
+  Box,
+  Button,
+  Checkbox,
+  Chip,
+  CircularProgress,
+  Divider,
+  FormControlLabel,
+  IconButton,
+  MenuItem,
+  Select,
+  Slider,
+  TextField,
+  Typography,
+} from "@mui/material";
+import CustomTooltip from "src/components/tooltip/CustomTooltip";
+import { LoadingButton } from "@mui/lab";
+import { enqueueSnackbar } from "notistack";
+import { useFeatureLocked, CAPABILITY } from "src/hooks/useCapabilities";
+import { FAGI_MODEL_VALUES } from "src/sections/evals/components/ModelSelector";
+import PropTypes from "prop-types";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useWatch } from "react-hook-form";
+import Iconify from "src/components/iconify";
+import { ShowComponent } from "src/components/show/ShowComponent";
+import ResizablePanels from "src/components/resizablePanels/ResizablePanels";
+import TaskFilterBar from "src/sections/tasks/components/TaskFilterBar";
+import { buildApiFilterArray } from "src/sections/tasks/components/TaskLivePreview";
+import { ROW_TYPE_LABELS } from "src/utils/constants";
+import {
+  useEvalDetail,
+  useUpdateEval,
+} from "src/sections/evals/hooks/useEvalDetail";
+import {
+  useEvalVersions,
+  useCreateEvalVersion,
+} from "src/sections/evals/hooks/useEvalVersions";
+import InstructionEditor from "src/sections/evals/components/InstructionEditor";
+import LLMPromptEditor from "src/sections/evals/components/LLMPromptEditor";
+import CodeEvalEditor from "src/sections/evals/components/CodeEvalEditor";
+import OutputTypeConfig from "src/sections/evals/components/OutputTypeConfig";
+import FewShotExamples from "src/sections/evals/components/FewShotExamples";
+import { useCompositeDetail } from "src/sections/evals/hooks/useCompositeEval";
+import { useCompositeChildrenUnionKeys } from "src/sections/evals/hooks/useCompositeChildrenKeys";
+import DatasetTestMode from "src/sections/evals/components/DatasetTestMode";
+import TracingTestMode from "src/sections/evals/components/TracingTestMode";
+import SimulationTestMode from "src/sections/evals/components/SimulationTestMode";
+import CreateSimulationPreviewMode from "src/sections/evals/components/CreateSimulationPreviewMode";
+import TestPlayground from "src/sections/evals/components/TestPlayground";
+import VersionBadge from "src/sections/evals/components/VersionBadge";
+import EvalTypeBadge from "src/sections/evals/components/EvalTypeBadge";
+import { useEvalPickerContext } from "./context/EvalPickerContext";
+import CompositeChildParams from "./CompositeChildParams";
+import {
+  getEvalCode,
+  getEvalCodeLanguage,
+  getEvalConfigParamsDesc,
+  getEvalFunctionParamsSchema,
+  getEvalRequiredKeys,
+  normalizeEvalPickerEval,
+} from "./evalPickerValue";
+import { getEvalBaseName } from "src/sections/common/EvaluationDrawer/common";
+import {
+  canonicalEntries,
+  extractVariablesFromMessages,
+} from "src/utils/utils";
+import { format } from "date-fns";
+import {
+  buildEvalTemplateConfig,
+  buildCompositeSourceModeProps,
+  buildDataInjection,
+  contextOptionsForRowType,
+  extractCodeEvaluateParams,
+  getSourceModeVariables,
+  hasNonEmptyPromptMessage,
+} from "./evalPickerConfigUtils";
+import RequiredMark from "src/components/RequiredMark";
+
+const ERROR_LOCALIZER_LOCKED_TOOLTIP =
+  "Error Localization isn't enabled for this workspace.";
+
+const build_tools_payload = (selected_tools) =>
+  (selected_tools || []).reduce((acc, tool_name) => {
+    if (tool_name) acc[tool_name] = true;
+    return acc;
+  }, {});
+
+// ── Main Component ──
+
+const SOURCE_LABELS = {
+  dataset: "Dataset",
+  experiment: "Dataset",
+  tracing: "Tracing",
+  simulation: "Simulation",
+  task: "Task",
+  custom: "Custom",
+  composite: "Composite",
+};
+
+const SOURCE_NAME_SLUGS = {
+  dataset: "dataset",
+  experiment: "experiment",
+  "run-experiment": "experiment",
+  optimization: "optimization",
+  "run-optimization": "optimization",
+  workbench: "workbench",
+  simulation: "simulation",
+  "create-simulate": "simulation",
+  task: "task",
+  composite: "composite",
+};
+
+const getEvalPromptText = (evalData, config = {}) =>
+  evalData?.instructions || config?.rule_prompt || "";
+
+const EvalPickerConfigFull = ({ evalData, onBack, onSave, isSaving }) => {
+  // Fail closed while capabilities load (both flags true) so gated controls
+  // never flash as available before the fetch resolves.
+  const { locked: fagiLocked, isLoading: capsLoading } = useFeatureLocked(
+    CAPABILITY.TURING_MODELS,
+  );
+  const { locked: agentEvalLocked } = useFeatureLocked(CAPABILITY.AGENTIC_EVAL);
+  // Confirmed denial (loaded AND not allowed) — seed the model default raw and
+  // only strip it here, never off `locked` (true while loading), so entitled
+  // users keep "turing_large" through the fetch.
+  const fagiModelsDenied = fagiLocked && !capsLoading;
+  const {
+    source,
+    sourceId,
+    sourceColumns,
+    extraColumns,
+    sourceRowType,
+    sourcePreviewData,
+    isEditMode,
+    requiredColumnId,
+    onFiltersChange,
+    sourceTimeWindow,
+    filterForm: localFilterForm,
+  } = useEvalPickerContext();
+  const normalizedEvalData = useMemo(
+    () => normalizeEvalPickerEval(evalData),
+    [evalData],
+  );
+  const templateId =
+    evalData?.templateId || evalData?.template_id || evalData?.id;
+  // ── Data (same hooks as EvalDetailPage) ──
+  const { data: fullEval, isLoading, isError } = useEvalDetail(templateId);
+  const normalizedFullEval = useMemo(
+    () => normalizeEvalPickerEval(fullEval),
+    [fullEval],
+  );
+  const { data: versionsData } = useEvalVersions(templateId);
+  const versions = useMemo(() => versionsData?.versions || [], [versionsData]);
+  const updateEval = useUpdateEval(templateId);
+  const createVersion = useCreateEvalVersion(templateId);
+
+  // ── Editable state (mirrors EvalDetailPage) ──
+  const [selectedVersionId, setSelectedVersionId] = useState(
+    evalData?.pinned_version_id ?? null,
+  );
+  const [instructions, setInstructions] = useState("");
+  const [code, setCode] = useState("");
+  const [codeLanguage, setCodeLanguage] = useState("python");
+  const [model, setModel] = useState("turing_large");
+  // Drop the seeded Turing default only once denial is confirmed, so entitled
+  // users keep it through the capabilities fetch (and any config load).
+  useEffect(() => {
+    if (fagiModelsDenied && FAGI_MODEL_VALUES.has(model)) setModel("");
+  }, [fagiModelsDenied, model]);
+  const [openModelMenuSignal, setOpenModelMenuSignal] = useState(0);
+  const [outputType, setOutputType] = useState("pass_fail");
+  const [passThreshold, setPassThreshold] = useState(0.5);
+  const [choiceScores, setChoiceScores] = useState({});
+  const [multiChoice, setMultiChoice] = useState(false);
+  const [messages, setMessages] = useState([{ role: "system", content: "" }]);
+  const [fewShotExamples, setFewShotExamples] = useState([]);
+  const [templateFormat, setTemplateFormat] = useState("mustache");
+  // Runtime-override state surfaced via ModelSelector's + button. These
+  // flow through to the `run_config` block of the save payload and become
+  // per-dataset-attachment overrides on the UserEvalMetric.
+  const [agentMode, setAgentMode] = useState("agent");
+  const [useInternet, setUseInternet] = useState(false);
+  const [summaryType, setSummaryType] = useState("concise");
+  const [connectorIds, setConnectorIds] = useState([]);
+  const [knowledgeBaseIds, setKnowledgeBaseIds] = useState([]);
+  const [contextOptions, setContextOptions] = useState(["variables_only"]);
+  const [errorLocalizerEnabled, setErrorLocalizerEnabled] = useState(false);
+  const errorLocalizerActive = errorLocalizerEnabled && !agentEvalLocked;
+  // Name for the UserEvalMetric — defaults to template name, user can customise
+  const [evalName, setEvalName] = useState("");
+  const [dataReady, setDataReady] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  useEffect(() => {
+    const pinned =
+      evalData?.pinned_version_id ?? evalData?.pinnedVersionId ?? null;
+    if (pinned && !selectedVersionId && !isDirty) {
+      setSelectedVersionId(pinned);
+    }
+  }, [
+    evalData?.pinned_version_id,
+    evalData?.pinnedVersionId,
+    selectedVersionId,
+    isDirty,
+  ]);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testPassed, setTestPassed] = useState(false);
+  const [testError, setTestError] = useState(null);
+  const [sourceReady, setSourceReady] = useState(false);
+  const [promptMessageError, setPromptMessageError] = useState("");
+  const [sourceMapping, setSourceMapping] = useState({});
+  const sourceRef = useRef(null);
+
+  const localFormFilters = useWatch({
+    control: localFilterForm.control,
+    name: "filters",
+  });
+  const localApiFilters = useMemo(
+    () =>
+      buildApiFilterArray(
+        localFormFilters,
+        sourceTimeWindow?.startDate,
+        sourceTimeWindow?.endDate,
+      ),
+    [localFormFilters, sourceTimeWindow?.startDate, sourceTimeWindow?.endDate],
+  );
+
+  const handleSourceReadyChange = useCallback((ready, mapping) => {
+    setSourceReady(ready);
+    if (mapping) setSourceMapping(mapping);
+  }, []);
+
+  // Dataset columns for autocomplete in editors
+  const [datasetColumns, setDatasetColumns] = useState([]);
+  const [datasetJsonSchemas, setDatasetJsonSchemas] = useState({});
+  const [codeParams, setCodeParams] = useState({});
+  const handleColumnsLoaded = useCallback((cols, jsonSchemas) => {
+    setDatasetColumns(cols || []);
+    setDatasetJsonSchemas(jsonSchemas || {});
+  }, []);
+
+  const functionParamsSchema = getEvalFunctionParamsSchema(normalizedFullEval);
+  const configParamsDesc = getEvalConfigParamsDesc(normalizedFullEval);
+
+  const handleCodeParamChange = useCallback((key, value) => {
+    setCodeParams((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  // Derived
+  const evalType =
+    normalizedFullEval?.evalType || normalizedEvalData?.evalType || "llm";
+  const isSystemEval = normalizedFullEval?.owner === "system";
+  const isComposite =
+    (normalizedFullEval?.templateType || normalizedEvalData?.templateType) ===
+    "composite";
+  // Composite metadata + per-binding weight overrides. Loaded lazily via
+  // `useCompositeDetail` only when the selected template is composite so
+  // single-eval picks don't pay the round-trip cost. `compositeChildWeights`
+  // is the state that flows into `composite_weight_overrides` on save.
+  const { data: compositeDetail } = useCompositeDetail(templateId, isComposite);
+  const compositeUnionKeys = useCompositeChildrenUnionKeys(
+    compositeDetail?.children || [],
+  );
+  const [compositeChildWeights, setCompositeChildWeights] = useState({});
+  const compositePopulatedRef = useRef(false);
+  useEffect(() => {
+    if (!isComposite) return;
+    if (!compositeDetail) return;
+    // In edit mode, wait for evalData so saved overrides aren't missed
+    if (isEditMode && !evalData) return;
+    if (compositePopulatedRef.current) return;
+    // Start from template child weights, then overlay saved per-binding overrides
+    const initial = {};
+    (compositeDetail.children || []).forEach((c) => {
+      if (c?.child_id != null) {
+        initial[c.child_id] = c.weight != null ? c.weight : 1.0;
+      }
+    });
+    const saved = evalData?.composite_weight_overrides || {};
+    if (saved && typeof saved === "object") {
+      Object.entries(saved).forEach(([childId, w]) => {
+        if (w != null) initial[childId] = w;
+      });
+    }
+    setCompositeChildWeights(initial);
+    compositePopulatedRef.current = true;
+  }, [isComposite, compositeDetail, evalData]);
+  // Configuring a per-dataset attachment (UserEvalMetric) — NOT editing the
+  // underlying template itself. Lock-down policy:
+  //   - System evals: instructions + output_type category are READ-ONLY.
+  //                   Model / + menu / scoring settings (within the type) are editable
+  //                   and saved as runtime overrides in config.run_config.
+  //   - User evals:   full editing, BUT the output_type category is also locked
+  //                   (you can't switch pass_fail → scoring after template creation
+  //                   — that's a versioning concern). Scoring settings still editable.
+  const isInstructionsReadOnly = isSystemEval;
+  const isOutputTypeCategoryLocked = true; // locked for both system and user
+  const currentVersion =
+    normalizedFullEval?.currentVersion ||
+    normalizedEvalData?.currentVersion ||
+    "V1";
+
+  // Extract variables for the mapping panel. Priority:
+  //   1. Composite: union of each child's required_keys (backend populates
+  //      these on `CompositeDetailResponse.children[].required_keys`).
+  //   2. required_keys on the template (authoritative for system evals)
+  //   3. `{{var}}` patterns in the user-edited instructions
+  const variables = useMemo(() => {
+    if (isComposite) {
+      const union = new Set();
+      (compositeDetail?.children || []).forEach((child) => {
+        (child?.required_keys || []).forEach((k) => union.add(k));
+      });
+      return [...union];
+    }
+    const requiredKeys =
+      getEvalRequiredKeys(normalizedFullEval) ||
+      getEvalRequiredKeys(normalizedEvalData) ||
+      [];
+
+    if (evalType === "code") {
+      const savedMapping = normalizedEvalData?.mapping || {};
+      const savedStdvars = ["input", "output", "expected"].filter(
+        (v) => v in savedMapping,
+      );
+
+      // System code evals always have the canonical
+      // `evaluate(input, output, expected, context, **kwargs)` signature —
+      // the real keys live in required_keys, so trust them directly and
+      // never live-parse (would surface input/output/expected/context).
+      if (isSystemEval) {
+        if (requiredKeys.length > 0) return [...new Set(requiredKeys)];
+        return savedStdvars;
+      }
+
+      // User-authored code: live-parse the `def evaluate(...)` signature
+      // so adding / renaming a param immediately surfaces a mapping row.
+      // Fall back to saved mapping + template required_keys when the code
+      // can't be parsed (non-python language, no `def evaluate`).
+      const liveParams = extractCodeEvaluateParams(code, codeLanguage);
+      if (liveParams.length > 0) {
+        return [...new Set([...liveParams, ...requiredKeys])];
+      }
+      return [...new Set([...savedStdvars, ...requiredKeys])];
+    }
+
+    // System evals + Jinja mode: use static required_keys.
+    // Jinja's extractJinjaVariables() only returns root names (e.g. "file")
+    // not full paths (e.g. "file.code"), so requiredKeys is authoritative.
+    if (
+      (isSystemEval || templateFormat === "jinja") &&
+      requiredKeys.length > 0
+    ) {
+      return [...new Set(requiredKeys)];
+    }
+
+    // User evals (mustache): prefer live extraction so mapping updates as user
+    // types. For LLM evals, scan every turn (System / User / Assistant), not
+    // just the System-derived instructions field.
+    const templateVars =
+      evalType === "llm"
+        ? extractVariablesFromMessages(instructions, messages, "mustache")
+        : ((instructions || "").match(/\{\{\s*([^{}]+?)\s*\}\}/g) || []).map(
+            (m) => m.replace(/\{\{|\}\}/g, "").trim(),
+          );
+    if (templateVars.length > 0) return [...new Set(templateVars)];
+    // Fallback: stored required_keys (before instructions hydrate)
+    if (requiredKeys.length > 0) return [...new Set(requiredKeys)];
+    return [];
+  }, [
+    instructions,
+    messages,
+    normalizedFullEval,
+    normalizedEvalData,
+    evalType,
+    isComposite,
+    isSystemEval,
+    compositeDetail,
+    templateFormat,
+    code,
+    codeLanguage,
+  ]);
+
+  const hasDataInjection = useMemo(
+    () =>
+      evalType === "agent" &&
+      (source === "task" || source === "tracing") &&
+      Array.isArray(contextOptions) &&
+      contextOptions.some((o) => o && o !== "variables_only"),
+    [evalType, source, contextOptions],
+  );
+
+  const visibleCodeParamEntries = useMemo(() => {
+    if (!functionParamsSchema) return [];
+    const variableSet = new Set(Array.isArray(variables) ? variables : []);
+    return canonicalEntries(functionParamsSchema).filter(
+      ([key]) => !variableSet.has(key),
+    );
+  }, [functionParamsSchema, variables]);
+
+  const compositeSourceModeProps = useMemo(
+    () =>
+      buildCompositeSourceModeProps({
+        isComposite,
+        fullEval,
+        compositeDetail,
+        compositeChildWeights,
+      }),
+    [isComposite, fullEval, compositeDetail, compositeChildWeights],
+  );
+
+  const sourceModeVariables = useMemo(
+    () =>
+      getSourceModeVariables({
+        isComposite,
+        variables,
+        compositeUnionKeys,
+      }),
+    [isComposite, variables, compositeUnionKeys],
+  );
+
+  const hasValidPromptMessages = useMemo(
+    () => evalType !== "llm" || hasNonEmptyPromptMessage(messages),
+    [evalType, messages],
+  );
+  useEffect(() => {
+    if (!selectedVersionId || !versions.length || isDirty) return;
+    const version = versions.find((v) => v.id === selectedVersionId);
+    if (!version) return;
+
+    const config = version.config_snapshot || version.configSnapshot || {};
+    const promptText = config.rule_prompt || version.criteria || "";
+    const _type =
+      normalizedFullEval?.evalType || normalizedEvalData?.evalType || "llm";
+
+    if (_type === "code") {
+      setInstructions("");
+      setCode(config.code || "");
+    } else {
+      setInstructions(promptText);
+      setCode("");
+    }
+    if (config.messages?.length > 0) {
+      setMessages(config.messages);
+    } else if (_type === "llm" && promptText) {
+      setMessages([{ role: "system", content: promptText }]);
+    }
+
+    setModel(config.model || fullEval?.model || "turing_large");
+    if (config.output) setOutputType(config.output);
+    if (config.pass_threshold != null) setPassThreshold(config.pass_threshold);
+    if (config.choice_scores) setChoiceScores(config.choice_scores);
+    if (config.multi_choice != null) setMultiChoice(!!config.multi_choice);
+    if (config.template_format) setTemplateFormat(config.template_format);
+    if (Array.isArray(config.few_shot_examples))
+      setFewShotExamples(config.few_shot_examples);
+
+    if (config.agent_mode) setAgentMode(config.agent_mode);
+    if (config.check_internet != null) setUseInternet(!!config.check_internet);
+    const summaryVal =
+      typeof config.summary === "object"
+        ? config.summary?.type
+        : config.summary;
+    if (summaryVal) setSummaryType(summaryVal);
+    if (Array.isArray(config.tools)) setConnectorIds(config.tools);
+    else if (config.tools && typeof config.tools === "object")
+      setConnectorIds(Object.keys(config.tools));
+    if (Array.isArray(config.knowledge_bases))
+      setKnowledgeBaseIds(config.knowledge_bases);
+    if (config.data_injection && typeof config.data_injection === "object") {
+      const opts = Object.entries(config.data_injection)
+        .filter(([, v]) => v)
+        .map(([k]) => k);
+      setContextOptions(opts.length ? opts : ["variables_only"]);
+    }
+    if (config.error_localizer_enabled != null) {
+      setErrorLocalizerEnabled(!!config.error_localizer_enabled);
+    }
+
+    if (isEditMode) setEvalName(evalData?.name || fullEval?.name || "");
+    setIsDirty(false);
+    setDataReady(true);
+    initialLoadDone.current = true;
+  }, [
+    selectedVersionId,
+    versions,
+    isDirty,
+    fullEval,
+    normalizedFullEval,
+    normalizedEvalData,
+    isEditMode,
+    evalData,
+  ]);
+
+  // ── Populate from eval detail (same logic as EvalDetailPage) ──
+  const initialLoadDone = useRef(false);
+  useEffect(() => {
+    // React Query can return cached detail first and fresh network detail next.
+    // Re-hydrate while the form is still clean so fresh fields (e.g.
+    // instructions/error_localizer_enabled) are not dropped.
+    if (
+      fullEval &&
+      (!initialLoadDone.current || !isDirty) &&
+      !selectedVersionId
+    ) {
+      // Merge template config with any saved runtime overrides from the
+      // user eval (run_config). Edit mode: evalData.run_config holds the
+      // previously saved model, agentMode, passThreshold, etc.
+      const rawRunConfig =
+        evalData?.run_config ||
+        evalData?.runConfig ||
+        evalData?.config?.run_config ||
+        evalData?.config?.runConfig ||
+        {};
+
+      const normalizedRunConfig = {
+        ...rawRunConfig,
+        agent_mode:
+          rawRunConfig.agent_mode ??
+          rawRunConfig.agentMode ??
+          evalData?.agent_mode ??
+          evalData?.agentMode,
+        check_internet:
+          rawRunConfig.check_internet ??
+          rawRunConfig.checkInternet ??
+          evalData?.check_internet ??
+          evalData?.checkInternet,
+        knowledge_bases:
+          rawRunConfig.knowledge_bases ??
+          rawRunConfig.knowledgeBases ??
+          evalData?.knowledge_bases ??
+          evalData?.knowledgeBases,
+        data_injection:
+          rawRunConfig.data_injection ??
+          rawRunConfig.dataInjection ??
+          evalData?.data_injection ??
+          evalData?.dataInjection,
+        template_format:
+          rawRunConfig.template_format ?? rawRunConfig.templateFormat,
+        few_shot_examples:
+          rawRunConfig.few_shot_examples ?? rawRunConfig.fewShotExamples,
+        summary: rawRunConfig.summary ?? evalData?.summary,
+        tools: rawRunConfig.tools ?? evalData?.tools,
+        pass_threshold:
+          rawRunConfig.pass_threshold ??
+          rawRunConfig.passThreshold ??
+          evalData?.pass_threshold ??
+          evalData?.passThreshold,
+        choice_scores:
+          rawRunConfig.choice_scores ??
+          rawRunConfig.choiceScores ??
+          evalData?.choice_scores ??
+          evalData?.choiceScores,
+        multi_choice:
+          rawRunConfig.multi_choice ??
+          rawRunConfig.multiChoice ??
+          evalData?.multi_choice ??
+          evalData?.multiChoice,
+        params: rawRunConfig.params ?? evalData?.params,
+        // Multi-turn LLM evals store the full message chain on the template
+        // config (fullEval.config.messages). Fall through every source so a
+        // dataset / simulate / task / experiment scoped copy of a template
+        // doesn't collapse into just the System turn on hydration.
+        messages:
+          rawRunConfig.messages ??
+          evalData?.messages ??
+          evalData?.config?.messages ??
+          fullEval?.config?.messages,
+      };
+      const config = {
+        ...(fullEval.config || {}),
+        ...normalizedRunConfig,
+      };
+      const promptText = getEvalPromptText(fullEval, config);
+      // Set template format BEFORE instructions so the InstructionEditor
+      // mounts with the correct key and doesn't lose content on remount.
+      setTemplateFormat(
+        fullEval.template_format || config.template_format || "mustache",
+      );
+      // Type-aware split. Backend returns `instructions = template.criteria`
+      // for every eval type — for code evals that field is the
+      // description/criteria text, not a Jinja prompt. Only populate the
+      // state slot that matches the eval type so the variable extractor
+      // and editors see clean data.
+      const _type =
+        normalizedFullEval?.evalType || normalizedEvalData?.evalType || "llm";
+      if (_type === "code") {
+        setInstructions("");
+        setCode(getEvalCode(normalizedFullEval));
+      } else {
+        setInstructions(promptText);
+        setCode("");
+      }
+      setCodeLanguage(getEvalCodeLanguage(normalizedFullEval));
+      // Priority: user's saved run-config override → canonical detail
+      // (`fullEval.model`, full form e.g. "turing_small") → list-level
+      // `evalData.model`. The list endpoint returns a stripped form
+      // ("small") for built-in templates while detail returns the full
+      // canonical value, so we intentionally prefer `fullEval.model`
+      // over `evalData.model` to avoid the chip rendering "small".
+      setModel(
+        config?.model || fullEval?.model || evalData?.model || "turing_large",
+      );
+      setOutputType(fullEval.output_type || "pass_fail");
+      // Prefer user's saved run_config overrides (edit flow) over template defaults
+      setPassThreshold(config.pass_threshold ?? fullEval.pass_threshold ?? 0.5);
+      setChoiceScores(config.choice_scores || fullEval.choice_scores || {});
+      setMultiChoice(config.multi_choice ?? fullEval.multi_choice ?? false);
+      // Messages: use config.messages if present, otherwise build from
+      // instructions — but only for llm/agent evals, since code evals
+      // don't have a prompt to seed into a system message.
+      if (config.messages && config.messages.length > 0) {
+        setMessages(config.messages);
+      } else if (_type === "llm" && promptText) {
+        setMessages([{ role: "system", content: promptText }]);
+      }
+      if (config.few_shot_examples) {
+        setFewShotExamples(config.few_shot_examples || []);
+      }
+
+      // Code-eval static params (e.g. `min_words`, `max_words` for
+      // word_count_in_range). Prefer the saved instance value in edit
+      // mode, then fall back to the template's run_config defaults.
+      // This is what makes the Parameters section show the previously-
+      // entered values when the user reopens an eval for editing.
+      const savedParams =
+        (evalData && (evalData.params || evalData.config?.params)) ||
+        config.params ||
+        config.run_config?.params ||
+        null;
+      if (savedParams && typeof savedParams === "object") {
+        setCodeParams(savedParams);
+      }
+
+      // Runtime-override defaults from the template. These are the seed
+      // values users start with; any + button click mutates local state and
+      // gets saved as run_config when they click "Add Evaluation".
+      if (config.agent_mode) {
+        setAgentMode(config.agent_mode);
+      }
+      if (config.check_internet !== undefined) {
+        setUseInternet(!!config.check_internet);
+      }
+      const summaryVal = config.summary?.type || config.summary || "concise";
+      if (summaryVal) setSummaryType(summaryVal);
+      if (Array.isArray(config.tools)) {
+        setConnectorIds(config.tools);
+      } else if (config.tools && typeof config.tools === "object") {
+        setConnectorIds(
+          Object.entries(config.tools)
+            .filter(([, enabled]) => !!enabled)
+            .map(([name]) => name),
+        );
+      }
+      if (Array.isArray(config.knowledge_bases)) {
+        setKnowledgeBaseIds(config.knowledge_bases);
+      }
+      const di = config.data_injection || config.run_config?.data_injection;
+      if (di && typeof di === "object") {
+        const opts = [];
+        if (di.full_row || di.fullRow) opts.push("dataset_row");
+        if (di.span_context || di.spanContext) opts.push("span_context");
+        if (di.trace_context || di.traceContext) opts.push("trace_context");
+        if (di.session_context || di.sessionContext)
+          opts.push("session_context");
+        if (di.call_context || di.callContext) opts.push("call_context");
+        if (opts.length > 0) {
+          setContextOptions(opts);
+        } else if (di.variables_only || di.variablesOnly) {
+          setContextOptions(["variables_only"]);
+        }
+      } else if (source === "task") {
+        const seeded = contextOptionsForRowType(sourceRowType);
+        if (seeded) setContextOptions(seeded);
+      }
+      setErrorLocalizerEnabled(
+        config.error_localizer_enabled ??
+          fullEval.error_localizer_enabled ??
+          false,
+      );
+
+      // Edit mode: keep the saved name. Create mode: generate a unique name
+      // from the template base name + source slug + date/time, e.g.
+      // "is_good_summary_dataset_14_may_2026_15_42". The source slug ties
+      // the name to where the eval was created (dataset / experiment /
+      // workbench / …); the timestamp avoids collisions on the backend
+      // uniqueness check for same-source same-day repeats.
+      if (isEditMode || source === "composite") {
+        setEvalName(evalData?.name || fullEval.name || "");
+      } else {
+        const baseName =
+          fullEval.name ||
+          normalizedEvalData?.name ||
+          getEvalBaseName(fullEval);
+        const sanitized = baseName
+          .toLowerCase()
+          .replace(/\s+/g, "_")
+          .replace(/[^a-z0-9_-]/g, "");
+        const sourceSlug = SOURCE_NAME_SLUGS[source] || "";
+        const stamp = format(new Date(), "dd_MMM_yyyy_HH_mm").toLowerCase();
+        const suffix = [sourceSlug, stamp].filter(Boolean).join("_");
+        const maxBaseLen = Math.max(0, 50 - suffix.length - (suffix ? 1 : 0));
+        const truncatedBase = sanitized.slice(0, maxBaseLen).replace(/_+$/, "");
+        setEvalName(
+          [truncatedBase, sourceSlug, stamp].filter(Boolean).join("_"),
+        );
+      }
+
+      initialLoadDone.current = true;
+      setDataReady(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    fullEval,
+    normalizedFullEval,
+    normalizedEvalData,
+    isEditMode,
+    selectedVersionId,
+  ]);
+
+  // ── Version selection ──
+  const handleVersionChange = useCallback(
+    (e) => {
+      const vId = e.target.value;
+      setSelectedVersionId(vId || null);
+      if (!vId && fullEval) {
+        // Type-aware split — see initial-load effect above.
+        const _type =
+          normalizedFullEval?.evalType || normalizedEvalData?.evalType || "llm";
+        const promptText = getEvalPromptText(fullEval, fullEval.config || {});
+        if (_type === "code") {
+          setInstructions("");
+          setCode(getEvalCode(normalizedFullEval));
+        } else {
+          setInstructions(promptText);
+          setCode("");
+        }
+        setModel(fullEval.config?.model || fullEval.model || "turing_large");
+        if (fullEval.config?.messages?.length > 0) {
+          setMessages(fullEval.config.messages);
+        } else if (_type === "llm" && promptText) {
+          setMessages([{ role: "system", content: promptText }]);
+        }
+        setAgentMode(fullEval.config?.agent_mode || "agent");
+        setSummaryType(fullEval.config?.summary?.type || "concise");
+        if (Array.isArray(fullEval.config?.tools)) {
+          setConnectorIds(fullEval.config.tools);
+        } else if (
+          fullEval.config?.tools &&
+          typeof fullEval.config.tools === "object"
+        ) {
+          setConnectorIds(
+            Object.entries(fullEval.config.tools)
+              .filter(([, enabled]) => !!enabled)
+              .map(([name]) => name),
+          );
+        } else {
+          setConnectorIds([]);
+        }
+        setKnowledgeBaseIds(
+          Array.isArray(fullEval.config?.knowledge_bases)
+            ? fullEval.config.knowledge_bases
+            : [],
+        );
+        setContextOptions(
+          fullEval.config?.data_injection?.full_row ||
+            fullEval.config?.data_injection?.fullRow
+            ? ["full_row"]
+            : ["variables_only"],
+        );
+        setUseInternet(fullEval.config?.check_internet ?? false);
+        setErrorLocalizerEnabled(
+          fullEval.error_localizer_enabled ??
+            fullEval.config?.error_localizer_enabled ??
+            false,
+        );
+        setIsDirty(false);
+        return;
+      }
+      const version = versions.find((v) => v.id === vId);
+      if (version) {
+        const config = version.config_snapshot || version.configSnapshot || {};
+        const promptText = config.rule_prompt || version.criteria || "";
+        // Type-aware split — version snapshot's `criteria` is the code
+        // text for code evals, the prompt for agent/llm.
+        const _type =
+          normalizedFullEval?.evalType || normalizedEvalData?.evalType || "llm";
+        if (_type === "code") {
+          setInstructions("");
+          setCode(config.code || "");
+        } else {
+          setInstructions(promptText);
+          setCode("");
+        }
+        setModel(config.model || "turing_large");
+        if (config.messages?.length > 0) {
+          setMessages(config.messages);
+        } else if (_type === "llm" && promptText) {
+          setMessages([{ role: "system", content: promptText }]);
+        }
+        setAgentMode(config.agent_mode || "agent");
+        setSummaryType(config.summary?.type || config.summary || "concise");
+        if (Array.isArray(config.tools)) {
+          setConnectorIds(config.tools);
+        } else if (config.tools && typeof config.tools === "object") {
+          setConnectorIds(
+            Object.entries(config.tools)
+              .filter(([, enabled]) => !!enabled)
+              .map(([name]) => name),
+          );
+        } else {
+          setConnectorIds([]);
+        }
+        setKnowledgeBaseIds(
+          Array.isArray(config.knowledge_bases) ? config.knowledge_bases : [],
+        );
+        setContextOptions(
+          config.data_injection?.full_row || config.data_injection?.fullRow
+            ? ["full_row"]
+            : ["variables_only"],
+        );
+        setUseInternet(config.check_internet ?? false);
+        setIsDirty(false);
+      }
+    },
+    [versions, fullEval, normalizedFullEval, normalizedEvalData],
+  );
+
+  // ── Save as new version (user evals only) ──
+  // Mirrors EvalDetailPage.handleSaveVersion: updates the template fields,
+  // then creates a new EvalTemplateVersion with a config snapshot. After
+  // save, the new version becomes the selected version in the tabs so
+  // the user can Apply it to the dataset with the existing
+  // "Add Evaluation" button.
+  const handleSaveVersion = useCallback(async () => {
+    if (isSystemEval) return;
+    if (agentEvalLocked && evalType === "agent") {
+      enqueueSnackbar(
+        "Agent evaluations aren't enabled for this workspace. Use LLM-as-a-Judge or Code evaluations instead.",
+        { variant: "error" },
+      );
+      return;
+    }
+    if (fagiLocked && FAGI_MODEL_VALUES.has(model)) {
+      enqueueSnackbar(
+        "Turing models aren't enabled for this workspace. Please select your own model.",
+        { variant: "error" },
+      );
+      setOpenModelMenuSignal((n) => n + 1);
+      return;
+    }
+    if (fagiLocked && evalType !== "code" && !model) {
+      enqueueSnackbar("Please select a model.", { variant: "error" });
+      setOpenModelMenuSignal((n) => n + 1);
+      return;
+    }
+    try {
+      const payload = {
+        instructions:
+          evalType === "code" ? undefined : instructions || undefined,
+        code: evalType === "code" ? code : undefined,
+        code_language: evalType === "code" ? codeLanguage : undefined,
+        model,
+        output_type: outputType,
+        pass_threshold: passThreshold,
+        choice_scores:
+          Object.keys(choiceScores || {}).length > 0 ? choiceScores : null,
+        multi_choice: multiChoice,
+        messages: evalType === "llm" ? messages : undefined,
+        few_shot_examples:
+          evalType === "llm" && fewShotExamples.length > 0
+            ? fewShotExamples
+            : undefined,
+      };
+      await updateEval.mutateAsync(payload);
+
+      const configSnapshot = {
+        ...(fullEval?.config || evalData?.config || {}),
+        rule_prompt: evalType === "code" ? "" : instructions,
+        code: evalType === "code" ? code : undefined,
+        language: evalType === "code" ? codeLanguage : undefined,
+        model,
+        output:
+          {
+            pass_fail: "Pass/Fail",
+            percentage: "score",
+            deterministic: "choices",
+          }[outputType] || "Pass/Fail",
+        pass_threshold: passThreshold,
+        choice_scores:
+          Object.keys(choiceScores || {}).length > 0 ? choiceScores : undefined,
+        multi_choice: multiChoice,
+        messages: evalType === "llm" ? messages : undefined,
+        few_shot_examples:
+          evalType === "llm" && fewShotExamples.length > 0
+            ? fewShotExamples
+            : undefined,
+      };
+      const newVersion = await createVersion.mutateAsync({
+        config_snapshot: configSnapshot,
+        criteria: evalType === "code" ? code : instructions,
+        model,
+      });
+      enqueueSnackbar(
+        `Version V${newVersion?.version_number || newVersion?.versionNumber || ""} saved`,
+        { variant: "success" },
+      );
+      setIsDirty(false);
+      // Jump to the new version so the Apply button picks it up
+      if (newVersion?.id) {
+        setSelectedVersionId(newVersion.id);
+      }
+    } catch (err) {
+      const message =
+        err?.response?.data?.result || err?.message || "Failed to save version";
+      enqueueSnackbar(
+        typeof message === "string" ? message : JSON.stringify(message),
+        { variant: "error" },
+      );
+    }
+  }, [
+    isSystemEval,
+    agentEvalLocked,
+    fagiLocked,
+    evalType,
+    instructions,
+    code,
+    codeLanguage,
+    model,
+    outputType,
+    passThreshold,
+    choiceScores,
+    multiChoice,
+    messages,
+    fewShotExamples,
+    fullEval,
+    evalData,
+    updateEval,
+    createVersion,
+  ]);
+
+  const handleTestResult = useCallback((success, result) => {
+    setTestPassed(true);
+    setTestError(
+      success
+        ? null
+        : typeof result === "string"
+          ? result
+          : JSON.stringify(result),
+    );
+    setIsTesting(false);
+  }, []);
+
+  const handleClearTestResult = useCallback(() => {
+    setTestPassed(false);
+    setTestError(null);
+  }, []);
+
+  const handleTestEvaluation = useCallback(() => {
+    if (fagiLocked && evalType !== "code" && !model && !isComposite) {
+      enqueueSnackbar("Please select a model.", { variant: "error" });
+      setOpenModelMenuSignal((n) => n + 1);
+      return;
+    }
+    setIsTesting(true);
+    setTestError(null);
+    setTestPassed(false);
+    sourceRef.current?.runTest?.(templateId);
+    // Safety timeout
+    setTimeout(() => setIsTesting((v) => (v ? false : v)), 60000);
+  }, [templateId, fagiLocked, evalType, model, isComposite]);
+
+  const handleAdd = useCallback(() => {
+    if (fagiLocked && evalType !== "code" && !model && !isComposite) {
+      enqueueSnackbar("Please select a model.", { variant: "error" });
+      setOpenModelMenuSignal((n) => n + 1);
+      return;
+    }
+    // When opened from an optimization context, enforce that the optimized
+    // column is mapped to at least one eval input field. Without this the
+    // backend's get_metrics_by_column filter would exclude the eval from the
+    // optimization's eval list.
+    if (requiredColumnId) {
+      const mappingValues = Object.values(sourceMapping || {});
+      if (!mappingValues.includes(requiredColumnId)) {
+        const requiredCol = sourceColumns?.find(
+          (col) => (col?.field || col?.id || col?.col?.id) === requiredColumnId,
+        );
+        const colLabel =
+          requiredCol?.headerName ||
+          requiredCol?.col?.name ||
+          requiredCol?.label ||
+          "the optimization column";
+        enqueueSnackbar(
+          `At least one field must be mapped to "${colLabel}" to use this evaluation in the optimization`,
+          { variant: "error" },
+        );
+        return;
+      }
+      if (evalType === "llm" && !hasValidPromptMessages) {
+        const errorMessage = "Prompt message is required";
+        setPromptMessageError(errorMessage);
+        enqueueSnackbar(errorMessage, { variant: "error" });
+        return;
+      }
+    }
+
+    if (source === "task" && onFiltersChange) {
+      onFiltersChange(localFilterForm.getValues("filters") || []);
+    }
+
+    const dataInjection = buildDataInjection(contextOptions);
+    const tools = build_tools_payload(connectorIds);
+
+    const templateType =
+      fullEval?.template_type ||
+      fullEval?.templateType ||
+      evalData?.template_type;
+
+    const resolvedConfig = buildEvalTemplateConfig({
+      baseConfig: fullEval?.config || evalData?.config || {},
+      evalType,
+      instructions,
+      code,
+      codeLanguage,
+      messages,
+      fewShotExamples,
+      outputType,
+      passThreshold,
+      choiceScores,
+      multiChoice,
+      templateFormat,
+    });
+
+    // When the picker was opened in edit mode (initialEval came from a
+    // saved-evals row or the column-menu Edit Eval action), evalData
+    // carries `userEvalId` — the existing UserEvalMetric id. The host
+    // (EvaluationDrawer) reads this to route to /edit_and_run_user_eval
+    // instead of /add_user_eval, preventing duplicate bindings.
+    const userEvalId = evalData?.userEvalId;
+
+    // In edit mode: evalData.name is the saved instance name — skip
+    // fullEval.name (template name) so it never overwrites the instance name.
+    const resolvedName =
+      source === "composite"
+        ? fullEval?.name || evalData?.name || evalName
+        : isEditMode
+          ? evalName || evalData?.name
+          : evalName || fullEval?.name || evalData?.name;
+
+    if (templateType === "composite") {
+      // Composite metrics don't carry prompt/model/output-type/choice-score
+      // state — those live on each child template. Emit only the fields
+      // the host needs to create a UserEvalMetric plus the per-binding
+      // weight overrides.
+      onSave({
+        templateId,
+        evalTemplateId: templateId,
+        userEvalId,
+        name: resolvedName,
+        mapping: sourceMapping,
+        evalTemplate: fullEval || evalData,
+        evalType,
+        templateType,
+        config: fullEval?.config || evalData?.config,
+        versionId: selectedVersionId,
+        data_injection: dataInjection,
+        error_localizer_enabled: errorLocalizerActive,
+        composite_weight_overrides: compositeChildWeights,
+      });
+      return;
+    }
+
+    onSave({
+      templateId,
+      evalTemplateId: templateId,
+      userEvalId,
+      name: resolvedName,
+      model,
+      mapping: sourceMapping,
+      evalTemplate: fullEval || evalData,
+      evalType,
+      templateType,
+      outputType,
+      config: resolvedConfig,
+      versionId: selectedVersionId,
+      instructions,
+      messages,
+      pass_threshold: passThreshold,
+      choice_scores: choiceScores,
+      multi_choice: multiChoice,
+      // Code-eval static params (function_params_schema inputs, e.g.
+      // min_words / max_words). Persisted so the backend writes them onto
+      // UserEvalMetric.config.params and future runs can read them via
+      // kwargs. Empty object is fine — backend treats it the same as
+      // "no static params" (eval body then reads kwargs.get(...) → None).
+      params: evalType === "code" ? codeParams : {},
+      // Runtime overrides — these become config.run_config on the backend.
+      agent_mode: agentMode,
+      check_internet: useInternet,
+      summary:
+        summaryType === "custom"
+          ? { type: "custom", custom: "" }
+          : { type: summaryType },
+      tools,
+      knowledge_bases: knowledgeBaseIds,
+      data_injection: dataInjection,
+      error_localizer_enabled: errorLocalizerActive,
+    });
+  }, [
+    templateId,
+    fullEval,
+    evalData,
+    evalName,
+    isEditMode,
+    fagiLocked,
+    model,
+    sourceMapping,
+    evalType,
+    outputType,
+    selectedVersionId,
+    instructions,
+    code,
+    codeLanguage,
+    messages,
+    fewShotExamples,
+    passThreshold,
+    choiceScores,
+    multiChoice,
+    codeParams,
+    agentMode,
+    useInternet,
+    summaryType,
+    connectorIds,
+    knowledgeBaseIds,
+    contextOptions,
+    isComposite,
+    compositeChildWeights,
+    errorLocalizerActive,
+    hasValidPromptMessages,
+    templateFormat,
+    onSave,
+    requiredColumnId,
+    sourceColumns,
+    source,
+    onFiltersChange,
+    localFilterForm,
+  ]);
+
+  if (isLoading) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          height: "100%",
+          py: 8,
+        }}
+      >
+        <CircularProgress size={32} />
+      </Box>
+    );
+  }
+
+  if (!templateId || (isError && !fullEval)) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100%",
+          gap: 2,
+          py: 8,
+        }}
+      >
+        <Iconify
+          icon="mdi:alert-circle-outline"
+          width={40}
+          sx={{ color: "text.disabled" }}
+        />
+        <Typography variant="body2" color="text.secondary">
+          {!templateId
+            ? "No template ID found for this evaluation."
+            : "Failed to load evaluation details."}
+        </Typography>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={onBack}
+          startIcon={<Iconify icon="solar:arrow-left-linear" width={16} />}
+          sx={{ textTransform: "none" }}
+        >
+          Back to list
+        </Button>
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        overflow: "hidden",
+      }}
+    >
+      {/* ── Header ── */}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          pb: 1.5,
+          flexShrink: 0,
+        }}
+      >
+        <Box
+          sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}
+        >
+          <IconButton size="small" onClick={onBack} sx={{ p: 0.5 }}>
+            <Iconify icon="solar:arrow-left-linear" width={18} />
+          </IconButton>
+          <Typography variant="subtitle1" fontWeight={600} noWrap>
+            {fullEval?.name || evalData?.name}
+          </Typography>
+          <ShowComponent condition={!isSystemEval}>
+            <VersionBadge version={currentVersion} />
+          </ShowComponent>
+          <EvalTypeBadge type={evalType} />
+          {isDirty && (
+            <Chip
+              label="Edited"
+              size="small"
+              color="warning"
+              variant="outlined"
+              sx={{ fontSize: "10px", height: 18 }}
+            />
+          )}
+        </Box>
+        <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+          {/* Save-as-new-version — user evals only. System evals are
+              read-only by product policy (editing triggers Copy flow).
+              Sits beside the existing version dropdown so the user can
+              edit, save a new version, then pick it from the dropdown
+              and click Add Evaluation. */}
+          {!isSystemEval && !isComposite && (
+            <LoadingButton
+              size="small"
+              variant="outlined"
+              color="primary"
+              loading={updateEval.isPending || createVersion.isPending}
+              disabled={updateEval.isPending || createVersion.isPending}
+              onClick={handleSaveVersion}
+              startIcon={<Iconify icon="solar:diskette-bold" width={14} />}
+              sx={{
+                textTransform: "none",
+                fontSize: "12px",
+                height: 30,
+                px: 1.25,
+              }}
+            >
+              Save version
+            </LoadingButton>
+          )}
+          {versions.length > 0 && (
+            <Select
+              size="small"
+              value={selectedVersionId || ""}
+              onChange={handleVersionChange}
+              displayEmpty
+              sx={{ fontSize: "12px", minWidth: 130, height: 30 }}
+            >
+              <MenuItem value="" sx={{ fontSize: "12px" }}>
+                Default version
+              </MenuItem>
+              {versions.map((v) => (
+                <MenuItem key={v.id} value={v.id} sx={{ fontSize: "12px" }}>
+                  V{v.version_number}
+                  {v.is_default ? " (default)" : ""}
+                </MenuItem>
+              ))}
+            </Select>
+          )}
+        </Box>
+      </Box>
+
+      {/* ── Eval Name ── */}
+      <Box sx={{ py: 1.5, flexShrink: 0 }}>
+        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+          Name
+          <RequiredMark />
+        </Typography>
+        <TextField
+          fullWidth
+          size="small"
+          placeholder="e.g. toxicity-check, my-custom-eval"
+          value={evalName}
+          disabled={isEditMode} // Name is not editable in edit mode — it's the name of the UserEvalMetric instance, not the template
+          onChange={(e) => {
+            // Sanitise: lowercase, replace spaces with hyphens, only allow a-z 0-9 _ -
+            const raw = e.target.value
+              .toLowerCase()
+              .replace(/\s+/g, "-")
+              .replace(/[^a-z0-9_-]/g, "");
+            setEvalName(raw);
+            setIsDirty(true);
+          }}
+          error={!isEditMode && evalName.length >= 51}
+          helperText={
+            isEditMode
+              ? undefined
+              : evalName.length >= 51
+                ? "Name can't be longer than 50 characters"
+                : `Lowercase letters, numbers, hyphens and underscores only · ${evalName.length}/50`
+          }
+          FormHelperTextProps={{ sx: { fontSize: "11px", mt: 0.25, mx: 0 } }}
+          sx={{ "& .MuiInputBase-root": { fontSize: "13px", height: 34 } }}
+        />
+      </Box>
+
+      <Divider />
+
+      {/* ── Two-panel layout (same as EvalDetailPage) ── */}
+      <Box sx={{ flex: 1, minHeight: 0, pt: 1.5 }}>
+        <ResizablePanels
+          initialLeftWidth={55}
+          minLeftWidth={35}
+          maxLeftWidth={75}
+          showIcon
+          leftPanel={
+            <Box
+              sx={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 2.5,
+                pr: 2,
+                width: "100%",
+                minWidth: 0,
+                height: "100%",
+                overflow: "auto",
+              }}
+            >
+              {/* Composite body: compact summary with children + editable weights.
+                  Mirrors the single-eval config flow style instead of the
+                  full composite edit panel. */}
+              {isComposite && (
+                <Box
+                  sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}
+                >
+                  {/* Aggregation info */}
+                  <Box
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 1,
+                      border: "1px solid",
+                      borderColor: "divider",
+                      backgroundColor: (t) =>
+                        t.palette.mode === "dark"
+                          ? "rgba(255,255,255,0.02)"
+                          : "rgba(0,0,0,0.01)",
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      fontWeight={600}
+                      sx={{ mb: 0.5, display: "block" }}
+                    >
+                      Aggregation
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontSize: "12px" }}>
+                      {(
+                        compositeDetail?.aggregation_function ||
+                        fullEval?.aggregation_function ||
+                        "weighted_avg"
+                      ).replace(/_/g, " ")}
+                      {(compositeDetail?.aggregation_enabled ??
+                        fullEval?.aggregation_enabled) === false &&
+                        " (disabled)"}
+                    </Typography>
+                  </Box>
+
+                  {/* Children with editable weights */}
+                  <Box>
+                    <Typography
+                      variant="caption"
+                      fontWeight={600}
+                      sx={{ mb: 0.75, display: "block" }}
+                    >
+                      Child Evaluators (
+                      {(compositeDetail?.children || []).length})
+                    </Typography>
+                    <Box
+                      sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 0.75,
+                      }}
+                    >
+                      {(compositeDetail?.children || []).map((child, i) => (
+                        <Box
+                          key={child.child_id}
+                          sx={{
+                            p: 1,
+                            borderRadius: 1,
+                            border: "1px solid",
+                            borderColor: "divider",
+                          }}
+                        >
+                          <Box
+                            sx={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                            }}
+                          >
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Typography
+                                variant="body2"
+                                fontWeight={600}
+                                noWrap
+                                sx={{ fontSize: "12px" }}
+                              >
+                                #{i + 1} {child.child_name}
+                              </Typography>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                {child.eval_type || "llm"}
+                              </Typography>
+                            </Box>
+                            <Box
+                              sx={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 0.5,
+                                flexShrink: 0,
+                              }}
+                            >
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ fontSize: "11px" }}
+                              >
+                                Weight
+                              </Typography>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.1"
+                                value={
+                                  compositeChildWeights[child.child_id] ??
+                                  child.weight ??
+                                  1
+                                }
+                                onChange={(e) => {
+                                  const v = parseFloat(e.target.value) || 0;
+                                  setCompositeChildWeights((prev) => ({
+                                    ...prev,
+                                    [child.child_id]: v,
+                                  }));
+                                  setIsDirty(true);
+                                }}
+                                style={{
+                                  width: 50,
+                                  padding: "2px 6px",
+                                  fontSize: "12px",
+                                  borderRadius: 4,
+                                  border:
+                                    "1px solid var(--mui-palette-divider, #444)",
+                                  background: "transparent",
+                                  color: "inherit",
+                                  textAlign: "center",
+                                }}
+                              />
+                            </Box>
+                          </Box>
+                          <CompositeChildParams params={child.config?.params} />
+                        </Box>
+                      ))}
+                    </Box>
+                  </Box>
+                </Box>
+              )}
+
+              {/* System-eval notice: the prompt is shown read-only so users
+                  can see what the built-in evaluation checks, but they don't
+                  need to (and can't) edit it. Without this copy, users are
+                  unsure whether they're supposed to write a prompt. */}
+              {isSystemEval &&
+                !isComposite &&
+                (evalType === "agent" || evalType === "llm") &&
+                dataReady && (
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.75,
+                      color: "text.secondary",
+                    }}
+                  >
+                    <Iconify
+                      icon="eva:info-outline"
+                      width={14}
+                      sx={{ flexShrink: 0 }}
+                    />
+                    <Typography
+                      variant="caption"
+                      sx={{ fontSize: "11px", lineHeight: 1.4 }}
+                    >
+                      Built-in evaluation: prompt is pre-configured and shown
+                      for reference only.
+                    </Typography>
+                  </Box>
+                )}
+
+              {/* Agent type — only render after data loads so Quill
+                  initializes with the actual instructions content */}
+              {!isComposite && evalType === "agent" && dataReady && (
+                <InstructionEditor
+                  openModelMenuSignal={openModelMenuSignal}
+                  key={`agent-${templateId}`}
+                  value={instructions}
+                  onChange={(v) => {
+                    setInstructions(v);
+                    setIsDirty(true);
+                  }}
+                  model={model}
+                  onModelChange={(v) => {
+                    setModel(v);
+                    setIsDirty(true);
+                  }}
+                  templateFormat={templateFormat}
+                  onTemplateFormatChange={setTemplateFormat}
+                  datasetColumns={datasetColumns}
+                  datasetJsonSchemas={datasetJsonSchemas}
+                  mappedVariables={sourceMapping}
+                  disabled={isInstructionsReadOnly}
+                  modelSelectorDisabled={false}
+                  mode={agentMode}
+                  onModeChange={(v) => {
+                    setAgentMode(v);
+                    setIsDirty(true);
+                  }}
+                  useInternet={useInternet}
+                  onUseInternetChange={(v) => {
+                    setUseInternet(v);
+                    setIsDirty(true);
+                  }}
+                  activeSummary={summaryType}
+                  onActiveSummaryChange={(v) => {
+                    setSummaryType(v);
+                    setIsDirty(true);
+                  }}
+                  activeConnectorIds={connectorIds}
+                  onActiveConnectorIdsChange={(v) => {
+                    setConnectorIds(v);
+                    setIsDirty(true);
+                  }}
+                  selectedKBs={knowledgeBaseIds}
+                  onSelectedKBsChange={(v) => {
+                    setKnowledgeBaseIds(v);
+                    setIsDirty(true);
+                  }}
+                  activeContextOptions={contextOptions}
+                  onActiveContextOptionsChange={(v) => {
+                    setContextOptions(v);
+                    setIsDirty(true);
+                  }}
+                  hideDatasetContextToggle={source === "task"}
+                />
+              )}
+
+              {/* LLM type. ModelSelector is rendered inline in
+                  LLMPromptEditor's top bar (alongside the template
+                  format selector) so LLM-as-a-judge has the same
+                  top-bar layout as the agent InstructionEditor. */}
+              {!isComposite && evalType === "llm" && dataReady && (
+                <>
+                  <LLMPromptEditor
+                    openModelMenuSignal={openModelMenuSignal}
+                    key={`llm-${templateId}`}
+                    messages={messages}
+                    onMessagesChange={(msgs) => {
+                      setMessages(msgs);
+                      const sysMsg = msgs.find((m) => m.role === "system");
+                      if (sysMsg) setInstructions(sysMsg.content);
+                      if (hasNonEmptyPromptMessage(msgs)) {
+                        setPromptMessageError("");
+                      }
+                      setIsDirty(true);
+                    }}
+                    templateFormat={templateFormat}
+                    onTemplateFormatChange={setTemplateFormat}
+                    model={model}
+                    onModelChange={(v) => {
+                      setModel(v);
+                      setIsDirty(true);
+                    }}
+                    datasetColumns={datasetColumns}
+                    datasetJsonSchemas={datasetJsonSchemas}
+                    disabled={isInstructionsReadOnly}
+                    modelSelectorDisabled={false}
+                  />
+                  <FewShotExamples
+                    selectedDatasets={fewShotExamples}
+                    onChange={(v) => {
+                      setFewShotExamples(v);
+                      setIsDirty(true);
+                    }}
+                    disabled={isInstructionsReadOnly}
+                  />
+                  {promptMessageError && (
+                    <Typography variant="caption" color="error.main">
+                      {promptMessageError}
+                    </Typography>
+                  )}
+                </>
+              )}
+
+              {/* Code type */}
+              {!isComposite && evalType === "code" && dataReady && (
+                <CodeEvalEditor
+                  key={`code-${templateId}`}
+                  code={code}
+                  setCode={(v) => {
+                    setCode(v);
+                    setIsDirty(true);
+                  }}
+                  codeLanguage={codeLanguage}
+                  setCodeLanguage={(v) => {
+                    setCodeLanguage(v);
+                    setIsDirty(true);
+                  }}
+                  datasetColumns={datasetColumns}
+                />
+              )}
+
+              {/* Output Type (not applicable to composites) */}
+              {isComposite ? null : evalType === "code" ? (
+                <Box>
+                  <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                    Scoring
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ mb: 1.5, display: "block" }}
+                  >
+                    Code evaluator returns a score between 0 and 1. Set a pass
+                    threshold below.
+                  </Typography>
+                  <Typography
+                    variant="subtitle2"
+                    sx={{ mb: 0.5, color: "text.primary" }}
+                  >
+                    Pass Threshold
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ mb: 1, display: "block" }}
+                  >
+                    Scores at or above this threshold are considered a pass.
+                  </Typography>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 2,
+                      px: 1,
+                    }}
+                  >
+                    <Typography variant="caption">0</Typography>
+                    <Slider
+                      value={Math.round(passThreshold * 100)}
+                      onChange={(_, val) => {
+                        setPassThreshold(val / 100);
+                        setIsDirty(true);
+                      }}
+                      min={0}
+                      max={100}
+                      size="small"
+                      valueLabelDisplay="auto"
+                      valueLabelFormat={(v) => `${Math.round(v)}%`}
+                      disabled={false}
+                    />
+                    <Typography variant="caption">100%</Typography>
+                  </Box>
+                </Box>
+              ) : (
+                <OutputTypeConfig
+                  outputType={outputType}
+                  onOutputTypeChange={(v) => {
+                    setOutputType(v);
+                    setIsDirty(true);
+                  }}
+                  choiceScores={choiceScores}
+                  onChoiceScoresChange={(v) => {
+                    setChoiceScores(v);
+                    setIsDirty(true);
+                  }}
+                  multiChoice={multiChoice}
+                  onMultiChoiceChange={(v) => {
+                    setMultiChoice(v);
+                    setIsDirty(true);
+                  }}
+                  passThreshold={passThreshold}
+                  onPassThresholdChange={(v) => {
+                    setPassThreshold(v);
+                    setIsDirty(true);
+                  }}
+                  disabled={isSystemEval}
+                  categoryLocked={isOutputTypeCategoryLocked}
+                />
+              )}
+
+              {/* Error Localization (single-eval concern, LLM/Agent only).
+                  Code evals don't support error localization — the feature
+                  introspects model traces, which code evals don't produce. */}
+              {!isComposite && evalType !== "code" && (
+                <CustomTooltip
+                  show={agentEvalLocked}
+                  type=""
+                  arrow
+                  title={ERROR_LOCALIZER_LOCKED_TOOLTIP}
+                >
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={errorLocalizerActive}
+                        disabled={agentEvalLocked}
+                        onChange={(e) => {
+                          setErrorLocalizerEnabled(e.target.checked);
+                          setIsDirty(true);
+                        }}
+                        size="small"
+                      />
+                    }
+                    label={
+                      <Box>
+                        <Typography variant="body2" fontWeight={500}>
+                          Error Localization
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ display: "block" }}
+                        >
+                          Pinpoints which parts of the input caused evaluation
+                          failures
+                        </Typography>
+                      </Box>
+                    }
+                    sx={{ alignItems: "flex-start" }}
+                  />
+                </CustomTooltip>
+              )}
+            </Box>
+          }
+          rightPanel={
+            <Box
+              sx={{
+                pl: 2,
+                width: "100%",
+                minWidth: 0,
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 0.75,
+                  mb: 1.5,
+                }}
+              >
+                <Typography
+                  variant="body2"
+                  fontWeight={600}
+                  sx={{ fontSize: "13px" }}
+                >
+                  {source === "composite"
+                    ? "Test Playground"
+                    : `${SOURCE_LABELS[source] || "Preview"} — Variable Mapping`}
+                </Typography>
+                {source === "task" && ROW_TYPE_LABELS[sourceRowType] && (
+                  <Chip
+                    label={ROW_TYPE_LABELS[sourceRowType]}
+                    size="small"
+                    sx={{
+                      height: 18,
+                      fontSize: "10px",
+                      bgcolor: "background.neutral",
+                      color: "text.secondary",
+                      "& .MuiChip-label": { px: 0.75 },
+                    }}
+                  />
+                )}
+              </Box>
+
+              {source === "task" && sourceId && (
+                <Box sx={{ mb: 1.5 }}>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ fontSize: "12px", display: "block", mb: 0.75 }}
+                  >
+                    Narrow down which{" "}
+                    {(ROW_TYPE_LABELS[sourceRowType] || "rows").toLowerCase()}{" "}
+                    this task runs on
+                  </Typography>
+                  <TaskFilterBar
+                    control={localFilterForm.control}
+                    setValue={localFilterForm.setValue}
+                    projectId={sourceId}
+                    isSimulator={String(sourceRowType || "")
+                      .toLowerCase()
+                      .startsWith("voice")}
+                    rowType={sourceRowType}
+                  />
+                </Box>
+              )}
+
+              <Box sx={{ flex: 1, overflow: "auto", pb: 2 }}>
+                {(source === "dataset" ||
+                  source === "experiment" ||
+                  source === "workbench" ||
+                  source === "run-experiment" ||
+                  source === "run-optimization") && (
+                  <DatasetTestMode
+                    ref={sourceRef}
+                    templateId={templateId}
+                    variables={variables}
+                    model={model}
+                    codeParams={codeParams}
+                    onTestResult={handleTestResult}
+                    onClearResult={handleClearTestResult}
+                    onColumnsLoaded={handleColumnsLoaded}
+                    initialDatasetId={sourceId}
+                    onReadyChange={handleSourceReadyChange}
+                    contextOptions={contextOptions}
+                    errorLocalizerEnabled={errorLocalizerActive}
+                    initialMapping={evalData?.mapping}
+                    {...compositeSourceModeProps}
+                    sourceColumns={
+                      source === "workbench" ? sourceColumns : null
+                    }
+                    extraColumns={extraColumns}
+                  />
+                )}
+                {source === "tracing" && (
+                  <TracingTestMode
+                    ref={sourceRef}
+                    templateId={templateId}
+                    model={model}
+                    variables={sourceModeVariables}
+                    codeParams={codeParams}
+                    onTestResult={handleTestResult}
+                    onClearResult={handleClearTestResult}
+                    onColumnsLoaded={handleColumnsLoaded}
+                    onReadyChange={handleSourceReadyChange}
+                    hasDataInjection={hasDataInjection}
+                    errorLocalizerEnabled={errorLocalizerActive}
+                    initialMapping={evalData?.mapping}
+                    {...compositeSourceModeProps}
+                  />
+                )}
+                {(source === "simulation" || source === "test") && (
+                  <SimulationTestMode
+                    ref={sourceRef}
+                    templateId={templateId}
+                    model={model}
+                    variables={sourceModeVariables}
+                    codeParams={codeParams}
+                    onTestResult={handleTestResult}
+                    onClearResult={handleClearTestResult}
+                    onColumnsLoaded={handleColumnsLoaded}
+                    onReadyChange={handleSourceReadyChange}
+                    errorLocalizerEnabled={errorLocalizerActive}
+                    initialMapping={evalData?.mapping}
+                    initialRunTestId={sourceId}
+                    {...compositeSourceModeProps}
+                  />
+                )}
+                {source === "create-simulate" && (
+                  <CreateSimulationPreviewMode
+                    ref={sourceRef}
+                    variables={variables}
+                    onTestResult={handleTestResult}
+                    onClearResult={handleClearTestResult}
+                    onColumnsLoaded={handleColumnsLoaded}
+                    onReadyChange={handleSourceReadyChange}
+                    previewData={sourcePreviewData}
+                    initialMapping={evalData?.mapping}
+                  />
+                )}
+                {source === "task" && (
+                  <TracingTestMode
+                    ref={sourceRef}
+                    templateId={templateId}
+                    model={model}
+                    variables={sourceModeVariables}
+                    codeParams={codeParams}
+                    onTestResult={handleTestResult}
+                    onClearResult={handleClearTestResult}
+                    onColumnsLoaded={handleColumnsLoaded}
+                    onReadyChange={handleSourceReadyChange}
+                    hasDataInjection={hasDataInjection}
+                    initialProjectId={sourceId}
+                    initialRowType={sourceRowType}
+                    initialMapping={evalData?.mapping}
+                    errorLocalizerEnabled={errorLocalizerActive}
+                    localFilters={localApiFilters}
+                    allowCustomFieldPath
+                    {...compositeSourceModeProps}
+                  />
+                )}
+                {source === "custom" && (
+                  <DatasetTestMode
+                    ref={sourceRef}
+                    templateId={templateId}
+                    variables={variables}
+                    model={model}
+                    codeParams={codeParams}
+                    onTestResult={handleTestResult}
+                    onClearResult={handleClearTestResult}
+                    onColumnsLoaded={handleColumnsLoaded}
+                    initialDatasetId={sourceId}
+                    onReadyChange={handleSourceReadyChange}
+                    contextOptions={contextOptions}
+                    errorLocalizerEnabled={errorLocalizerActive}
+                    {...compositeSourceModeProps}
+                  />
+                )}
+                {source === "composite" && (
+                  // Use the same rich preview component as the eval
+                  // details page so users can run the eval against any
+                  // source (dataset / tracing / simulation) before
+                  // committing it to the composite. The internal tabs
+                  // let them switch sources and pick a dataset/trace
+                  // even though the composite itself isn't bound yet.
+                  <TestPlayground
+                    ref={sourceRef}
+                    templateId={templateId}
+                    evalName={evalName || ""}
+                    instructions={evalType === "code" ? "" : instructions}
+                    evalType={evalType}
+                    isSystemEval={isSystemEval}
+                    requiredKeys={variables}
+                    showVersions={!(isSystemEval && evalType === "code")}
+                    onTestResult={handleTestResult}
+                    onColumnsLoaded={handleColumnsLoaded}
+                    isComposite={false}
+                    model={model}
+                    functionParamsSchema={functionParamsSchema}
+                    configParamsDesc={configParamsDesc}
+                    codeParams={codeParams}
+                    onCodeParamsChange={setCodeParams}
+                  />
+                )}
+
+                {source !== "composite" &&
+                  visibleCodeParamEntries.length > 0 && (
+                    <Box sx={{ mt: 2 }}>
+                      <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                        Parameters
+                      </Typography>
+                      {visibleCodeParamEntries.map(([key, schema]) => (
+                        <TextField
+                          key={key}
+                          fullWidth
+                          size="small"
+                          type={
+                            schema?.type === "integer" ||
+                            schema?.type === "number"
+                              ? "number"
+                              : "text"
+                          }
+                          label={key}
+                          value={codeParams[key] ?? ""}
+                          onChange={(e) => {
+                            // BE's `type: number` schema rejects strings; coerce here.
+                            const raw = e.target.value;
+                            const isNumeric =
+                              schema?.type === "integer" ||
+                              schema?.type === "number";
+                            let next = raw;
+                            if (isNumeric && raw !== "") {
+                              const n = Number(raw);
+                              if (!Number.isNaN(n)) next = n;
+                            }
+                            handleCodeParamChange(key, next);
+                          }}
+                          helperText={
+                            configParamsDesc?.[key] || schema?.description || ""
+                          }
+                          placeholder={
+                            schema?.nullable
+                              ? "optional"
+                              : String(schema?.default ?? "")
+                          }
+                          sx={{ mb: 1 }}
+                        />
+                      ))}
+                    </Box>
+                  )}
+              </Box>
+            </Box>
+          }
+        />
+      </Box>
+
+      {/* ── Bottom action bar (same as EvalDetailPage) ── */}
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "flex-end",
+          alignItems: "center",
+          gap: 1,
+          pt: 1.5,
+          borderTop: "1px solid",
+          borderColor: "divider",
+          flexShrink: 0,
+          pb: 0.5,
+        }}
+      >
+        {testError && (
+          <Typography
+            variant="caption"
+            color="error.main"
+            sx={{ mr: "auto", fontSize: "12px", maxWidth: 300 }}
+            noWrap
+          >
+            {testError}
+          </Typography>
+        )}
+        {testPassed && !testError && (
+          <Box
+            sx={{ display: "flex", alignItems: "center", gap: 0.5, mr: "auto" }}
+          >
+            <Iconify
+              icon="mdi:check-circle"
+              width={16}
+              sx={{ color: "success.main" }}
+            />
+            <Typography
+              variant="caption"
+              color="success.main"
+              sx={{ fontSize: "12px" }}
+            >
+              Test completed
+            </Typography>
+          </Box>
+        )}
+        {/* When composing a parent eval there's no dataset to map
+            against, so we drop the "map all variables" requirement and
+            let the user confirm the picked child with version + scoring
+            settings only. */}
+        {source !== "composite" &&
+          !sourceReady &&
+          !hasDataInjection &&
+          !testError &&
+          !testPassed && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ mr: "auto", fontSize: "11px" }}
+            >
+              Map all variables to enable testing & adding
+            </Typography>
+          )}
+        {isDirty && sourceReady && !testPassed && !testError && (
+          <Typography
+            variant="caption"
+            color="warning.main"
+            sx={{ mr: "auto", fontSize: "11px" }}
+          >
+            Unsaved changes
+          </Typography>
+        )}
+
+        {source !== "composite" &&
+          source !== "workbench" &&
+          source !== "create-simulate" &&
+          (() => {
+            // LLM evals may keep prompt content in User / Assistant turns
+            // even if the System-derived instructions field is empty.
+            const hasInstructions =
+              !!(instructions || "").trim() ||
+              (evalType === "llm" &&
+                Array.isArray(messages) &&
+                messages.some((m) => (m?.content || "").trim()));
+            const hasVariables =
+              Array.isArray(variables) && variables.length > 0;
+
+            let testDisabled = false;
+            let testDisabledReason = "";
+
+            if (isTesting) {
+              testDisabled = true;
+              testDisabledReason = "Test is already running.";
+            } else if (isComposite) {
+              // Composite templates have no instructions/variables of their
+              // own — they're driven by child evaluations + required_keys.
+              // Skip the content checks; sourceReady below still applies.
+            } else if (evalType === "code") {
+              if (!(code || "").trim()) {
+                testDisabled = true;
+                testDisabledReason = "Write some code before running a test.";
+              } else {
+                const missingRequiredParam = visibleCodeParamEntries.find(
+                  ([key, schema]) => {
+                    if (!schema?.required) return false;
+                    if (schema.nullable) return false;
+                    if (schema.default !== null && schema.default !== undefined)
+                      return false;
+                    const v = codeParams[key];
+                    return (
+                      v === undefined ||
+                      v === null ||
+                      (typeof v === "string" && v.trim() === "")
+                    );
+                  },
+                );
+                if (missingRequiredParam) {
+                  testDisabled = true;
+                  testDisabledReason = `Set ${missingRequiredParam[0]} before running a test.`;
+                }
+              }
+            } else if (!hasInstructions) {
+              testDisabled = true;
+              testDisabledReason = "Add instructions before running a test.";
+            } else if (!hasVariables && !hasDataInjection) {
+              testDisabled = true;
+              testDisabledReason =
+                templateFormat === "jinja"
+                  ? "Your Jinja template has no variables. Reference an input with a {{ variable }} expression or a {% ... %} block (e.g. {{ input }}) so test input can be passed in."
+                  : "Your Mustache template has no variables. Add a {{variable}} placeholder (e.g. {{input}}) so test input can be passed in.";
+            }
+
+            if (!testDisabled && !sourceReady && !hasDataInjection) {
+              testDisabled = true;
+              testDisabledReason = "Map all variables before running a test.";
+            }
+
+            return (
+              <ShowComponent condition={!hasDataInjection}>
+                <CustomTooltip
+                  show={testDisabled && !!testDisabledReason}
+                  type=""
+                  title={testDisabledReason}
+                  arrow
+                >
+                  <span>
+                    <Button
+                      variant="outlined"
+                      color="primary"
+                      size="small"
+                      onClick={handleTestEvaluation}
+                      disabled={testDisabled}
+                      startIcon={
+                        isTesting ? (
+                          <CircularProgress size={14} />
+                        ) : (
+                          <Iconify icon="mdi:play-circle-outline" width={16} />
+                        )
+                      }
+                      sx={{ textTransform: "none" }}
+                    >
+                      {isTesting ? "Testing..." : "Test Evaluation"}
+                    </Button>
+                  </span>
+                </CustomTooltip>
+              </ShowComponent>
+            );
+          })()}
+
+        {(() => {
+          // LLM evals may keep prompt content in User / Assistant turns
+          // even if the System-derived instructions field is empty.
+          const hasInstructions =
+            !!(instructions || "").trim() ||
+            (evalType === "llm" &&
+              Array.isArray(messages) &&
+              messages.some((m) => (m?.content || "").trim()));
+          const hasVariables = Array.isArray(variables) && variables.length > 0;
+          const actionLabel =
+            source === "composite"
+              ? "adding this evaluation to the composite"
+              : isEditMode
+                ? "updating this evaluation"
+                : "adding this evaluation";
+
+          let addDisabled = false;
+          let addDisabledReason = "";
+
+          if (isComposite) {
+            // Composite templates have no instructions/variables of their
+            // own — they're driven by child evaluations + required_keys.
+            // Skip the content checks; sourceReady below still applies.
+          } else if (evalType === "code") {
+            if (!(code || "").trim()) {
+              addDisabled = true;
+              addDisabledReason = `Write some code before ${actionLabel}.`;
+            } else {
+              // Mirror BE's required-param check so the round-trip never happens.
+              const missingRequiredParam = visibleCodeParamEntries.find(
+                ([key, schema]) => {
+                  if (!schema?.required) return false;
+                  if (schema.nullable) return false;
+                  if (schema.default !== null && schema.default !== undefined)
+                    return false;
+                  const v = codeParams[key];
+                  return (
+                    v === undefined ||
+                    v === null ||
+                    (typeof v === "string" && v.trim() === "")
+                  );
+                },
+              );
+              if (missingRequiredParam) {
+                addDisabled = true;
+                addDisabledReason = `Set ${missingRequiredParam[0]} before ${actionLabel}.`;
+              }
+            }
+          } else if (!hasInstructions) {
+            addDisabled = true;
+            addDisabledReason = `Add instructions before ${actionLabel}.`;
+          } else if (!hasVariables && !hasDataInjection) {
+            addDisabled = true;
+            addDisabledReason =
+              templateFormat === "jinja"
+                ? `Your Jinja template has no variables. Reference an input with a {{ variable }} expression or a {% ... %} block (e.g. {{ input }}) before ${actionLabel}.`
+                : `Your Mustache template has no variables. Add a {{variable}} placeholder (e.g. {{input}}) before ${actionLabel}.`;
+          }
+
+          if (
+            !addDisabled &&
+            source !== "composite" &&
+            !sourceReady &&
+            !hasDataInjection
+          ) {
+            addDisabled = true;
+            addDisabledReason = `Map all variables before ${actionLabel}.`;
+          }
+
+          return (
+            <CustomTooltip
+              show={addDisabled && !!addDisabledReason}
+              type=""
+              title={addDisabledReason}
+              arrow
+            >
+              <span>
+                <LoadingButton
+                  variant="contained"
+                  color="primary"
+                  size="small"
+                  loading={isSaving}
+                  onClick={handleAdd}
+                  disabled={addDisabled}
+                  sx={{ textTransform: "none" }}
+                >
+                  {source === "composite"
+                    ? "Add to Composite"
+                    : isEditMode
+                      ? "Update Evaluation"
+                      : "Add Evaluation"}
+                </LoadingButton>
+              </span>
+            </CustomTooltip>
+          );
+        })()}
+      </Box>
+    </Box>
+  );
+};
+
+EvalPickerConfigFull.propTypes = {
+  evalData: PropTypes.object.isRequired,
+  onBack: PropTypes.func.isRequired,
+  onSave: PropTypes.func.isRequired,
+  isSaving: PropTypes.bool,
+};
+
+export default EvalPickerConfigFull;

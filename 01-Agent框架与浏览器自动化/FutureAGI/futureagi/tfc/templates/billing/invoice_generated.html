@@ -1,0 +1,34 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}Invoice Ready — Future AGI{% endblock %}
+{% block preheader %}Your Future AGI invoice for {{ period }} — {{ total }}.{% endblock %}
+{% block txid %}◦ INVOICE / ISSUED{% endblock %}
+{% block content %}
+<h1 class="hx" style="font-family:'Inter',sans-serif; font-size:26px; line-height:1.2; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:0 0 14px 0;">Invoice ready</h1>
+<p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:0 0 16px 0;">
+  Your Future AGI invoice for <strong style="color:#fafafa;">{{ period }}</strong> has been generated.
+</p>
+
+<div class="log" style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:10px; padding:20px 22px; margin:22px 0; font-family:'Inter',sans-serif; color:#c7c7cc;">
+  <p class="log-hdr" style="margin:0 0 14px 0; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+    <span style="display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:10px; vertical-align:middle; background:#a1a1aa;"></span>Invoice<span style="color:#71717a; font-weight:500; margin-left:6px;">· Summary</span>
+  </p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      <td style="padding:8px 0; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:#71717a;">Billing period</td>
+      <td style="padding:8px 0; text-align:right; font-family:'Inter',sans-serif; font-size:14px; font-weight:500; color:#fafafa;">{{ period }}</td>
+    </tr>
+    <tr>
+      <td style="padding:8px 0; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:#71717a; border-top:1px solid #1a1a1d;">Total amount</td>
+      <td style="padding:8px 0; text-align:right; font-family:'JetBrains Mono',monospace; font-size:15px; font-weight:600; color:#fafafa; border-top:1px solid #1a1a1d;">{{ total }}</td>
+    </tr>
+  </table>
+</div>
+
+<p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:0 0 20px 0;">
+  Your card on file will be charged automatically. Full line-item breakdown is in your billing dashboard.
+</p>
+
+<div style="margin: 8px 0 0 0;">
+  {% include "billing/_button.html" with url=base_url|add:"/dashboard/settings/billing" text="View invoice" variant="primary" %}
+</div>
+{% endblock %}

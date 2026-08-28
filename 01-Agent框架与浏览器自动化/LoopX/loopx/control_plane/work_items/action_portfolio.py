@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
+from .planning_inventory import (
+    build_quota_planning_inventory_request,
+    compact_planning_candidate,
+)
+
+ACTION_SELECTION_QUALIFICATION_REQUEST_SCHEMA_VERSION = (
+    "action_selection_qualification_request_v0"
+)
+ACTION_SELECTION_QUALIFICATION_SCHEMA_VERSION = "action_selection_qualification_v0"
+QUOTA_PLANNING_PACKET_REQUEST_SCHEMA_VERSION = "quota_planning_packet_request_v0"
+QUOTA_PLANNING_PACKET_SCHEMA_VERSION = "quota_planning_packet_v0"
+
+
+def _compact_candidate(value: Mapping[str, Any]) -> dict[str, Any] | None:
+    return compact_planning_candidate(value)
+
+
+def _frontier_acceptance_gaps(
+    projection: Mapping[str, Any] | None,
+) -> list[Any]:
+    if not isinstance(projection, Mapping):
+        return []
+    acceptance_gaps = projection.get("acceptance_gaps")
+    return acceptance_gaps if isinstance(acceptance_gaps, list) else []
+
+
+def build_quota_planning_packet(
+    *,
+    projection_enabled: bool,
+    include_detail: bool,
+    goal_id: str,
+    selected: Mapping[str, Any] | None,
+    agent_id: str | None,
+    agent_todo_summary: Mapping[str, Any] | None,
+    agent_todo_source_items: list[dict[str, Any]],
+    capability_gate: Mapping[str, Any] | None,
+    blocked_priority_fallback: Mapping[str, Any] | None,
+    goal_frontier_projection: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Project every requested planning lens through one TypeScript request."""
+
+    if not projection_enabled and not include_detail:
+        return {}
+    inventory_request = build_quota_planning_inventory_request(
+        goal_id=goal_id,
+        selected=selected,
+        agent_id=agent_id,
+        agent_todo_summary=agent_todo_summary,
+        agent_todo_source_items=agent_todo_source_items,
+        capability_gate=capability_gate,
+        blocked_priority_fallback=blocked_priority_fallback,
+    )
+    if inventory_request is None:
+        return {}
+    try:
+        projected = effect_runtime_result(
+            "work_item.action_portfolio.project",
+            {
+                "schema_version": QUOTA_PLANNING_PACKET_REQUEST_SCHEMA_VERSION,
+                "planning_inventory_request": inventory_request,
+                "projection_enabled": projection_enabled,
+                "include_detail": include_detail,
+                "acceptance_gaps": _frontier_acceptance_gaps(
+                    goal_frontier_projection
+                ),
+            },
+        )
+    except EffectRuntimeRejected as exc:
+        raise ValueError(str(exc)) from None
+    if not isinstance(projected, Mapping) or (
+        projected.get("schema_version") != QUOTA_PLANNING_PACKET_SCHEMA_VERSION
+    ):
+        raise RuntimeError("TypeScript quota planning packet shape mismatch")
+    result: dict[str, Any] = {}
+    for field in (
+        "action_portfolio",
+        "planning_horizon",
+        "agent_todo_planning_inventory",
+    ):
+        value = projected.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, Mapping):
+            raise TypeError(f"TypeScript quota planning packet {field} mismatch")
+        result[field] = dict(value)
+    return result
+
+
+def qualify_action_selection(
+    *,
+    requested_todo_id: str,
+    candidate: Mapping[str, Any] | None,
+    should_run: bool,
+    normal_delivery_allowed: bool,
+    delivery_preemptions: list[str],
+) -> dict[str, Any]:
+    """Adapt current Python projections into the TS-owned selection reducer."""
+
+    compact_candidate = _compact_candidate(candidate) if candidate is not None else None
+    try:
+        result = effect_runtime_result(
+            "work_item.action_selection.qualify",
+            {
+                "schema_version": ACTION_SELECTION_QUALIFICATION_REQUEST_SCHEMA_VERSION,
+                "requested_todo_id": requested_todo_id,
+                "candidate": compact_candidate,
+                "should_run": should_run,
+                "normal_delivery_allowed": normal_delivery_allowed,
+                "delivery_preemptions": delivery_preemptions,
+            },
+        )
+    except EffectRuntimeRejected as exc:
+        raise ValueError(str(exc)) from None
+    if not isinstance(result, Mapping) or (
+        result.get("schema_version") != ACTION_SELECTION_QUALIFICATION_SCHEMA_VERSION
+    ):
+        raise RuntimeError("TypeScript action-selection qualification shape mismatch")
+    return dict(result)

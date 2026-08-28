@@ -1,0 +1,15 @@
+meta {
+  name: Get Data points
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/data-points/6ea5d672-7d86-404d-b730-0007251f7997/Training-v1/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

@@ -1,0 +1,112 @@
+"""Billing Temporal activities and schedules.
+
+Schedules: budget catch-up (15 min), monthly closing (``0 0 1 * *``).
+Dunning is owned by Stripe Revenue Recovery — no scheduled checks here.
+Meter events fire at invoice-close inside the monthly closing activity —
+no hourly catch-up. The usage consumer is a separate long-lived
+workflow, not a schedule.
+"""
+
+from datetime import datetime, timezone
+from typing import Any, List
+
+import structlog
+
+from tfc.temporal.drop_in import temporal_activity
+from tfc.temporal.schedules.config import ScheduleConfig
+
+logger = structlog.get_logger(__name__)
+
+
+def _monthly_closing_workflow() -> Any:
+    """Lazy import — workflow module pulls in temporalio's sandbox guards."""
+    from tfc.temporal.billing.workflows import MonthlyClosingWorkflow
+
+    return MonthlyClosingWorkflow
+
+
+@temporal_activity(time_limit=300, queue="default")
+def evaluate_budgets_catchup_activity():
+    """Evaluate all active budgets that haven't fired this period.
+
+    Called every 15 minutes by Temporal schedule. Catches budgets missed by consumer:
+    - Consumer was down when threshold crossed
+    - Budget created after usage already exceeded threshold
+    - total_spend scope budgets (require BillingEngine cost calculation)
+    """
+    from accounts.models.organization import Organization
+
+    try:
+        from ee.usage.models.usage import UsageBudget, UsageSummary
+    except ImportError:
+        UsageBudget = None
+        UsageSummary = None
+    try:
+        from ee.cloud.billing.budget_enforcement import (
+            evaluate_budgets_catchup,
+            evaluate_total_spend_budget,
+        )
+    except ImportError:
+        evaluate_budgets_catchup = None
+        evaluate_total_spend_budget = None
+
+    if evaluate_budgets_catchup is None or evaluate_total_spend_budget is None:
+        # Budget enforcement lives in the private cloud overlay (ee/cloud/),
+        # absent from OSS/self-hosted images. Skip instead of calling None per
+        # org every 15 min and spamming the failure log.
+        logger.info("budget_catchup_skipped_billing_is_cloud_only")
+        return
+
+    period = datetime.now(tz=timezone.utc).strftime("%Y-%m")
+
+    active_budgets = (
+        UsageBudget.objects.filter(
+            is_active=True,
+            deleted=False,
+        )
+        .exclude(last_triggered_period=period)
+        .values_list("organization_id", "scope")
+        .distinct()
+    )
+
+    evaluated = 0
+    for org_id, scope in active_budgets.iterator(chunk_size=500):
+        try:
+            if scope == "total_spend":
+                evaluate_total_spend_budget(str(org_id), period)
+            else:
+                evaluate_budgets_catchup(str(org_id), scope, period)
+            evaluated += 1
+        except Exception:
+            logger.exception(
+                "budget_catchup_evaluation_failed",
+                org_id=str(org_id),
+                scope=scope,
+                period=period,
+            )
+
+    return {"evaluated": evaluated, "period": period}
+
+
+BILLING_SCHEDULES: List[ScheduleConfig] = [
+    # sync-usage-to-db: REMOVED — now runs inside UsageConsumerWorkflow (every 60s)
+    ScheduleConfig(
+        schedule_id="budget-catchup",
+        activity_name="evaluate_budgets_catchup_activity",
+        interval_seconds=900,
+        queue="default",
+        description="Evaluate budgets missed by consumer (every 15 min)",
+    ),
+    ScheduleConfig(
+        schedule_id="monthly-closing",
+        activity_name="monthly_closing_activity",
+        cron_expression="0 0 1 * *",
+        catchup_window_seconds=7 * 86400,
+        queue="tasks_s",
+        description=(
+            "Flush closing-period Redis usage to UsageSummary, then generate "
+            "invoices for all paid orgs."
+        ),
+        workflow_class=_monthly_closing_workflow(),
+    ),
+]

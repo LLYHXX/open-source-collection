@@ -1,0 +1,15 @@
+meta {
+  name: get api key
+  type: http
+  seq: 1
+}
+
+get {
+  url: http://localhost:8000/model-hub/api-keys/0df97e24-4e57-4ba9-aec9-e8c1f63ef7b4/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

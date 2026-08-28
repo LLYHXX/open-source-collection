@@ -1,0 +1,931 @@
+import { LoadingButton } from "@mui/lab";
+import {
+  Box,
+  Button,
+  Divider,
+  styled,
+  Tab,
+  Tabs,
+  Typography,
+  Link,
+  Stack,
+} from "@mui/material";
+import { useMutation, useQuery, useInfiniteQuery } from "@tanstack/react-query";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useForm, useWatch } from "react-hook-form";
+import FormTextFieldV2 from "src/components/FormTextField/FormTextFieldV2";
+import { FormSearchSelectFieldControl } from "src/components/FromSearchSelectField";
+import SvgColor from "src/components/svg-color";
+import axios, { endpoints } from "src/utils/axios";
+import { getVersionLabel } from "src/utils/utils";
+import { ShowComponent } from "src/components/show";
+import WorkflowBuilderOption from "./WorkflowBuilderOption";
+import ImportDatasetOption from "./ImportDatasetOption";
+import UploadScriptOption from "./UploadScriptOption";
+import CallChatSOPOption from "./CallChatSOPOption";
+import {
+  CreateScenarioDefaultValues,
+  CreateScenarioType,
+  CreateScenarioValidationSchema,
+  ScenarioTypeWiseDefaultValues,
+  SourceType,
+  getScenarioDateString,
+  extractVersionFromScenarioName,
+} from "./common";
+import { useLocation, useNavigate } from "react-router-dom";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useSnackbar } from "src/components/snackbar";
+import CreateScenarioHeader from "./CreateScenarioHeader";
+import PersonaSection from "./PersonaSection";
+import ColumnSection from "./scenario-detail/ColumnSection";
+import ResourcesSection from "./ResourcesSection";
+import CustomTooltip from "src/components/tooltip";
+import { useAgentDefinitionVersions } from "src/api/agent-definition/agent-definition-version";
+import CustomInstruction from "./CustomInstruction";
+import { useAgentDefinitions } from "src/components/run-tests/common";
+import ModalWrapper from "src/components/ModalWrapper/ModalWrapper";
+import CategorizedSourceDropdown from "./CategorizedSourceDropdown";
+
+const tabOptions = [
+  {
+    label: "Workflow builder",
+    value: "graph",
+    tooltipText:
+      "The Workflow Builder is a flow creation tool, offering automatic and manual scenario generation capabilities",
+  },
+  {
+    label: "Import datasets",
+    value: "dataset",
+    tooltipText:
+      "Dataset scenarios use structured data (CSV, JSON, or Excel) to define multiple test cases.",
+  },
+  {
+    label: "Upload script",
+    value: "script",
+    tooltipText:
+      "Import existing call scripts/create detailed conversation scripts to test specific interactions.",
+  },
+  {
+    label: "Call / Chat SOP",
+    value: "sop",
+    tooltipText:
+      "Create Standard Operating Procedure (SOP) scenarios for call center and chat interactions.",
+  },
+];
+
+const CustomTabs = styled(Tabs)(({ theme }) => ({
+  backgroundColor: theme.palette.divider,
+  display: "inline-flex",
+  width: "auto",
+  borderRadius: "4px",
+  padding: "4px",
+  minHeight: "36px !important",
+  height: "36px !important",
+  "& .MuiTabs-indicator": {
+    backgroundColor: theme.palette.background.paper,
+    height: "100%",
+    borderRadius: "4px",
+  },
+}));
+
+const CustomTab = styled(Tab)(({ theme }) => ({
+  zIndex: 1,
+  marginRight: "4px !important",
+  padding: " 4px 12px",
+  minHeight: "30px !important",
+  ...theme.typography.s2_1,
+}));
+
+const CreateScenarioView = () => {
+  const location = useLocation();
+  const defaultAgentDefinitionId = location?.state?.agentDefinitionId; //the id which we get from the url when user click on create scenario from agent definition details page, we will use this id to set the default source for the scenario
+  const {
+    control,
+    setValue,
+    handleSubmit,
+    formState: { errors },
+    clearErrors,
+  } = useForm({
+    defaultValues: { ...CreateScenarioDefaultValues },
+    resolver: zodResolver(CreateScenarioValidationSchema),
+  });
+  const { enqueueSnackbar } = useSnackbar();
+
+  const navigate = useNavigate();
+
+  const currentTab = useWatch({ control, name: "kind" });
+  const selectedAgent = useWatch({ control, name: "agentDefinitionId" });
+  const agentType = useWatch({ control, name: "agentType" });
+  const persona = useWatch({ control, name: "personas" });
+  const scenarioConfig = useWatch({ control, name: "config" });
+  const sourceType = useWatch({ control, name: "sourceType" });
+  const selectedPromptTemplate = useWatch({
+    control,
+    name: "promptTemplateId",
+  });
+  const selectedSourceId = useWatch({ control, name: "sourceId" });
+  const sourceLabel = useWatch({ control, name: "sourceLabel" });
+  const _selectedAgentVersionId = useWatch({
+    control,
+    name: "agentDefinitionVersionId",
+  });
+  const _selectedPromptVersionId = useWatch({
+    control,
+    name: "promptVersionId",
+  });
+  const _scenarioName = useWatch({ control, name: "name" });
+
+  // Track if user has manually edited the name
+  const userEditedName = useRef(false);
+  const lastAutoGeneratedName = useRef("");
+
+  const [warnModalOpen, setWarnModalOpen] = useState({
+    open: false,
+    title: "Unsupported Content Will Be Removed",
+    subtitle:
+      "This action requires removing unsupported content.\n\nAre you sure you want to continue?",
+    e: null,
+  });
+
+  const {
+    data: agentDefVersions,
+    fetchNextPage: fetchNextAgentVersions,
+    isFetchingNextPage: isFetchingAgentVersionsNextPage,
+    isFetching: isFetchingAgentVersions,
+  } = useAgentDefinitionVersions({
+    selectedAgentId: selectedAgent,
+  });
+
+  const versionOptions = useMemo(() => {
+    return agentDefVersions?.pages?.reduce((acc, curr) => {
+      const newOptions =
+        curr.results?.map((result) => ({
+          label: result.version_name_display,
+          value: result.id,
+        })) ?? [];
+      return [...acc, ...newOptions];
+    }, []);
+  }, [agentDefVersions]);
+
+  // Fetch user-created prompts (from prompt-executions endpoint)
+  const {
+    data: promptTemplatesData,
+    fetchNextPage: fetchNextPrompts,
+    isFetchingNextPage: isFetchingPromptsNextPage,
+    isLoading: isLoadingPrompts,
+  } = useInfiniteQuery({
+    queryKey: ["user-prompts-for-scenario"],
+    queryFn: async ({ pageParam = 1 }) => {
+      const response = await axios.get(
+        endpoints.develop.runPrompt.promptExecutions(),
+        {
+          params: {
+            page: pageParam,
+            page_size: 20,
+          },
+        },
+      );
+      return response.data;
+    },
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => {
+      const currentPage = lastPage?.current_page;
+      const totalPages = lastPage?.total_pages;
+      if (currentPage < totalPages) {
+        return currentPage + 1;
+      }
+      return undefined;
+    },
+  });
+
+  const promptTemplates = useMemo(() => {
+    if (!promptTemplatesData?.pages) return [];
+    return promptTemplatesData.pages.flatMap((page) => {
+      const items = page?.results || [];
+      return items.map((item) => ({
+        label: item.name,
+        value: item.id,
+      }));
+    });
+  }, [promptTemplatesData]);
+
+  // Fetch prompt versions when a prompt template is selected
+  const { data: promptVersionsData, isLoading: isLoadingPromptVersions } =
+    useQuery({
+      queryKey: ["prompt-versions-for-scenario", selectedPromptTemplate],
+      queryFn: async () => {
+        const res = await axios.get(
+          endpoints.develop.runPrompt.getPromptVersions(),
+          {
+            params: { template_id: selectedPromptTemplate },
+          },
+        );
+        return res.data;
+      },
+      enabled: !!selectedPromptTemplate && sourceType === SourceType.PROMPT,
+    });
+
+  const promptVersionOptions = useMemo(() => {
+    const results = promptVersionsData?.results || promptVersionsData || [];
+    return results.map((version) => {
+      const versionLabel = getVersionLabel(version.template_version);
+      return {
+        label: versionLabel,
+        value: version.id,
+        isDefault: version.isDefault,
+      };
+    });
+  }, [promptVersionsData]);
+
+  const { mutateAsync, isPending: isSubmittingScenario } = useMutation({
+    mutationFn: (data) => axios.post(endpoints.scenarios.create, data),
+  });
+
+  const { mutateAsync: uploadFile, isPending: isUploadingFile } = useMutation({
+    mutationFn: (file) => {
+      const formData = new FormData();
+      formData.append("files", file.file);
+
+      formData.append(
+        "type",
+        file?.file?.type === "application/pdf" ? "pdf" : "text",
+      );
+
+      return axios.post(endpoints.misc.uploadFile, formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+    },
+  });
+
+  const overallLoading = isSubmittingScenario || isUploadingFile;
+
+  const {
+    agentDefinitions,
+    fetchNextPage,
+    isLoading: agentDefinitionsLoading,
+    isFetchingNextPage,
+  } = useAgentDefinitions(null, defaultAgentDefinitionId);
+
+  // Combined source options (Agent Definitions + Prompts)
+  const combinedSourceOptions = useMemo(() => {
+    const agentOptions = agentDefinitionsLoading
+      ? []
+      : agentDefinitions?.map((agent) => ({
+          label: agent?.agent_name,
+          value: agent?.id,
+          sourceType: SourceType.AGENT_DEFINITION,
+          agentType: agent?.agent_type,
+        })) ?? [];
+
+    const promptOptions = isLoadingPrompts
+      ? []
+      : promptTemplates?.map((prompt) => ({
+          label: prompt.label,
+          value: prompt.value,
+          sourceType: SourceType.PROMPT,
+          agentType: "text",
+        })) ?? [];
+
+    return [...agentOptions, ...promptOptions];
+  }, [
+    agentDefinitions,
+    agentDefinitionsLoading,
+    promptTemplates,
+    isLoadingPrompts,
+  ]);
+
+  // Check if versions are loading
+  const isLoadingVersions =
+    sourceType === SourceType.AGENT_DEFINITION
+      ? isFetchingAgentVersions
+      : isLoadingPromptVersions;
+
+  const handleChangeScenarioType = (value) => {
+    setValue("kind", value);
+    setValue("config", { ...ScenarioTypeWiseDefaultValues[value] });
+  };
+
+  const previousSourceId = useRef(null);
+
+  const applySourceChange = (selectedOption) => {
+    const newSourceType = selectedOption?.sourceType;
+    const newSourceId = selectedOption?.value;
+    const newAgentType = selectedOption?.agentType;
+    const newSourceLabel = selectedOption?.label;
+
+
+    if (!userEditedName.current) {
+      lastAutoGeneratedName.current = "";
+    }
+
+    setValue("sourceId", newSourceId);
+    setValue("sourceType", newSourceType);
+    setValue("agentType", newAgentType);
+    setValue("sourceLabel", newSourceLabel);
+
+    // Clear and set the appropriate fields based on source type
+    if (newSourceType === SourceType.AGENT_DEFINITION) {
+      setValue("agentDefinitionId", newSourceId);
+      setValue("agentDefinitionVersionId", "");
+      setValue("promptTemplateId", "");
+      setValue("promptVersionId", "");
+      clearErrors([
+        "agentDefinitionVersionId",
+        "promptTemplateId",
+        "promptVersionId",
+      ]);
+    } else if (newSourceType === SourceType.PROMPT) {
+      setValue("promptTemplateId", newSourceId);
+      setValue("promptVersionId", "");
+      setValue("agentDefinitionId", "");
+      setValue("agentDefinitionVersionId", "");
+      clearErrors([
+        "promptVersionId",
+        "agentDefinitionId",
+        "agentDefinitionVersionId",
+      ]);
+    }
+  };
+
+  const handleSourceChange = (e) => {
+    const selectedOption = e?.target?.option;
+    const newAgentType = selectedOption?.agentType;
+
+    // If no current agent type or same agent type, apply directly
+    if (!agentType || agentType === newAgentType) {
+      applySourceChange(selectedOption);
+      return;
+    }
+
+    // Check if there are personas or manual workflows that would be removed
+    const hasPersonas = persona?.length > 0;
+    const hasManualWorkflows =
+      !scenarioConfig?.generateGraph && scenarioConfig !== null;
+
+    if (hasPersonas || hasManualWorkflows) {
+      let title, subtitle;
+
+      if (hasPersonas && hasManualWorkflows) {
+        title = "Personas and Manual Workflows Will Be Removed";
+        subtitle =
+          "This action requires removing both personas and manually created workflows, as they are not supported.\n\nAre you sure you want to remove the personas and workflows and continue?";
+      } else if (hasPersonas) {
+        title = "Personas Will Be Removed";
+        subtitle =
+          "This action requires removing the selected personas, as they are not supported.\n\nAre you sure you want to remove the personas and continue?";
+      } else if (hasManualWorkflows) {
+        title = "Manual Workflows Will Be Removed";
+        subtitle =
+          "This action requires removing manually created workflows, as they are not supported.\n\nAre you sure you want to remove the workflows and continue?";
+      }
+      previousSourceId.current = selectedSourceId;
+
+      setWarnModalOpen({ open: true, title, subtitle, e });
+      return;
+    }
+
+    applySourceChange(selectedOption);
+  };
+
+  const handelCreateScenario = async (data) => {
+    const transformedColumns =
+      data?.columns?.map((col) => ({
+        name: col?.name,
+        data_type: col?.type,
+        description: col?.description,
+      })) ?? [];
+    // Explicitly map camelCase config fields to snake_case so that spreading
+    // form state does not leak camelCase keys into the request body.
+    const snakeCaseConfig = {};
+    if (data?.config) {
+      if (data.kind === CreateScenarioType.DATASET) {
+        if (data.config.datasetId !== undefined) {
+          snakeCaseConfig.dataset_id = data.config.datasetId;
+        }
+      } else if (data.kind === CreateScenarioType.GRAPH) {
+        if (data.config.graph !== undefined) {
+          snakeCaseConfig.graph = data.config.graph;
+        }
+        if (data.config.generateGraph !== undefined) {
+          snakeCaseConfig.generate_graph = data.config.generateGraph;
+        }
+      }
+      // SCRIPT/SOP config carries File objects that are handled below and
+      // replaced by the uploaded `script_url`.
+    }
+    const payload = {
+      name: data?.name,
+      description: data?.description,
+      source_type: data?.sourceType,
+      kind: data?.kind,
+      no_of_rows: data?.noOfRows || 20,
+      add_persona_automatically: data?.addPersonaAutomatically,
+      custom_columns: transformedColumns,
+      ...(!data.customInstructionDisabled && {
+        custom_instruction: data?.customInstruction,
+      }),
+      ...snakeCaseConfig,
+    };
+
+    // Add agent definition or prompt fields based on source type
+    if (data?.sourceType === SourceType.AGENT_DEFINITION) {
+      payload.agent_definition_id = data?.agentDefinitionId;
+      payload.agent_definition_version_id = data?.agentDefinitionVersionId;
+    } else if (data?.sourceType === SourceType.PROMPT) {
+      payload.prompt_template_id = data?.promptTemplateId;
+      payload.prompt_version_id = data?.promptVersionId;
+    }
+
+    if (!payload.add_persona_automatically) {
+      payload.personas = data?.personas;
+    }
+
+    if (
+      data?.kind === CreateScenarioType.SCRIPT ||
+      data?.kind === CreateScenarioType.SOP
+    ) {
+      try {
+        const uploadResults = await uploadFile(
+          data?.config?.scriptUrl || data?.config?.sopUrl,
+        );
+
+        const url = uploadResults?.data?.result?.[0]?.url;
+        if (data?.kind === CreateScenarioType.SCRIPT) {
+          payload.script_url = url;
+        } else if (data?.kind === CreateScenarioType.SOP) {
+          delete payload.sop_url;
+          payload.kind = CreateScenarioType.SCRIPT;
+          payload.script_url = url;
+        }
+      } catch (error) {
+        enqueueSnackbar(error?.message, { variant: "error" });
+        return;
+      }
+    }
+    // @ts-ignore
+    try {
+      const data = await mutateAsync(payload);
+      navigate(`/dashboard/simulate/scenarios/${data?.data?.scenario?.id}`, {
+        replace: true,
+      });
+    } catch (error) {
+      enqueueSnackbar(error?.message, { variant: "error" });
+      return;
+    }
+  };
+
+  useEffect(() => {
+    if (
+      versionOptions?.length > 0 &&
+      sourceType === SourceType.AGENT_DEFINITION
+    ) {
+      setValue("agentDefinitionVersionId", versionOptions[0]?.value);
+    }
+  }, [setValue, versionOptions, sourceType]);
+
+  // Set default prompt version when prompt versions are loaded
+  useEffect(() => {
+    if (promptVersionOptions?.length > 0 && sourceType === SourceType.PROMPT) {
+      // Prefer default version if available
+      const defaultVersion = promptVersionOptions.find((v) => v.isDefault);
+      setValue(
+        "promptVersionId",
+        defaultVersion?.value || promptVersionOptions[0]?.value,
+      );
+    }
+  }, [setValue, promptVersionOptions, sourceType]);
+
+  // Query existing scenarios to determine next version number
+  const baseNamePattern = useMemo(() => {
+    if (!sourceLabel) return null;
+    return `${sourceLabel}_${getScenarioDateString()}`;
+  }, [sourceLabel]);
+
+  // TODO: Future optimization - if users create >20 scenarios with the same
+  // agent/date pattern, add a backend endpoint that returns just the max version
+  // number instead of fetching all matching scenarios.
+  const { data: existingScenariosData } = useQuery({
+    queryKey: ["scenarios-for-naming", baseNamePattern],
+    queryFn: () =>
+      axios.get(endpoints.scenarios.list, {
+        params: {
+          search: baseNamePattern,
+          limit: 20,
+        },
+      }),
+    enabled: !!baseNamePattern && !userEditedName.current,
+    select: (d) => d.data?.results || [],
+  });
+
+  // Auto-generate scenario name based on source and date with version
+  useEffect(() => {
+    // Only auto-generate if user hasn't manually edited the name
+    if (userEditedName.current) return;
+    if (!sourceLabel) return;
+
+    const basePattern = `${sourceLabel}_${getScenarioDateString()}`;
+
+    // Find the highest existing version number for this pattern
+    let maxVersion = 0;
+    if (existingScenariosData?.length > 0) {
+      existingScenariosData.forEach((scenario) => {
+        const version = extractVersionFromScenarioName(
+          scenario.name,
+          basePattern,
+        );
+        if (version > maxVersion) {
+          maxVersion = version;
+        }
+      });
+    }
+
+    // Generate name with next version number
+    const nextVersion = maxVersion + 1;
+    const generatedName = `${basePattern}v${nextVersion}`;
+    lastAutoGeneratedName.current = generatedName;
+    setValue("name", generatedName);
+  }, [sourceLabel, existingScenariosData, setValue]);
+
+  // Track manual name changes
+  const handleNameChange = (e) => {
+    const newValue = e.target.value;
+    // Mark as user-edited if the value differs from the auto-generated name
+    if (newValue !== lastAutoGeneratedName.current) {
+      userEditedName.current = true;
+    }
+  };
+
+  const handleConfirmWarnModal = () => {
+    const defaultConfig =
+      ScenarioTypeWiseDefaultValues[CreateScenarioType.GRAPH];
+    const selectedOption = warnModalOpen?.e?.target?.option;
+
+    // Apply the source change
+    applySourceChange(selectedOption);
+
+    // Clear personas and reset config
+    setValue("personas", []);
+    setValue("config", { ...defaultConfig });
+
+    // Close the modal
+    setWarnModalOpen({
+      open: false,
+      title: "Unsupported Content Will Be Removed",
+      subtitle:
+        "This action requires removing unsupported content.\n\nAre you sure you want to continue?",
+      e: null,
+    });
+    previousSourceId.current = null;
+  };
+
+  const handleCloseWarnModal = () => {
+    // Reset to previous source if user cancels
+    setValue("sourceId", previousSourceId.current);
+    setWarnModalOpen({
+      open: false,
+      title: "Unsupported Content Will Be Removed",
+      subtitle:
+        "This action requires removing unsupported content.\n\nAre you sure you want to continue?",
+      e: null,
+    });
+  };
+
+  useEffect(() => {
+    if (
+      !defaultAgentDefinitionId ||
+      agentDefinitions?.length === 0 ||
+      selectedAgent
+    )
+      return;
+
+    const defaultSelectedAgent = agentDefinitions?.find(
+      (agent) => agent.id === defaultAgentDefinitionId,
+    );
+
+    if (defaultSelectedAgent) {
+      applySourceChange({
+        value: defaultSelectedAgent.id,
+        label: defaultSelectedAgent.agent_name,
+        sourceType: SourceType.AGENT_DEFINITION,
+        agentType: defaultSelectedAgent.agent_type,
+      });
+    }
+  }, [defaultAgentDefinitionId, agentDefinitions, selectedAgent]);
+
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        flexDirection: "column",
+        backgroundColor: "background.paper",
+        height: "100%",
+        width: "100%",
+      }}
+    >
+      <Box
+        sx={{
+          padding: 2,
+          display: "flex",
+          gap: "12px",
+          borderBottom: "1px solid",
+          borderColor: "divider",
+        }}
+      >
+        <Typography
+          typography="m3"
+          fontWeight="fontWeightMedium"
+          color="text.disabled"
+          onClick={() => navigate("/dashboard/simulate/scenarios")}
+          sx={{ cursor: "pointer" }}
+        >
+          All Scenarios
+        </Typography>
+        <SvgColor src="/assets/icons/custom/lucide--chevron-right.svg" />
+        <Typography typography="m3" fontWeight="fontWeightMedium">
+          Create New Scenario
+        </Typography>
+      </Box>
+      <Box
+        sx={{
+          overflow: "auto",
+          flex: 1,
+          padding: 2,
+          gap: 2,
+          display: "flex",
+        }}
+      >
+        <Box
+          sx={{
+            width: "60%",
+            height: "100%",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            flex: 3,
+          }}
+        >
+          <Box
+            sx={{
+              flex: 1,
+
+              display: "flex",
+              flexDirection: "column",
+              gap: "28px",
+              paddingBottom: 2,
+            }}
+          >
+            <CreateScenarioHeader
+              title="Basic Information"
+              description="Set up scenarios for simulating voice AI and chatbots to test your agents"
+            />
+            <Box
+              sx={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+              }}
+            >
+              <FormTextFieldV2
+                control={control}
+                fieldName="name"
+                label="Scenario Name"
+                fullWidth
+                placeholder="Enter scenario name"
+                required
+                size="small"
+                onChange={handleNameChange}
+              />
+              <FormTextFieldV2
+                control={control}
+                fieldName="description"
+                label="Description"
+                fullWidth
+                placeholder="Add a short explanation of what this scenario covers"
+                size="small"
+                multiline
+                rows={3}
+              />
+              {/* Combined Source Dropdown (Agent Definitions + Prompts) */}
+              <Stack
+                direction={"row"}
+                justifyContent={"space-between"}
+                alignItems={"flex-start"}
+                gap={2}
+              >
+                <CategorizedSourceDropdown
+                  control={control}
+                  fieldName="sourceId"
+                  label="Choose source"
+                  fullWidth
+                  placeholder="Select agent definition or prompt"
+                  size="small"
+                  options={combinedSourceOptions}
+                  required
+                  onScrollEnd={() => {
+                    // Fetch more of whichever has more to load
+                    if (!isFetchingNextPage) fetchNextPage();
+                    if (!isFetchingPromptsNextPage) fetchNextPrompts();
+                  }}
+                  isFetchingNextPage={
+                    isFetchingNextPage || isFetchingPromptsNextPage
+                  }
+                  onChange={handleSourceChange}
+                />
+                <CustomTooltip
+                  arrow
+                  show={!selectedSourceId}
+                  title={"Choose a source first."}
+                  type={"black"}
+                  sx={{ flex: 1 }}
+                  size="small"
+                >
+                  <Box sx={{ width: "100%" }}>
+                    <FormSearchSelectFieldControl
+                      fullWidth
+                      disabled={!selectedSourceId || isLoadingVersions}
+                      label={"Choose version"}
+                      control={control}
+                      size="small"
+                      placeholder={"Select version (eg: v1)"}
+                      options={
+                        sourceType === SourceType.AGENT_DEFINITION
+                          ? versionOptions
+                          : promptVersionOptions
+                      }
+                      fieldName={
+                        sourceType === SourceType.AGENT_DEFINITION
+                          ? "agentDefinitionVersionId"
+                          : "promptVersionId"
+                      }
+                      required
+                      onScrollEnd={
+                        sourceType === SourceType.AGENT_DEFINITION
+                          ? fetchNextAgentVersions
+                          : undefined
+                      }
+                      isFetchingNextPage={
+                        sourceType === SourceType.AGENT_DEFINITION
+                          ? isFetchingAgentVersionsNextPage
+                          : false
+                      }
+                    />
+                  </Box>
+                </CustomTooltip>
+              </Stack>
+              <ShowComponent
+                condition={currentTab !== CreateScenarioType.DATASET}
+              >
+                <FormTextFieldV2
+                  control={control}
+                  fieldName="noOfRows"
+                  label="No. of scenarios"
+                  fullWidth
+                  placeholder="Set how many scenario variations you want generate"
+                  size="small"
+                  fieldType="number"
+                  required
+                />
+              </ShowComponent>
+            </Box>
+            <Box
+              sx={{
+                borderRadius: "4px",
+                padding: 2,
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+              }}
+            >
+              <Box
+                display="flex"
+                justifyContent="space-between"
+                alignItems="center"
+              >
+                <CustomTabs
+                  value={currentTab}
+                  variant="standard"
+                  onChange={(e, value) => {
+                    handleChangeScenarioType(value);
+                  }}
+                >
+                  {tabOptions.map((tab) => (
+                    <CustomTab
+                      key={tab.value}
+                      label={
+                        <CustomTooltip
+                          show={!!tab.tooltipText}
+                          title={tab.tooltipText}
+                          placement="bottom"
+                          arrow
+                          size="small"
+                          type="black"
+                          slotProps={{
+                            tooltip: {
+                              sx: {
+                                maxWidth: "200px !important",
+                              },
+                            },
+                          }}
+                        >
+                          <span>{tab.label}</span>
+                        </CustomTooltip>
+                      }
+                      value={tab.value}
+                    />
+                  ))}
+                </CustomTabs>
+                <Link
+                  href="https://docs.futureagi.com/docs/simulation/concepts/scenarios"
+                  color="blue.500"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  fontWeight="fontWeightMedium"
+                  fontSize="14px"
+                  sx={{ textDecoration: "underline" }}
+                >
+                  Learn more
+                </Link>
+              </Box>
+              <ShowComponent
+                condition={currentTab === CreateScenarioType.GRAPH}
+              >
+                <WorkflowBuilderOption control={control} />
+              </ShowComponent>
+              <ShowComponent
+                condition={currentTab === CreateScenarioType.DATASET}
+              >
+                <ImportDatasetOption control={control} />
+              </ShowComponent>
+              <ShowComponent
+                condition={currentTab === CreateScenarioType.SCRIPT}
+              >
+                <UploadScriptOption control={control} />
+              </ShowComponent>
+              <ShowComponent condition={currentTab === CreateScenarioType.SOP}>
+                <CallChatSOPOption control={control} />
+              </ShowComponent>
+            </Box>
+            <CustomInstruction control={control} />
+            <PersonaSection control={control} />
+            <ShowComponent condition={currentTab !== "dataset"}>
+              <ColumnSection errors={errors} control={control} />
+            </ShowComponent>
+          </Box>
+          <Divider orientation="horizontal" flexItem />
+          <Box
+            sx={{ display: "flex", gap: 1, justifyContent: "space-between" }}
+          >
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => navigate("/dashboard/simulate/scenarios")}
+              sx={{ borderRadius: "4px", paddingX: 1.5 }}
+              startIcon={
+                <SvgColor
+                  src="/assets/icons/custom/lucide--chevron-right.svg"
+                  sx={{ rotate: "180deg" }}
+                />
+              }
+            >
+              Back
+            </Button>
+            <LoadingButton
+              size="small"
+              variant="contained"
+              color="primary"
+              onClick={handleSubmit(handelCreateScenario)}
+              loading={overallLoading}
+              sx={{ borderRadius: "4px", paddingX: 1.5 }}
+              endIcon={
+                <SvgColor src="/assets/icons/custom/lucide--chevron-right.svg" />
+              }
+            >
+              Create
+            </LoadingButton>
+          </Box>
+        </Box>
+        <Divider orientation="vertical" flexItem />
+        <ResourcesSection />
+        <ModalWrapper
+          title={warnModalOpen.title}
+          subTitle={warnModalOpen.subtitle}
+          actionBtnTitle="Confirm"
+          isValid={true}
+          actionBtnSx={{
+            backgroundColor: "red.500",
+            "&:hover": {
+              backgroundColor: "red.500",
+            },
+          }}
+          open={warnModalOpen.open}
+          onClose={handleCloseWarnModal}
+          onSubmit={handleConfirmWarnModal}
+        />
+      </Box>
+    </Box>
+  );
+};
+
+export default CreateScenarioView;

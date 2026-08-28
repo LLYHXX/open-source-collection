@@ -1,0 +1,27 @@
+meta {
+  name: workspace invite
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{host}}/accounts/workspace/invite/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "emails": ["user@example.com", "admin@example.com"],
+    "role": "WORKSPACE_MEMBER",
+    "workspaceIds": ["ed160bc1-c783-4d56-963a-c129549e0c09"]
+  }
+}

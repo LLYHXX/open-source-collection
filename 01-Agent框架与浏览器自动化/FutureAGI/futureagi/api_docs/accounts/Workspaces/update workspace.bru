@@ -1,0 +1,30 @@
+meta {
+  name: update workspace
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{host}}/accounts/workspaces/{{workspace_id}}/
+  body: json
+  auth: bearer
+}
+
+params:query {
+  workspace_id: "{{workspace_id}}"
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "display_name": "Updated Project Alpha",
+    "description": "Updated description for Project Alpha workspace"
+  }
+}

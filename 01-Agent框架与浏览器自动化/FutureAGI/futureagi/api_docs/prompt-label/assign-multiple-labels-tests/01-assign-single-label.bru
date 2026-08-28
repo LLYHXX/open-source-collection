@@ -1,0 +1,50 @@
+meta {
+  name: 01 - Assign Single Label (Success)
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v2_id}}",
+    "label_ids": ["{{prod_label_id}}"]
+  }
+}
+
+docs {
+  # Assign Single Label - Success Case
+
+  ## Test Scenario
+  Assigns a single label (Production) to a version.
+
+  ## Prerequisites
+  - `version_v1` must have the Production label already assigned
+  - `version_v2` exists and is the target
+
+  ## Expected Behavior
+  - Status: 200 OK
+  - Production label is added to version_v2
+  - Production label is removed from version_v1 (exclusivity within template)
+
+  ## Expected Response
+  ```json
+  {
+    "status": true,
+    "result": "Labels assigned successfully"
+  }
+  ```
+
+  ## Test Coverage
+  - Basic single label assignment
+  - Label exclusivity enforcement
+}

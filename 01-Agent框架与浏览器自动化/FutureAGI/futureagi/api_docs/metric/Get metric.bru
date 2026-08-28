@@ -1,0 +1,24 @@
+meta {
+  name: Get metric
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/custom-metric/:model_id/?page=1&search_query=ct
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page: 1
+  search_query: ct
+}
+
+params:path {
+  model_id: e28af06f-9824-4652-a52a-69f4e2c99dad
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

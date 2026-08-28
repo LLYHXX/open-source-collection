@@ -1,0 +1,21 @@
+meta {
+  name: prompt version history
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{host}}/model-hub/prompt-history-executions/?template_id=3ce4c431-9f4b-41df-a3cc-5b8ab4fc8ad6&search=v1
+  body: none
+  auth: bearer
+}
+
+params:query {
+  template_id: 3ce4c431-9f4b-41df-a3cc-5b8ab4fc8ad6
+  search: v1
+  ~is_commit: true
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

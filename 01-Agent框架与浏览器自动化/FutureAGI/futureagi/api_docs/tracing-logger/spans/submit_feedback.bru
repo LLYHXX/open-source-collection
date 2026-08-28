@@ -1,0 +1,25 @@
+meta {
+  name: submit_feedback
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{host}}/tracer/observation-span/submit_feedback/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+   "observation_span_id": "900a514b270f4e7d",
+    "feedback_value":"test-value2",
+    "feedback_explanation":"test-explanation3" ,
+    "feedback_improvement": "test-improvement3",
+    "custom_eval_config_id": "76793725-3a59-4fec-a290-dc23534d6d24"
+  }
+}

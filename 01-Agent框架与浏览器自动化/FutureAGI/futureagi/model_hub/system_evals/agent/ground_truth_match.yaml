@@ -1,0 +1,64 @@
+eval_id: 123
+name: ground_truth_match
+description: Evaluates whether the model-generated output matches the provided ground-truth expected output.
+criteria: "You are evaluating whether the model's generated output matches the provided ground-truth expected output.\n\n\
+  ## Criteria\n\n1. Value match: The generated value should match the expected value exactly or be functionally equivalent.\n\
+  \   - Pass: Generated \"1.0\" matches expected \"1\" (numerically equal).\n   - Fail: Generated \"2\" when expected \"1.\"\
+  \n\n2. Type consistency: Numbers should match numerically, booleans logically, strings textually.\n   - Pass: Generated\
+  \ \"true\" matches expected \"True\" (boolean equivalence).\n   - Fail: Generated \"yes\" when expected \"true\" (format\
+  \ mismatch in strict contexts).\n\n3. Format tolerance: Minor whitespace, capitalization, or punctuation differences should\
+  \ not cause failure unless exact formatting is required.\n   - Pass: \"Hello World\" matches \"hello world\" in case-insensitive\
+  \ contexts.\n   - Fail: \"Hello World\" vs. \"Goodbye World\" (different content).\n\n## Anti-bias Rules\n\n- Numerical\
+  \ precision should be evaluated based on task context (\"3.14\" vs \"3.1416\" may or may not matter).\n- List ordering:\
+  \ if the task does not specify order, [\"a\",\"b\"] and [\"b\",\"a\"] should match.\n- A short correct answer scores higher\
+  \ than a long answer that includes the correct value buried in noise.\n\n## Scoring\n\nReturn 'Passed' if the generated\
+  \ value matches the expected value exactly or is functionally equivalent. Return 'Failed' if it differs in meaning, correctness,\
+  \ or required format.\n\n## Inputs\n\n<generated_value>{{generated_value}}</generated_value>\n\n<expected_value>{{expected_value}}</expected_value>"
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - generated_value
+  - expected_value
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    expected_value: The ground-truth reference output
+    generated_value: The model-generated output to be evaluated
+  param_modalities:
+    generated_value: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    expected_value: *id001
+  rule_prompt: "You are evaluating whether the model's generated output matches the provided ground-truth expected output.\n\
+    \n## Criteria\n\n1. Value match: The generated value should match the expected value exactly or be functionally equivalent.\n\
+    \   - Pass: Generated \"1.0\" matches expected \"1\" (numerically equal).\n   - Fail: Generated \"2\" when expected \"\
+    1.\"\n\n2. Type consistency: Numbers should match numerically, booleans logically, strings textually.\n   - Pass: Generated\
+    \ \"true\" matches expected \"True\" (boolean equivalence).\n   - Fail: Generated \"yes\" when expected \"true\" (format\
+    \ mismatch in strict contexts).\n\n3. Format tolerance: Minor whitespace, capitalization, or punctuation differences should\
+    \ not cause failure unless exact formatting is required.\n   - Pass: \"Hello World\" matches \"hello world\" in case-insensitive\
+    \ contexts.\n   - Fail: \"Hello World\" vs. \"Goodbye World\" (different content).\n\n## Anti-bias Rules\n\n- Numerical\
+    \ precision should be evaluated based on task context (\"3.14\" vs \"3.1416\" may or may not matter).\n- List ordering:\
+    \ if the task does not specify order, [\"a\",\"b\"] and [\"b\",\"a\"] should match.\n- A short correct answer scores higher\
+    \ than a long answer that includes the correct value buried in noise.\n\n## Scoring\n\nReturn 'Passed' if the generated\
+    \ value matches the expected value exactly or is functionally equivalent. Return 'Failed' if it differs in meaning, correctness,\
+    \ or required format.\n\n## Inputs\n\n<generated_value>{{generated_value}}</generated_value>\n\n<expected_value>{{expected_value}}</expected_value>"

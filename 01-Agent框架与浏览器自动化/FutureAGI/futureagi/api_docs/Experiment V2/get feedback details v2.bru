@@ -1,0 +1,52 @@
+meta {
+  name: get feedback details v2
+  type: http
+  seq: 27
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/feedback/get-feedback-details/?user_eval_metric_id={{userEvalMetricId}}&row_id={{rowId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+vars:pre-request {
+  experimentId: <experiment-uuid>
+  userEvalMetricId: <user-eval-metric-uuid>
+  rowId: <row-uuid>
+}
+
+docs {
+  ## Get Experiment Feedback Details V2
+
+  Returns previous feedback entries for a specific metric+row combination in an experiment.
+
+  ### Query Parameters
+  - `user_eval_metric_id` (optional) - UUID of the UserEvalMetric to filter by
+  - `row_id` (optional) - UUID of the row to filter by
+
+  Both can be combined to get feedback for a specific cell.
+
+  ### Response
+  ```json
+  {
+    "result": {
+      "feedback": [
+        {
+          "id": "<feedback-uuid>",
+          "value": "Failed",
+          "comment": "The model hallucinated",
+          "created_at": "2026-04-06T10:30:00+00:00",
+          "action_type": "recalculate_row"
+        }
+      ],
+      "total_count": 1
+    },
+    "status": 200
+  }
+  ```
+}

@@ -1,0 +1,20 @@
+meta {
+  name: list experiments v2
+  type: http
+  seq: 7
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/list/
+  body: none
+  auth: bearer
+}
+
+params:query {
+  ~status: Completed
+  ~search: test
+}
+
+auth:bearer {
+  token: {{authToken}}
+}

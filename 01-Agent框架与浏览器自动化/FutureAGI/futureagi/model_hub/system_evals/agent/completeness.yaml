@@ -1,0 +1,60 @@
+eval_id: 10
+name: completeness
+description: Evaluates if the response completely answers the query
+criteria: "You are evaluating whether the output fully addresses all parts of the user's input query.\n\n## Criteria\n\n1.\
+  \ Explicit requirements: Every question, task, or instruction in the input must be addressed.\n   - Pass: All three parts\
+  \ of a three-part question are answered.\n   - Fail: Only the first part is answered; the other two are ignored.\n\n2. Sufficient\
+  \ depth: Answers should provide enough detail to be actionable and understandable.\n   - Pass: Explains the \"how\" and\
+  \ \"why,\" not just the \"what.\"\n   - Fail: One-word answer to a question requiring explanation.\n\n3. Implicit expectations:\
+  \ Format, tone, and detail level implied by the question type should be met.\n   - Pass: A \"how-to\" question receives\
+  \ step-by-step instructions.\n   - Fail: A \"how-to\" question receives only a brief conceptual overview.\n\n## Anti-bias\
+  \ Rules\n\n- A short correct answer that covers all parts scores higher than a long answer that misses parts.\n- Declining\
+  \ to answer harmful requests IS a complete response and should score highly.\n- DO NOT penalize providing more information\
+  \ than requested as long as all parts are covered.\n\n## Scoring\n\nScore 0.0 if the output fails to address the core question\
+  \ or misses most parts. Score 0.5 if it addresses the main question but skips significant sub-parts or lacks depth. Score\
+  \ 1.0 if every part is addressed with appropriate depth.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Chatbot behaviors
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  output: score
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    input: The input to be evaluated
+    output: The output to be evaluated
+  param_modalities:
+    input: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output: *id001
+  rule_prompt: "You are evaluating whether the output fully addresses all parts of the user's input query.\n\n## Criteria\n\
+    \n1. Explicit requirements: Every question, task, or instruction in the input must be addressed.\n   - Pass: All three\
+    \ parts of a three-part question are answered.\n   - Fail: Only the first part is answered; the other two are ignored.\n\
+    \n2. Sufficient depth: Answers should provide enough detail to be actionable and understandable.\n   - Pass: Explains\
+    \ the \"how\" and \"why,\" not just the \"what.\"\n   - Fail: One-word answer to a question requiring explanation.\n\n\
+    3. Implicit expectations: Format, tone, and detail level implied by the question type should be met.\n   - Pass: A \"\
+    how-to\" question receives step-by-step instructions.\n   - Fail: A \"how-to\" question receives only a brief conceptual\
+    \ overview.\n\n## Anti-bias Rules\n\n- A short correct answer that covers all parts scores higher than a long answer that\
+    \ misses parts.\n- Declining to answer harmful requests IS a complete response and should score highly.\n- DO NOT penalize\
+    \ providing more information than requested as long as all parts are covered.\n\n## Scoring\n\nScore 0.0 if the output\
+    \ fails to address the core question or misses most parts. Score 0.5 if it addresses the main question but skips significant\
+    \ sub-parts or lacks depth. Score 1.0 if every part is addressed with appropriate depth.\n\n## Inputs\n\n<input>{{input}}</input>\n\
+    \n<output>{{output}}</output>"

@@ -1,0 +1,24 @@
+meta {
+  name: connection-status
+  type: http
+  seq: 10
+}
+
+put {
+  url: {{host}}/data-connector/connection/:id/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  id: 30879ba8-f27e-42c7-a957-f995f10c0b04
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

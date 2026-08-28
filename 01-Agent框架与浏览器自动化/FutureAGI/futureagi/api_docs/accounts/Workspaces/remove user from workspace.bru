@@ -1,0 +1,24 @@
+meta {
+  name: remove user from workspace
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{host}}/accounts/workspaces/{{workspace_id}}/members/{{member_id}}/
+  body: none
+  auth: bearer
+}
+
+params:query {
+  workspace_id: "{{workspace_id}}"
+  member_id: "{{member_id}}"
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}

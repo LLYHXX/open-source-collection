@@ -1,0 +1,80 @@
+eval_id: 64
+name: summary_quality
+description: Evaluates if a summary effectively captures the main points, maintains factual accuracy, and achieves appropriate
+  length while preserving the original meaning. Checks for both inclusion of key information and exclusion of unnecessary
+  details.
+criteria: "You are evaluating the quality of a summary against its source material.\n\n## Criteria\n\n1. Coverage: All key\
+  \ themes, arguments, and conclusions from the source should be represented.\n   - Pass: Main argument, supporting evidence,\
+  \ and conclusion are all present.\n   - Fail: A major theme from the source is completely absent.\n\n2. Accuracy: Facts\
+  \ must not be distorted, exaggerated, or misattributed.\n   - Pass: Statistics and attributions match the source exactly.\n\
+  \   - Fail: A figure is changed or a quote is misattributed.\n\n3. Compression and coherence: Substantially shorter than\
+  \ source, logically organized, reads as self-contained text.\n   - Pass: Well-organized narrative covering essentials in\
+  \ fewer words.\n   - Fail: Disjointed extracted sentences or nearly as long as original.\n\n## Anti-bias Rules\n\n- A short\
+  \ accurate summary scores higher than a long one that adds unsupported details.\n- Reorganizing information for clarity\
+  \ (different order than source) should NOT be penalized.\n- DO NOT penalize summaries of very short source material that\
+  \ cannot achieve significant compression.\n\n## Scoring\n\nScore 0.0 if the summary misses main points, distorts facts,\
+  \ or is incoherent. Score 0.5 if it captures some key points but misses others or has minor inaccuracies. Score 1.0 if it\
+  \ comprehensively and accurately represents all main points with good organization.\n\n## Inputs\n\n<input>{{input}}</input>\n\
+  \n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  output: score
+  eval_type_id: AgentEvaluator
+  config:
+    check_internet:
+      type: boolean
+      default: false
+  config_params_desc:
+    input: The input to be evaluated
+    output: The output to be evaluated
+  param_modalities:
+    input:
+    - TEXT
+    - AUDIO
+    - IMAGE
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    - IMAGES
+    output:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating the quality of a summary against its source material.\n\n## Criteria\n\n1. Coverage: All\
+    \ key themes, arguments, and conclusions from the source should be represented.\n   - Pass: Main argument, supporting\
+    \ evidence, and conclusion are all present.\n   - Fail: A major theme from the source is completely absent.\n\n2. Accuracy:\
+    \ Facts must not be distorted, exaggerated, or misattributed.\n   - Pass: Statistics and attributions match the source\
+    \ exactly.\n   - Fail: A figure is changed or a quote is misattributed.\n\n3. Compression and coherence: Substantially\
+    \ shorter than source, logically organized, reads as self-contained text.\n   - Pass: Well-organized narrative covering\
+    \ essentials in fewer words.\n   - Fail: Disjointed extracted sentences or nearly as long as original.\n\n## Anti-bias\
+    \ Rules\n\n- A short accurate summary scores higher than a long one that adds unsupported details.\n- Reorganizing information\
+    \ for clarity (different order than source) should NOT be penalized.\n- DO NOT penalize summaries of very short source\
+    \ material that cannot achieve significant compression.\n\n## Scoring\n\nScore 0.0 if the summary misses main points,\
+    \ distorts facts, or is incoherent. Score 0.5 if it captures some key points but misses others or has minor inaccuracies.\
+    \ Score 1.0 if it comprehensively and accurately represents all main points with good organization.\n\n## Inputs\n\n<input>{{input}}</input>\n\
+    \n<output>{{output}}</output>"

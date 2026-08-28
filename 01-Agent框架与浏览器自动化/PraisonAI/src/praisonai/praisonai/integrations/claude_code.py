@@ -1,0 +1,329 @@
+"""
+Claude Code CLI Integration.
+
+Provides integration with Claude Code CLI for AI-powered coding tasks.
+
+Features:
+- Headless mode execution with JSON output
+- Session continuation support
+- System prompt customization
+- Tool restrictions
+- Optional SDK integration (when claude-agent-sdk is installed)
+
+Usage:
+    from praisonai.integrations import ClaudeCodeIntegration
+    
+    # Create integration
+    claude = ClaudeCodeIntegration(workspace="/path/to/project")
+    
+    # Execute a coding task
+    result = await claude.execute("Refactor the auth module")
+    
+    # Stream output
+    async for event in claude.stream("Add error handling"):
+        print(event)
+    
+    # Use as agent tool
+    tool = claude.as_tool()
+"""
+
+import inspect
+import json
+import os
+from typing import AsyncIterator, Dict, Any, Optional, List
+
+from .base import BaseCLIIntegration
+
+
+# Check if Claude Code SDK is available
+CLAUDE_SDK_AVAILABLE = False
+try:
+    from claude_agent_sdk import query as claude_query, ClaudeAgentOptions
+    CLAUDE_SDK_AVAILABLE = True
+except ImportError:
+    pass
+
+
+class ClaudeCodeIntegration(BaseCLIIntegration):
+    """
+    Integration with Claude Code CLI.
+    
+    Supports both subprocess-based execution and SDK-based execution
+    (when claude-agent-sdk is installed).
+    
+    Attributes:
+        output_format: Output format ("json", "text", "stream-json")
+        skip_permissions: Whether to skip permission prompts
+        system_prompt: Custom system prompt to append
+        allowed_tools: List of allowed tools (e.g., ["Read", "Write", "Bash"])
+        disallowed_tools: List of disallowed tools
+        use_sdk: Whether to use the SDK instead of subprocess
+    """
+
+    display_label = "Claude Code (coding, file edits)"
+    install_hint = "npm install -g @anthropic-ai/claude-code"
+
+    def __init__(
+        self,
+        workspace: str = ".",
+        timeout: int = 300,
+        output_format: str = "json",
+        skip_permissions: bool = True,
+        system_prompt: Optional[str] = None,
+        allowed_tools: Optional[List[str]] = None,
+        disallowed_tools: Optional[List[str]] = None,
+        use_sdk: bool = False,
+        model: Optional[str] = None,
+    ):
+        """
+        Initialize Claude Code integration.
+        
+        Args:
+            workspace: Working directory for CLI execution
+            timeout: Timeout in seconds for CLI execution
+            output_format: Output format ("json", "text", "stream-json")
+            skip_permissions: Whether to skip permission prompts (--dangerously-skip-permissions)
+            system_prompt: Custom system prompt to append
+            allowed_tools: List of allowed tools
+            disallowed_tools: List of disallowed tools
+            use_sdk: Whether to use the SDK instead of subprocess
+            model: Model to use (e.g., "sonnet", "opus")
+        """
+        super().__init__(workspace=workspace, timeout=timeout)
+        
+        self.output_format = output_format
+        self.skip_permissions = skip_permissions
+        self.system_prompt = system_prompt
+        self.allowed_tools = allowed_tools
+        self.disallowed_tools = disallowed_tools
+        self.use_sdk = use_sdk and CLAUDE_SDK_AVAILABLE
+        self.model = model
+        
+        # Session management removed - use continue_session parameter explicitly
+    
+    @property
+    def cli_command(self) -> str:
+        """Return the CLI command name."""
+        return "claude"
+    
+    @property
+    def sdk_available(self) -> bool:
+        """Check if the Claude Code SDK is available."""
+        return CLAUDE_SDK_AVAILABLE
+    
+    def _build_command(
+        self, 
+        prompt: str, 
+        *,
+        output_format: Optional[str] = None,
+        continue_session: bool = False,
+        **options
+    ) -> List[str]:
+        """
+        Build the Claude CLI command.
+        
+        Args:
+            prompt: The prompt to send
+            output_format: Output format override (defaults to self.output_format)
+            continue_session: Whether to continue a previous session
+            **options: Additional options
+            
+        Returns:
+            List of command arguments
+        """
+        cmd = ["claude"]
+        
+        # Add print mode flag for non-interactive output
+        cmd.append("-p")
+        
+        # Add output format (local parameter takes precedence)
+        fmt = output_format or self.output_format
+        cmd.extend(["--output-format", fmt])
+
+        # stream-json in print mode REQUIRES --verbose, and --include-partial-
+        # messages is what emits the token/tool-use deltas that make live
+        # progress visible. Without these, `claude -p --output-format
+        # stream-json` errors out, so stream() could never work.
+        stream_json = fmt == "stream-json"
+
+        # Add continue flag if needed
+        if continue_session:
+            cmd.append("--continue")
+        
+        # Add model if specified
+        if self.model:
+            cmd.extend(["--model", self.model])
+        
+        # Add system prompt if specified
+        if self.system_prompt:
+            cmd.extend(["--append-system-prompt", self.system_prompt])
+        
+        # Add allowed tools if specified
+        if self.allowed_tools:
+            cmd.extend(["--allowedTools", ",".join(self.allowed_tools)])
+        
+        # Add disallowed tools if specified
+        if self.disallowed_tools:
+            cmd.extend(["--disallowedTools", ",".join(self.disallowed_tools)])
+        
+        # Add verbose if needed (forced for stream-json, which the CLI rejects
+        # without it).
+        if options.get('verbose') or stream_json:
+            cmd.append("--verbose")
+        if stream_json:
+            cmd.append("--include-partial-messages")
+
+        # Add prompt last
+        cmd.append(prompt)
+
+        return cmd
+    
+    async def execute(self, prompt: str, **options) -> str:
+        """
+        Execute Claude Code CLI and return the result.
+        
+        Args:
+            prompt: The prompt/query to send
+            **options: Additional options (continue_session, etc.)
+            
+        Returns:
+            str: The CLI output (parsed from JSON if output_format is "json")
+        """
+        # Live progress requires the stream-json subprocess path; the SDK path
+        # yields no partial events. When a progress sink is supplied, route
+        # through the subprocess so callers are never silently dropped.
+        wants_progress = ("on_event" in options) or ("on_progress" in options)
+        if self.use_sdk and not wants_progress:
+            return await self._execute_sdk(prompt, **options)
+        
+        return await self._execute_subprocess(prompt, **options)
+    
+    async def _execute_subprocess(self, prompt: str, **options) -> str:
+        """Execute using subprocess.
+
+        If an ``on_event`` (or ``on_progress``) callable is passed, the run is
+        streamed via ``stream()`` and every parsed event is handed to it while
+        it is still in flight, so a caller/UI can show live progress ("reading
+        X", "running tool Y") instead of blocking on a single final result. The
+        method still returns the final result text in every case.
+        """
+        on_event = options.pop("on_event", None) or options.pop("on_progress", None)
+        if on_event is not None:
+            return await self._execute_streaming(prompt, on_event, **options)
+
+        output_format = options.pop("output_format", self.output_format)
+        continue_session = options.pop("continue_session", False)
+
+        cmd = self._build_command(prompt, output_format=output_format, continue_session=continue_session, **options)
+
+        output = await self.execute_async(cmd)
+
+        # Parse JSON output if applicable
+        if output_format == "json":
+            try:
+                data = json.loads(output)
+                # Extract the main result
+                if isinstance(data, dict):
+                    return data.get("result", data.get("content", str(data)))
+                return str(data)
+            except json.JSONDecodeError:
+                return output
+
+        return output
+
+    async def _execute_streaming(self, prompt: str, on_event, **options) -> str:
+        """Stream the run, forward each event to ``on_event``, return final text.
+
+        ``on_event`` may be sync or ``async``; awaitable results are awaited so
+        coroutine callbacks actually run. A broken progress sink must not fail
+        the underlying work, so its exceptions are swallowed. The final text is
+        taken from the terminal ``result`` event when present, otherwise
+        accumulated from ``text_delta`` chunks.
+        """
+        options.pop("output_format", None)  # streaming forces stream-json
+        final_result = None
+        text_parts: List[str] = []
+        async for event in self.stream(prompt, **options):
+            try:
+                callback_result = on_event(event)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+            except Exception:
+                pass
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "result":
+                final_result = event.get("result")
+            elif event.get("type") == "stream_event":
+                delta = (event.get("event") or {}).get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    text_parts.append(delta.get("text", ""))
+        if final_result is not None:
+            return final_result
+        return "".join(text_parts)
+    
+    async def _execute_sdk(self, prompt: str, **options) -> str:
+        """Execute using the Claude Code SDK."""
+        if not CLAUDE_SDK_AVAILABLE:
+            raise RuntimeError("Claude Code SDK not available. Install with: pip install claude-agent-sdk")
+        
+        sdk_options = ClaudeAgentOptions(
+            cwd=self.workspace,
+            system_prompt=self.system_prompt,
+        )
+        
+        if self.allowed_tools:
+            sdk_options.allowed_tools = self.allowed_tools
+        
+        if self.skip_permissions:
+            sdk_options.permission_mode = 'acceptEdits'
+        
+        result_parts = []
+        async for message in claude_query(prompt=prompt, options=sdk_options):
+            if hasattr(message, 'content'):
+                for block in message.content:
+                    if hasattr(block, 'text'):
+                        result_parts.append(block.text)
+        
+        return '\n'.join(result_parts)
+    
+    async def stream(self, prompt: str, **options) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Stream output from Claude Code CLI.
+        
+        Args:
+            prompt: The prompt/query to send
+            **options: Additional options
+            
+        Yields:
+            dict: Parsed JSON events from the CLI
+        """
+        # Use stream-json format for streaming (per-call override, no instance
+        # mutation); drop a caller-supplied output_format so the forced value
+        # wins instead of raising "multiple values for keyword argument".
+        options.pop("output_format", None)
+        cmd = self._build_command(prompt, output_format="stream-json", **options)
+        
+        async for line in self.stream_async(cmd):
+            if line.strip():
+                try:
+                    event = json.loads(line)
+                    yield event
+                except json.JSONDecodeError:
+                    yield {"type": "text", "content": line}
+    
+    def reset_session(self):
+        """Reset the session state (deprecated - use continue_session=False in calls)."""
+        pass  # Session state is now stateless
+    
+    def get_env(self) -> Dict[str, str]:
+        """Get environment variables for CLI execution."""
+        env = super().get_env()
+        
+        # Add Anthropic API key if available
+        if "ANTHROPIC_API_KEY" in os.environ:
+            env["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_KEY"]
+        elif "CLAUDE_API_KEY" in os.environ:
+            env["ANTHROPIC_API_KEY"] = os.environ["CLAUDE_API_KEY"]
+        
+        return env

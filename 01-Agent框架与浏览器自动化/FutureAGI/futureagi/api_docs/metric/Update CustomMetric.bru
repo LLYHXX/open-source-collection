@@ -1,0 +1,33 @@
+meta {
+  name: Update CustomMetric
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/custom-metric/update/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "id" : "1e8da2cc-7090-40fc-bbc5-004fc9c5c14a",
+      "name" : "pancho Metric",
+      "prompt" : "This is a test prompt",
+      "modelType" : 1,
+      "datasets" : [{
+          "environment" : "Training",
+          "model_version" : "1.1"
+      },
+      {
+          "environment" : "Production",
+          "model_version" : "1.2"
+      }
+      ]
+  }
+}

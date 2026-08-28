@@ -1,0 +1,33 @@
+meta {
+  name: Edit Column Type
+  type: http
+  seq: 13
+}
+
+put {
+  url: {{host}}/model-hub/develops/a4b01139-cf26-49ab-be3b-d7dcd8405c6a/update_column_type/d15f1c0c-d1dc-43a1-ac60-bb24033f228f/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    // Available column_type choices:
+    // - "text"
+    // - "boolean"
+    // - "integer"
+    // - "float"
+    // - "json"
+    // - "array"
+    // - "datetime"
+    // - "image_byte"
+    // - "image_url"
+    "new_column_type" : "boolean",
+    "preview" : false,
+    "force_update" : false
+  }
+}

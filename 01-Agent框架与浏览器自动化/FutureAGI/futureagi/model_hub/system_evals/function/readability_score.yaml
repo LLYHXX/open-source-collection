@@ -1,0 +1,60 @@
+eval_id: 152
+name: readability_score
+description: Computes Flesch-Kincaid readability metrics. Returns a normalized score (0-1) based on Flesch Reading Ease. Higher
+  scores indicate more readable text. Also reports grade level.
+criteria: Measures text readability using syllable, word, and sentence counts via the Flesch-Kincaid formula.
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    text: The text to evaluate for readability
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import re
+        text = str(kwargs.get("text", output or "")).strip()
+        if not text:
+            return {"score": 0.0, "reason": "Empty text"}
+        sentences = re.split(r'[.!?]+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        num_sentences = max(len(sentences), 1)
+        words = text.split()
+        num_words = len(words)
+        if num_words == 0:
+            return {"score": 0.0, "reason": "No words found"}
+        def _syllables(word):
+            word = word.lower().strip(".,!?;:'\"()-")
+            if not word:
+                return 1
+            count = 0
+            vowels = "aeiouy"
+            prev_vowel = False
+            for c in word:
+                is_v = c in vowels
+                if is_v and not prev_vowel:
+                    count += 1
+                prev_vowel = is_v
+            if word.endswith("e") and count > 1:
+                count -= 1
+            return max(count, 1)
+        total_syl = sum(_syllables(w) for w in words)
+        fre = 206.835 - 1.015 * (num_words / num_sentences) - 84.6 * (total_syl / num_words)
+        fre = max(0.0, min(100.0, fre))
+        fkgl = 0.39 * (num_words / num_sentences) + 11.8 * (total_syl / num_words) - 15.59
+        fkgl = max(0.0, fkgl)
+        score = fre / 100.0
+        return {
+            "score": float(score),
+            "reason": f"Flesch Reading Ease={fre:.1f}/100, Grade Level={fkgl:.1f} ({num_words} words, {num_sentences} sentences)",
+        }

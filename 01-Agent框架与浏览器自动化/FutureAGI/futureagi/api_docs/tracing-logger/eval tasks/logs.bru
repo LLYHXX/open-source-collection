@@ -1,0 +1,33 @@
+meta {
+  name: logs
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}/tracer/eval-task/get_eval_task_logs?eval_task_id=d4da131e-ef19-4645-8ac1-d9d6ee5490f4
+  body: none
+  auth: bearer
+}
+
+params:query {
+  eval_task_id: d4da131e-ef19-4645-8ac1-d9d6ee5490f4
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "809782af-abbb-4134-9baa-409d89c86982",
+    "eval_templates": ["44b4330b-0e99-4caa-b1ec-af0dfeb17700","5577dff4-a7e3-4df7-999d-f5ce3bef7fa0"],
+    "name": "fifth_task",
+    "filters": {
+      "project_id": "809782af-abbb-4134-9baa-409d89c86982",
+      "observation_type": "llm"
+    },
+    "sampling_rate": 70,
+    "run_type": "historical"
+  }
+}

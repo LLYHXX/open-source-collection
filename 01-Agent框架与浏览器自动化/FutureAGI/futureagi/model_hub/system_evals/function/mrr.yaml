@@ -1,0 +1,56 @@
+eval_id: 128
+name: mrr
+description: 'MRR (Mean Reciprocal Rank): Measures how early the first relevant chunk appears in the ranked results.'
+criteria: MRR measures how early the first relevant chunk appears.
+eval_tags:
+- RAG
+- Retrieval Systems
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - hypothesis
+  - reference
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    hypothesis: Retrieved chunks in ranked order (array/JSON string).
+    reference: Ground-truth relevant chunks (array/JSON string).
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        import ast
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return val
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                try:
+                    return ast.literal_eval(val)
+                except (ValueError, SyntaxError):
+                    pass
+                return [val]
+            return list(val)
+        reference = _parse(kwargs.get("reference", expected))
+        hypothesis = _parse(kwargs.get("hypothesis", output))
+        if not reference or not hypothesis:
+            return {"score": 0.0, "reason": "MRR requires both reference and hypothesis"}
+        ground_truth_set = set(str(x) for x in reference)
+        # Find the rank of the first relevant item
+        reciprocal_rank = 0.0
+        for i, item in enumerate(hypothesis):
+            if str(item) in ground_truth_set:
+                reciprocal_rank = 1.0 / (i + 1)
+                return {"score": float(reciprocal_rank), "reason": f"MRR: {reciprocal_rank:.3f} (first relevant item at rank {i + 1})"}
+        return {"score": 0.0, "reason": "MRR: 0.000 (no relevant item found in retrieved list)"}

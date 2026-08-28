@@ -1,0 +1,173 @@
+meta {
+  name: Image-Text Embeddings
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{base_url}}/model/{{api_version}}/embed/image-text
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  User-Agent: Bruno/1.0
+}
+
+body:json {
+  {
+    "text": "A beautiful sunset over the mountains with orange and pink clouds",
+    "input_type": "image-text"
+  }
+}
+
+docs {
+  # Image-Text Embeddings (Multimodal)
+
+  Generate embeddings using multimodal models that can process both images and text.
+  This endpoint supports image-text alignment and cross-modal similarity search.
+
+  ## Request Body Options
+
+  ### Text Input
+  ```json
+  {
+    "text": "Description or query text",
+    "input_type": "image-text"
+  }
+  ```
+
+  ### Image Input
+  ```json
+  {
+    "image": "data:image/jpeg;base64,<base64_encoded_image>",
+    "input_type": "image-text"
+  }
+  ```
+
+  ### Combined Input (if supported)
+  ```json
+  {
+    "text": "Description of the image",
+    "image": "data:image/jpeg;base64,<base64_encoded_image>",
+    "input_type": "image-text"
+  }
+  ```
+
+  ### Parameters
+  - `text` (string, optional): Text description or query
+  - `image` (string, optional): Image data (base64 encoded with or without data URI)
+  - `input_type` (string): Must be "image-text" for this endpoint
+
+  **Note**: At least one of `text` or `image` must be provided.
+
+  ## Response
+
+  ```json
+  {
+    "embeddings": [
+      [0.1, 0.2, 0.3, ...]  // Multimodal embedding vector
+    ]
+  }
+  ```
+
+  ### Response Fields
+  - `embeddings` (array): Array containing the multimodal embedding vector
+
+  ## Status Codes
+  - `200 OK` - Embedding generated successfully
+  - `400 Bad Request` - Invalid input format or missing both text and image
+  - `422 Unprocessable Entity` - Validation error in request body
+  - `500 Internal Server Error` - Model loading or processing error
+
+  ## Use Cases
+  - Image-text similarity search
+  - Cross-modal retrieval (find images by text description)
+  - Image captioning evaluation
+  - Visual question answering
+  - Content recommendation across modalities
+  - Multimodal content analysis
+  - Image search by natural language queries
+
+  ## Model Features
+  - **Cross-modal alignment**: Text and images mapped to same embedding space
+  - **Bidirectional search**: Find images with text queries and vice versa
+  - **Semantic understanding**: Captures meaning across modalities
+  - **Fine-grained matching**: Detailed image-text relationships
+
+  ## Example Use Cases
+
+  ### Text-to-Image Search
+  ```json
+  {
+    "text": "red sports car in a city street",
+    "input_type": "image-text"
+  }
+  ```
+
+  ### Image-to-Text Search
+  ```json
+  {
+    "image": "data:image/jpeg;base64,<car_image_data>",
+    "input_type": "image-text"
+  }
+  ```
+
+  ### Image Verification
+  ```json
+  {
+    "text": "A cat sitting on a windowsill",
+    "image": "data:image/jpeg;base64,<cat_image_data>",
+    "input_type": "image-text"
+  }
+  ```
+
+  ## Performance Notes
+  - Text processing is generally faster than image processing
+  - Combined text+image input may take longer to process
+  - Embedding space is shared between modalities
+  - Response time depends on input complexity
+
+  ## Supported Models
+  - CLIP (Contrastive Language-Image Pre-training)
+  - ALIGN (A Large-scale ImaGe and Noisy-text embedding)
+  - Similar vision-language models
+
+  ## Limitations
+  - Model quality depends on training data coverage
+  - Some concepts may be better represented than others
+  - Language support may be limited to training languages
+  - Image resolution and quality affect results
+}
+
+tests {
+  test("Status should be 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response should contain embeddings", function() {
+    const data = res.getBody();
+    expect(data.embeddings).to.exist;
+    expect(data.embeddings).to.be.an('array');
+  });
+
+  test("Should return one embedding", function() {
+    const data = res.getBody();
+    expect(data.embeddings).to.have.lengthOf(1);
+  });
+
+  test("Embedding should be an array of numbers", function() {
+    const data = res.getBody();
+    const embedding = data.embeddings[0];
+    expect(embedding).to.be.an('array');
+    expect(embedding.length).to.be.greaterThan(0);
+    embedding.forEach(value => {
+      expect(value).to.be.a('number');
+    });
+  });
+
+  test("Content-Type should be JSON", function() {
+    expect(res.getHeader("content-type")).to.contain("application/json");
+  });
+}

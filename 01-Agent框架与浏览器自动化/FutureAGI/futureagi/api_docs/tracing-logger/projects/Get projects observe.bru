@@ -1,0 +1,28 @@
+meta {
+  name: Get projects observe
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{host}}/tracer/project/list_projects/?sort_by=name&sort_direction=asc
+  body: none
+  auth: bearer
+}
+
+params:query {
+  sort_by: name
+  sort_direction: asc
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "TEST_PROJECT",
+    "model_type": "Ranking",
+    "trace_type": "experiment"
+  }
+}

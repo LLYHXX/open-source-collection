@@ -1,0 +1,22 @@
+meta {
+  name: delete member from all workspaces and organization
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{host}}/accounts/team/users/{{member_id}}/
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+query {
+  member_id: "{{member_id}}"
+}

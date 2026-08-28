@@ -1,0 +1,42 @@
+meta {
+  name: Analytics
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/insight/analytics/:insightId/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  insightId: 901bb646-7e67-452d-baee-054ae64ff167
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "dataset": {
+          "startDate": "2024-01-07 10:08:12",
+          "endDate": "2024-07-07 10:08:12",
+          "aggBy": "daily"
+      },
+      "filters": {
+          "filter": [
+              // {
+              //     "key": "age",
+              //     "value": [
+              //         60
+              //     ],
+              //     "data_type": "number",
+              //     "operator": ">"
+              // }
+          ],
+          "breakdown" : ["programming-language"]
+      }
+  }
+}

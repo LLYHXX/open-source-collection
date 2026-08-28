@@ -1,0 +1,30 @@
+meta {
+  name: Add New Columns
+  type: http
+  seq: 28
+}
+
+post {
+  url: {{host}}/model-hub/develops/34354b9a-83b5-455b-ad3d-e67106c24933/add_columns/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "new_columns_data": [
+        {
+          "name": "act",
+          "data_type": "text"
+        },
+        {
+          "name": "manual",
+          "data_type": "text"
+        }
+      ]
+  }
+}

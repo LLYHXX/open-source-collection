@@ -1,0 +1,740 @@
+"use client";
+
+import { isReservedId } from "@librarian/core/caller-identity";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { AddReferenceDialog } from "./add-reference-dialog";
+import { type ActiveFilter, FilterChips, type FilterDef } from "./filter-chips";
+import { MemoriesList } from "./list";
+import { MemoryBottomSheet } from "./memory-bottom-sheet";
+import { MemoryInspector } from "./memory-inspector";
+import { NewMemoryForm } from "./new-form";
+import { ReferenceHits, type ReferenceSearchResult } from "./reference-hits";
+import { RehomeModal } from "./rehome-modal";
+import { SortBar, type SortState } from "./sort-bar";
+import type { MemoryRow, RouterOutputs } from "./types";
+import { recallAction, searchReferencesAction } from "@/app/(memories)/actions";
+import { EmptyState } from "@/components/brand/empty-state";
+import { Button } from "@/components/ui-v2/button";
+import { KeyHint } from "@/components/ui-v2/key-hint";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui-v2/tabs";
+import { useMediaQuery } from "@/hooks/use-media-query";
+import { useSurfaceShortcuts } from "@/hooks/use-surface-shortcuts";
+import { trpc } from "@/lib/trpc-client";
+
+const PAGE_SIZE = 25;
+const LEGACY_AGENT_ID = "unknown-agent";
+
+type Tab = "browse" | "recall" | "references";
+
+export function MemoriesView() {
+  const [tab, setTab] = useState<Tab>("browse");
+  const [search, setSearch] = useState("");
+  const [filters, setFilters] = useState<ActiveFilter[]>([]);
+  const [sort, setSort] = useState<SortState>({ field: "updated_at", order: "desc" });
+  const [offset, setOffset] = useState(0);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [recallQuery, setRecallQuery] = useState("");
+  const [recallTags, setRecallTags] = useState("");
+  const [recallLimit, setRecallLimit] = useState("");
+  const [recallResults, setRecallResults] = useState<MemoryRow[] | null>(null);
+  const [recallError, setRecallError] = useState<string | null>(null);
+  const [recalling, startRecall] = useTransition();
+  const [refQuery, setRefQuery] = useState("");
+  const [refResult, setRefResult] = useState<ReferenceSearchResult | null>(null);
+  const [refError, setRefError] = useState<string | null>(null);
+  const [searching, startSearch] = useTransition();
+  const [bulkSelection, setBulkSelection] = useState<Set<string>>(new Set());
+  const [showRehome, setShowRehome] = useState(false);
+  const [rehomeToast, setRehomeToast] = useState<string | null>(null);
+  // lg breakpoint (1024px): on desktop the Inspector right rail shows the
+  // detail, so the mobile bottom sheet must stay closed (see its render below).
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const recallInputRef = useRef<HTMLInputElement | null>(null);
+  const refInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Toast auto-dismiss with proper cleanup. Same minimum-viable shape
+  // as the legacy view; next phase swaps to a real toast library.
+  useEffect(() => {
+    if (!rehomeToast) return;
+    const timer = setTimeout(() => setRehomeToast(null), 4000);
+    return () => clearTimeout(timer);
+  }, [rehomeToast]);
+
+  // Materialise active filters into the listInput shape the server
+  // expects. The chips are the source of truth.
+  const filtersByKey = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const f of filters) m[f.key] = f.value;
+    return m;
+  }, [filters]);
+
+  const listInput = {
+    status: "active",
+    sort: sort.field,
+    order: sort.order,
+    limit: PAGE_SIZE,
+    offset,
+    ...(filtersByKey.agent_id ? { agent_id: filtersByKey.agent_id } : {}),
+    ...(filtersByKey.tags ? { tags: [filtersByKey.tags] } : {}),
+    ...(filtersByKey.shelf ? { shelf: filtersByKey.shelf } : {}),
+    ...(filtersByKey.from ? { from: filtersByKey.from } : {}),
+    ...(filtersByKey.to ? { to: filtersByKey.to } : {}),
+  } as Parameters<typeof trpc.memories.list.useQuery>[0];
+
+  const listQuery = trpc.memories.list.useQuery(listInput);
+  const listMemories = listQuery.data?.memories ?? [];
+  const total = listQuery.data?.total ?? 0;
+
+  // Browse mode: server-filtered list + cheap client-side substring on
+  // the search input. Recall mode: the ranked results from recallAction.
+  const displayed =
+    tab === "recall" ? (recallResults ?? []) : filterClientSide(listMemories, search);
+  const selected = displayed.find((m) => m.id === selectedId) ?? null;
+
+  // Filter defs — agent pulls its option list from the distinct-values
+  // projection so the operator never types from memory.
+  const agentValues = trpc.memories.distinctValues.useQuery({ field: "agent_id" });
+  const tagCountsQuery = trpc.memories.tagCounts.useQuery();
+  const shelvesQuery = trpc.vault.shelves.useQuery();
+  const refreshMemoryReads = () => {
+    void listQuery.refetch();
+    void tagCountsQuery.refetch();
+  };
+  const filterDefs: FilterDef[] = useMemo(
+    () =>
+      buildFilterDefs(
+        agentValues.data,
+        shelvesQuery.isLoading || shelvesQuery.isError ? undefined : shelvesQuery.data,
+        tagCountsQuery.isLoading || tagCountsQuery.isError ? undefined : tagCountsQuery.data,
+      ),
+    [
+      agentValues.data,
+      shelvesQuery.data,
+      shelvesQuery.isError,
+      shelvesQuery.isLoading,
+      tagCountsQuery.data,
+      tagCountsQuery.isError,
+      tagCountsQuery.isLoading,
+    ],
+  );
+
+  const handleRecall = (query: string) => {
+    const q = query.trim();
+    if (!q) return;
+    const tags = recallTags
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const parsedLimit = Number.parseInt(recallLimit, 10);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+    startRecall(async () => {
+      const result = await recallAction(q, { tags, ...(limit !== undefined ? { limit } : {}) });
+      if (result.ok) {
+        setRecallError(null);
+        setRecallResults(result.memories);
+      } else {
+        setRecallError(result.error);
+      }
+    });
+  };
+
+  const handleSearchReferences = (query: string) => {
+    const q = query.trim();
+    if (!q) return;
+    startSearch(async () => {
+      const result = await searchReferencesAction(q);
+      if (result.ok) {
+        setRefError(null);
+        setRefResult({ query: q, references: result.references, searched: result.searched });
+      } else {
+        setRefError(result.error);
+        setRefResult(null);
+      }
+    });
+  };
+
+  const setFilter = (key: string, value: string, display: string) => {
+    setFilters((prev) => {
+      const next = prev.filter((f) => f.key !== key);
+      next.push({ key, value, display });
+      return next;
+    });
+    setOffset(0);
+  };
+  const removeFilter = (key: string) => {
+    setFilters((prev) => prev.filter((f) => f.key !== key));
+    setOffset(0);
+  };
+  const clearAllFilters = () => {
+    setFilters([]);
+    setOffset(0);
+  };
+
+  // j/k navigation through the visible list. Wraps at both ends —
+  // vim convention, easier to learn than "stop at the boundary."
+  const moveSelection = useCallback(
+    (delta: 1 | -1) => {
+      if (displayed.length === 0) return;
+      const currentIndex = selectedId ? displayed.findIndex((m) => m.id === selectedId) : -1;
+      const nextIndex =
+        currentIndex === -1
+          ? delta === 1
+            ? 0
+            : displayed.length - 1
+          : (currentIndex + delta + displayed.length) % displayed.length;
+      const nextRow = displayed[nextIndex];
+      if (nextRow) setSelectedId(nextRow.id);
+    },
+    [displayed, selectedId],
+  );
+
+  // Per-surface shortcuts. `/` focuses the active tab's input;
+  // `n` toggles the new-memory form; `r` jumps to the Recall tab
+  // and focuses its input; `j`/`k` cycle the displayed list;
+  // `esc` peels off context in priority order (selection →
+  // recall results → no-op). Hook handles skip-when-in-input.
+  useSurfaceShortcuts({
+    "/": () => {
+      const target =
+        tab === "references"
+          ? refInputRef.current
+          : tab === "recall"
+            ? recallInputRef.current
+            : searchInputRef.current;
+      target?.focus();
+      target?.select();
+    },
+    n: () => setShowNewForm((v) => !v),
+    r: () => {
+      setTab("recall");
+      // Defer so the tab content renders + the input mounts before focus.
+      setTimeout(() => {
+        recallInputRef.current?.focus();
+        recallInputRef.current?.select();
+      }, 0);
+    },
+    j: () => moveSelection(1),
+    k: () => moveSelection(-1),
+    Escape: () => {
+      if (selectedId) {
+        setSelectedId(null);
+        return;
+      }
+      if (recallResults) {
+        setRecallResults(null);
+        setRecallError(null);
+      }
+      if (refResult || refError) {
+        setRefResult(null);
+        setRefError(null);
+      }
+    },
+  });
+
+  return (
+    <>
+      {/* `grid-cols-1` at <lg expands to `repeat(1, minmax(0, 1fr))` —
+          critical because the implicit `auto` track sizes to max-content,
+          and the row's `truncate` titles count their full nowrap width
+          toward that, forcing the page wider than the viewport on long
+          titles. The explicit minmax(0, 1fr) lets the track shrink. */}
+      <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[1fr_360px]">
+        <main className="flex min-w-0 flex-col gap-5 p-6">
+          <header className="flex flex-wrap items-center justify-between gap-3">
+            <h1 className="font-display text-xl text-foreground">Memories</h1>
+            <div className="flex items-center gap-2">
+              <SortBar sort={sort} onChange={setSort} />
+              {bulkSelection.size > 0 ? (
+                <Button
+                  variant="primary"
+                  onClick={() => setShowRehome(true)}
+                  aria-label={`Re-home ${bulkSelection.size} selected memories`}
+                >
+                  Re-home ({bulkSelection.size})
+                </Button>
+              ) : null}
+              <Button variant="outline" onClick={() => setShowNewForm((v) => !v)}>
+                {showNewForm ? "Cancel" : "New memory"}
+                {!showNewForm ? <KeyHint shortcut="N" /> : null}
+              </Button>
+            </div>
+          </header>
+
+          {rehomeToast ? (
+            <div
+              role="status"
+              className="border border-ink-accent/40 bg-ink-accent/[0.06] px-3 py-2 text-sm text-foreground"
+            >
+              {rehomeToast}
+            </div>
+          ) : null}
+
+          {showNewForm ? (
+            <NewMemoryForm
+              onSaved={() => {
+                setShowNewForm(false);
+                refreshMemoryReads();
+              }}
+            />
+          ) : null}
+
+          <Tabs value={tab} onValueChange={(next) => setTab(next as Tab)}>
+            <TabsList aria-label="Memory mode">
+              <TabsTrigger value="browse">Browse</TabsTrigger>
+              <TabsTrigger value="recall">
+                Recall
+                <KeyHint shortcut="R" />
+              </TabsTrigger>
+              <TabsTrigger value="references">References</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="browse" className="flex flex-col gap-4">
+              <div className="flex flex-col gap-3">
+                <div className="relative w-full max-w-xl">
+                  <input
+                    ref={searchInputRef}
+                    type="search"
+                    placeholder="Search title or body…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        setSearch("");
+                        e.currentTarget.blur();
+                      }
+                    }}
+                    aria-label="Search memories"
+                    className="w-full border border-ink-hairline bg-transparent px-3 py-2 pr-8 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ink-accent pointer-coarse:min-h-11 pointer-coarse:text-base"
+                  />
+                  {!search ? (
+                    <span
+                      aria-hidden
+                      className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2"
+                    >
+                      <KeyHint shortcut="/" />
+                    </span>
+                  ) : null}
+                </div>
+                <FilterChips
+                  defs={filterDefs}
+                  active={filters}
+                  onSet={setFilter}
+                  onRemove={removeFilter}
+                  onClearAll={clearAllFilters}
+                />
+              </div>
+              {/* min-w-0 (on the section AND its child via [&>*]) keeps the
+                  list from forcing the column past viewport width. */}
+              <section className="min-w-0 flex-1 [&>*]:min-w-0">
+                <MemoriesList
+                  memories={displayed}
+                  isLoading={listQuery.isLoading}
+                  isError={listQuery.isError}
+                  error={listQuery.error?.message}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  onTagSelect={(tag) => setFilter("tags", tag, tag)}
+                  offset={offset}
+                  pageSize={PAGE_SIZE}
+                  hasMore={offset + listMemories.length < total}
+                  onOffsetChange={setOffset}
+                  showPagination
+                  selectionEnabled
+                  selectedIds={bulkSelection}
+                  onToggleSelected={(id) =>
+                    setBulkSelection((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(id)) next.delete(id);
+                      else next.add(id);
+                      return next;
+                    })
+                  }
+                  onToggleSelectAll={(selectAll) =>
+                    setBulkSelection((prev) => {
+                      const next = new Set(prev);
+                      for (const m of displayed) {
+                        if (selectAll) next.add(m.id);
+                        else next.delete(m.id);
+                      }
+                      return next;
+                    })
+                  }
+                  emptyState={browseEmptyState({
+                    hasFilters: filters.length > 0 || search.trim().length > 0,
+                    onClearFilters: () => {
+                      clearAllFilters();
+                      setSearch("");
+                    },
+                    onNewMemory: () => setShowNewForm(true),
+                  })}
+                />
+              </section>
+            </TabsContent>
+
+            <TabsContent value="recall" className="flex flex-col gap-4">
+              <form
+                className="flex flex-col gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleRecall(recallQuery);
+                }}
+              >
+                <label className="flex flex-col gap-1.5">
+                  <span className="font-mono text-[11px] uppercase tracking-wider text-foreground/55">
+                    Recall query
+                  </span>
+                  <div className="flex gap-2">
+                    <input
+                      ref={recallInputRef}
+                      type="text"
+                      value={recallQuery}
+                      onChange={(e) => setRecallQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          if (recallResults) {
+                            setRecallResults(null);
+                            setRecallError(null);
+                          } else {
+                            setRecallQuery("");
+                          }
+                          e.currentTarget.blur();
+                        }
+                      }}
+                      placeholder="Ask the librarian by name — claude-code after Tuesday…"
+                      className="flex-1 border border-ink-hairline bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ink-accent pointer-coarse:min-h-11 pointer-coarse:text-base"
+                    />
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      disabled={recalling || !recallQuery.trim()}
+                    >
+                      {recalling ? "Recalling…" : "Recall"}
+                    </Button>
+                  </div>
+                </label>
+                {/* The agent's other recall knobs — any-match tags + result limit
+                    — so the operator can reproduce a specific agent's recall. */}
+                <div className="flex flex-wrap gap-2">
+                  <label className="flex min-w-[12rem] flex-1 flex-col gap-1.5">
+                    <span className="font-mono text-[11px] uppercase tracking-wider text-foreground/55">
+                      Tags (any-match, comma-separated)
+                    </span>
+                    <input
+                      type="text"
+                      value={recallTags}
+                      onChange={(e) => setRecallTags(e.target.value)}
+                      placeholder="optional — e.g. preference, deploy"
+                      className="border border-ink-hairline bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ink-accent pointer-coarse:min-h-11 pointer-coarse:text-base"
+                    />
+                  </label>
+                  <label className="flex w-24 flex-col gap-1.5">
+                    <span className="font-mono text-[11px] uppercase tracking-wider text-foreground/55">
+                      Limit
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={recallLimit}
+                      onChange={(e) => setRecallLimit(e.target.value)}
+                      placeholder="12"
+                      className="border border-ink-hairline bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ink-accent pointer-coarse:min-h-11 pointer-coarse:text-base"
+                    />
+                  </label>
+                </div>
+                {recallError ? (
+                  <p
+                    role="alert"
+                    className="border border-destructive/40 bg-destructive/[0.06] p-3 text-sm text-destructive"
+                  >
+                    Recall failed: {recallError}. Try again, or refine the query.
+                  </p>
+                ) : null}
+                {recallResults ? (
+                  <div className="flex items-center justify-between border border-ink-accent/40 bg-ink-accent/[0.06] px-3 py-2 text-sm text-foreground">
+                    <span>
+                      Showing {recallResults.length} result
+                      {recallResults.length === 1 ? "" : "s"} for &ldquo;{recallQuery}&rdquo;
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecallResults(null);
+                        setRecallError(null);
+                        setSelectedId(null);
+                      }}
+                      className="font-mono text-xs uppercase tracking-wider text-ink-accent hover:underline"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                ) : null}
+              </form>
+              <section className="min-w-0 flex-1 [&>*]:min-w-0">
+                <MemoriesList
+                  memories={displayed}
+                  isLoading={recalling}
+                  isError={false}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  offset={0}
+                  pageSize={PAGE_SIZE}
+                  hasMore={false}
+                  onOffsetChange={() => {}}
+                  showPagination={false}
+                  emptyState={
+                    recallResults ? (
+                      <p className="text-sm text-foreground/60">
+                        No memories match &ldquo;{recallQuery}&rdquo;. Try a different phrasing, or
+                        switch to <span className="text-foreground/80">Browse</span> and filter by
+                        agent.
+                      </p>
+                    ) : (
+                      <p className="text-sm text-foreground/55">
+                        Type a query above and press{" "}
+                        <span className="font-mono text-foreground/80">Recall</span> (or hit Enter)
+                        to ask the librarian.
+                      </p>
+                    )
+                  }
+                />
+              </section>
+            </TabsContent>
+
+            <TabsContent value="references" className="flex flex-col gap-4">
+              {/* Spec 073 T5: the way IN. Until now this tab could only search
+                  references, while the docs promised you could upload them. */}
+              <AddReferenceDialog
+                onFiled={() => {
+                  // A newly filed reference is searchable immediately (the
+                  // index is built per call), so re-run a live query rather
+                  // than leaving stale results on screen.
+                  if (refQuery.trim()) handleSearchReferences(refQuery);
+                }}
+              />
+              <form
+                className="flex flex-col gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSearchReferences(refQuery);
+                }}
+              >
+                <label className="flex flex-col gap-1.5">
+                  <span className="font-mono text-[11px] uppercase tracking-wider text-foreground/55">
+                    search_references query
+                  </span>
+                  <div className="flex gap-2">
+                    <input
+                      ref={refInputRef}
+                      type="text"
+                      value={refQuery}
+                      onChange={(e) => setRefQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          if (refResult || refError) {
+                            setRefResult(null);
+                            setRefError(null);
+                          } else {
+                            setRefQuery("");
+                          }
+                          e.currentTarget.blur();
+                        }
+                      }}
+                      placeholder="What an agent would look up — e.g. gentle coding…"
+                      className="flex-1 border border-ink-hairline bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ink-accent pointer-coarse:min-h-11 pointer-coarse:text-base"
+                    />
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      disabled={searching || !refQuery.trim()}
+                    >
+                      {searching ? "Searching…" : "Search"}
+                    </Button>
+                  </div>
+                </label>
+                <p className="text-xs text-foreground/50">
+                  Runs the agents&rsquo; <span className="font-mono">search_references</span> verb
+                  against this server&rsquo;s vault — the results below are exactly what an agent
+                  sees.
+                </p>
+              </form>
+              <section className="min-w-0 flex-1 [&>*]:min-w-0">
+                <ReferenceHits result={refResult} isLoading={searching} error={refError} />
+              </section>
+            </TabsContent>
+          </Tabs>
+        </main>
+
+        {/* Right rail (desktop only). Mobile falls back to the modal
+            MemoryDetailPanel below; /impeccable adapt will replace
+            the mobile modal with a bottom sheet. */}
+        <MemoryInspector
+          memory={selected}
+          onClose={() => setSelectedId(null)}
+          onMutated={() => {
+            refreshMemoryReads();
+            if (recallResults) setRecallResults(null);
+          }}
+        />
+      </div>
+
+      {/* Mobile detail-view — slides up from the bottom. On lg+ the Inspector
+          right rail takes over, so the sheet must NOT open. A `lg:hidden`
+          wrapper can't do this: the sheet portals to <body>, so the class
+          never reaches it and an open Radix dialog would still trap focus on
+          desktop. Gate `open` on the breakpoint in JS instead. */}
+      <MemoryBottomSheet
+        memory={selected}
+        open={!!selected && !isDesktop}
+        onOpenChange={(next) => {
+          if (!next) setSelectedId(null);
+        }}
+        onMutated={() => {
+          refreshMemoryReads();
+          if (recallResults) setRecallResults(null);
+        }}
+      />
+
+      <RehomeModal
+        open={showRehome}
+        onOpenChange={setShowRehome}
+        selectedIds={[...bulkSelection]}
+        onSuccess={(count) => {
+          setBulkSelection(new Set());
+          setRehomeToast(`Re-homed ${count} memor${count === 1 ? "y" : "ies"}.`);
+          listQuery.refetch();
+        }}
+      />
+    </>
+  );
+}
+
+// Two empty branches: (a) filters/search active → small inline
+// "no matches" + clear handle; (b) truly empty → the hero EmptyState
+// composite (librarian + constellation + first-run welcome copy).
+function browseEmptyState({
+  hasFilters,
+  onClearFilters,
+  onNewMemory,
+}: {
+  hasFilters: boolean;
+  onClearFilters: () => void;
+  onNewMemory: () => void;
+}) {
+  if (hasFilters) {
+    return (
+      <div className="flex flex-col items-start gap-3 text-sm text-foreground/60">
+        <p>No memories match these filters.</p>
+        <Button variant="outline" onClick={onClearFilters}>
+          Clear all filters
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <EmptyState
+      title="The library is empty."
+      action={
+        <Button variant="primary" onClick={onNewMemory}>
+          Write the first memory
+        </Button>
+      }
+    >
+      <p>
+        Agents save memories automatically as you work — they&apos;ll appear here. You can also
+        write the first one yourself.
+      </p>
+    </EmptyState>
+  );
+}
+
+function filterClientSide(memories: MemoryRow[], term: string): MemoryRow[] {
+  if (!term) return memories;
+  const needle = term.toLowerCase();
+  return memories.filter(
+    (m) => m.title.toLowerCase().includes(needle) || m.body.toLowerCase().includes(needle),
+  );
+}
+
+function buildFilterDefs(
+  agentValues: readonly string[] | undefined,
+  shelves: RouterOutputs["vault"]["shelves"] | undefined,
+  tagCounts: RouterOutputs["memories"]["tagCounts"] | undefined,
+): FilterDef[] {
+  const agents: string[] = [];
+  const systemActors: string[] = [];
+  const legacy: string[] = [];
+  for (const id of agentValues ?? []) {
+    if (id === LEGACY_AGENT_ID) legacy.push(id);
+    else if (isReservedId(id)) systemActors.push(id);
+    else agents.push(id);
+  }
+  return [
+    {
+      key: "agent_id",
+      label: "Agent",
+      type: "select",
+      groups: [
+        { options: agents.map((v) => ({ value: v, label: v })) },
+        ...(systemActors.length > 0
+          ? [
+              {
+                label: "System actors",
+                options: systemActors.map((v) => ({ value: v, label: v })),
+              },
+            ]
+          : []),
+        ...(legacy.length > 0
+          ? [
+              {
+                label: "Legacy",
+                options: legacy.map((v) => ({ value: v, label: `${v} (legacy)` })),
+              },
+            ]
+          : []),
+      ],
+    },
+    ...(shelves && shelves.length > 1
+      ? [
+          {
+            key: "shelf",
+            label: "Shelf",
+            type: "select" as const,
+            groups: [
+              {
+                options: shelves.map((shelf) => ({
+                  value: shelf.id,
+                  label: shelf.label ?? shelf.id,
+                  title: shelf.id,
+                })),
+              },
+            ],
+          },
+        ]
+      : []),
+    ...(tagCounts
+      ? [
+          {
+            key: "tags",
+            label: "Tag",
+            type: "select" as const,
+            groups: [
+              {
+                options: tagCounts.map(({ tag, count }) => ({
+                  value: tag,
+                  label: `${tag} · ${count}`,
+                  activeDisplay: tag,
+                  title: tag,
+                })),
+              },
+            ],
+          },
+        ]
+      : []),
+    { key: "from", label: "From", type: "date" },
+    { key: "to", label: "To", type: "date" },
+  ];
+}

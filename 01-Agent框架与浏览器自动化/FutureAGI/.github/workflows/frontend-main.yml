@@ -1,0 +1,93 @@
+name: Frontend Main Branch Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-main.yml'
+  workflow_dispatch:
+
+jobs:
+  # Comprehensive testing for main branch
+  comprehensive-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'
+          cache: 'yarn'
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Type check
+        run: yarn type-check
+
+      - name: Run full test suite with coverage
+        run: yarn test:ci
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        if: always()
+        with:
+          file: ./frontend/coverage/lcov.info
+          flags: main-branch
+          name: main-coverage
+
+  # Build and security for production
+  build-and-security:
+    runs-on: ubuntu-latest
+    needs: comprehensive-tests
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'
+          cache: 'yarn'
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build production application
+        run: yarn build
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Security audit
+        run: yarn audit --level moderate
+        continue-on-error: true
+
+      - name: Upload production artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-build
+          path: frontend/dist/
+          retention-days: 30
+
+  # Production readiness check
+  production-ready:
+    runs-on: ubuntu-latest
+    needs: [comprehensive-tests, build-and-security]
+    steps:
+      - name: Production Deployment Ready
+        run: |
+          echo "🚀 Main branch is ready for production deployment!"
+          echo "✅ All tests passed"
+          echo "✅ Security audit completed"
+          echo "✅ Production build artifacts available"

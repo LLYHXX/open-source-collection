@@ -1,0 +1,141 @@
+meta {
+  name: Image Embeddings
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/model/{{api_version}}/embed/image
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  User-Agent: Bruno/1.0
+}
+
+body:json {
+  {
+    "image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=",
+    "input_type": "image"
+  }
+}
+
+docs {
+  # Image Embeddings
+
+  Generate image embeddings using the configured image embedding model.
+  Accepts images in various formats (base64, URL, or binary data).
+
+  ## Request Body
+
+  ```json
+  {
+    "image": "data:image/jpeg;base64,<base64_encoded_image>",
+    "input_type": "image"
+  }
+  ```
+
+  ### Parameters
+  - `image` (string): Image data in one of the following formats:
+    - Base64 encoded with data URI: `data:image/jpeg;base64,<data>`
+    - Base64 encoded string (without data URI prefix)
+    - Image URL (if supported by the model)
+  - `input_type` (string): Must be "image" for this endpoint
+
+  ## Response
+
+  ```json
+  {
+    "embeddings": [
+      [0.1, 0.2, 0.3, ...]  // Image embedding vector
+    ]
+  }
+  ```
+
+  ### Response Fields
+  - `embeddings` (array): Array containing the image embedding vector
+
+  ## Status Codes
+  - `200 OK` - Embedding generated successfully
+  - `400 Bad Request` - Invalid image format or missing required fields
+  - `422 Unprocessable Entity` - Validation error in request body
+  - `500 Internal Server Error` - Model loading or image processing error
+
+  ## Supported Image Formats
+  - JPEG (.jpg, .jpeg)
+  - PNG (.png)
+  - GIF (.gif)
+  - BMP (.bmp)
+  - TIFF (.tiff)
+  - WebP (.webp)
+
+  ## Image Input Examples
+
+  ### Base64 with Data URI
+  ```json
+  {
+    "image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAAQABAAD...",
+    "input_type": "image"
+  }
+  ```
+
+  ### Base64 without Data URI
+  ```json
+  {
+    "image": "/9j/4AAQSkZJRgABAQEAAQABAAD...",
+    "input_type": "image"
+  }
+  ```
+
+  ## Use Cases
+  - Image similarity search
+  - Visual content recommendation
+  - Image classification
+  - Duplicate image detection
+  - Content-based image retrieval
+  - Visual search engines
+
+  ## Performance Notes
+  - Larger images take longer to process
+  - Images are automatically resized to model requirements
+  - Response time depends on image size and complexity
+  - Consider image compression for faster processing
+
+  ## Limitations
+  - Maximum image size may be limited by model configuration
+  - Processing time increases with image resolution
+  - Some models may have specific aspect ratio requirements
+}
+
+tests {
+  test("Status should be 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response should contain embeddings", function() {
+    const data = res.getBody();
+    expect(data.embeddings).to.exist;
+    expect(data.embeddings).to.be.an('array');
+  });
+
+  test("Should return one embedding for single image", function() {
+    const data = res.getBody();
+    expect(data.embeddings).to.have.lengthOf(1);
+  });
+
+  test("Embedding should be an array of numbers", function() {
+    const data = res.getBody();
+    const embedding = data.embeddings[0];
+    expect(embedding).to.be.an('array');
+    expect(embedding.length).to.be.greaterThan(0);
+    embedding.forEach(value => {
+      expect(value).to.be.a('number');
+    });
+  });
+
+  test("Content-Type should be JSON", function() {
+    expect(res.getHeader("content-type")).to.contain("application/json");
+  });
+}

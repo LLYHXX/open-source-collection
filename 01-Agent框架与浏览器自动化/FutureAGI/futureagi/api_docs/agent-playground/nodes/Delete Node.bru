@@ -1,0 +1,60 @@
+meta {
+  name: Delete Node
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{host}}/agent-playground/graphs/:graph_id/versions/:version_id/nodes/:node_id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  version_id: {{version_id}}
+  node_id: {{node_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  node_id: 52fbb228-5e25-49bb-a001-7e858fb57576
+  graph_id: 109ec4c4-37ba-4fdb-8c5a-d59a4e984b12
+  version_id: 83159241-8d49-450c-8fd0-870beb9430a4
+}
+
+docs {
+  # Delete Node
+
+  Soft-delete a node and cascade to its ports, edges, and node connections.
+
+  ## Path Parameters
+  - `graph_id` (required): UUID of the graph
+  - `version_id` (required): UUID of the draft version
+  - `node_id` (required): UUID of the node
+
+  ## Cascade order
+  1. All edges connected to the node's ports
+  2. All NodeConnections where this node is source or target
+  3. All ports on this node
+  4. The PromptTemplateNode link (if exists)
+  5. The node itself
+
+  ## Response (200)
+  ```json
+  {
+    "status": true,
+    "result": {"message": "Node deleted successfully"}
+  }
+  ```
+
+  ## Side Effects
+  - Dataset columns are synced (add-only) after node deletion. Columns are never deleted — they remain in the dataset for other versions that may still reference them.
+
+  ## Errors
+  - `400`: Version is not DRAFT
+  - `404`: Node not found or doesn't belong to this version
+}

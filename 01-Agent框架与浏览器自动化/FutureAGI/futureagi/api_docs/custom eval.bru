@@ -1,0 +1,31 @@
+meta {
+  name: custom eval
+  type: http
+  seq: 19
+}
+
+post {
+  url: http://localhost:8000/model-hub/create_custom_evals/
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+      "template_type": "Llm",
+      "name": "llm custom",
+      "description": "A template for evaluating AI responses",
+      "tags": ["conversational_agents", "rag_agents", "summarization"],
+      "criteria": "Check if the {{input}} is accurate and helpful for {{output}} ",
+      "output_type": "score",
+      "required_keys": ["input", "output"],
+      "config": {
+        "model" : "gpt-4o"
+      },
+      "check_internet": false,
+      "choices": {
+      },
+      "multi_choice": false
+  }
+
+}

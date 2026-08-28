@@ -1,0 +1,21 @@
+meta {
+  name: workspace eval level api
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{host}}/usage/workspace-eval-summary/?year=2025&month=10&workspace_id=5576d7d5-0392-4ffc-9b3f-8f369f01235d
+  body: none
+  auth: bearer
+}
+
+params:query {
+  year: 2025
+  month: 10
+  workspace_id: 5576d7d5-0392-4ffc-9b3f-8f369f01235d
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

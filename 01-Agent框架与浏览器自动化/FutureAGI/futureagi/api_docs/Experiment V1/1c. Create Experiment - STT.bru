@@ -1,0 +1,80 @@
+meta {
+  name: Create Experiment - STT
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/experiments/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "dataset_id": "d45c7229-b80a-4f77-bc97-94b720eea501",
+    "column_id": "b9341955-3fc7-4901-9622-5db496ecfe58",
+    "name": "Run Exp 2",
+    "prompt_config": [
+      {
+        "name": "rp1",
+        "version": "",
+        "model_type": "stt",
+        "messages": [
+          {
+            "role": "system",
+            "content": [{"type": "text", "text": ""}]
+          },
+          {
+            "role": "user",
+            "content": [{"type": "text", "text": "{{b9341955-3fc7-4901-9622-5db496ecfe58}}"}]
+          }
+        ],
+        "model": ["elevenlabs/scribe_v1"],
+        "voice_input_column": "b9341955-3fc7-4901-9622-5db496ecfe58",
+        "model_params": {
+          "elevenlabs/scribe_v1": {
+            "num_speakers": 2,
+            "diarization_threshold": 0.22,
+            "temperature": 0,
+            "seed": 0,
+            "booleans": {
+              "diarize": false,
+              "tag_audio_events": true
+            },
+            "dropdowns": {
+              "timestamps_granularity": "word"
+            },
+            "providers": "elevenlabs",
+            "logo_url": "https://fi-content-dev.s3.ap-south-1.amazonaws.com/provider-logos/elevenlabs-small.png"
+          }
+        },
+        "configuration": {
+          "tool_choice": "auto",
+          "tools": []
+        },
+        "output_format": "string"
+      }
+    ],
+    "user_eval_template_ids": [
+      "9e1f0154-5c66-4efd-8bf0-8f2735b1dbec"
+    ]
+  }
+}
+
+docs {
+  ## Create Experiment - STT (V1)
+
+  Creates an STT (Speech-to-Text) experiment. Models are string arrays.
+  Requires `voice_input_column` pointing to the column containing audio input.
+  model_params include STT-specific fields: num_speakers, diarization_threshold, booleans, dropdowns.
+
+  ### Response
+  ```json
+  {"message": "Experiment created successfully.", "status": 200}
+  ```
+}

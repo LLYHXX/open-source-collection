@@ -1,0 +1,26 @@
+meta {
+  name: Create KB Test1
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/model-hub/knowledge-base/
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {}
+}
+
+body:multipart-form {
+  name: kb-1
+  file[0]: @file(/home/aryan/Downloads/test-files/file_11.txt)
+  file[1]: @file(/home/aryan/Downloads/test-files/file_3.txt)
+  file[2]: @file(/home/aryan/Downloads/test-files/file_18.txt)
+}

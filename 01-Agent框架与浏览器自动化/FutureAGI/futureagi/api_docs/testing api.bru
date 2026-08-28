@@ -1,0 +1,15 @@
+meta {
+  name: testing api
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}:{{port}}/test/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

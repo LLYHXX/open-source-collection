@@ -1,0 +1,22 @@
+meta {
+  name: Delete KB Files Test1
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{host}}/model-hub/knowledge-base/files/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "file_ids": ["f37aba3f-4f41-40aa-8302-8a094c0fe4d6"],
+    "kb_id": "9e466f05-fd48-4cee-bb7d-78b8c895de01"
+  }
+}

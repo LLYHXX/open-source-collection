@@ -1,0 +1,42 @@
+meta {
+  name: 02 - Error - Missing Workspace ID
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/usage/workspace-eval-summary/?month=1&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 1
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Workspace Evaluation Summary - Missing Workspace ID
+
+  ### Test Scenario
+  - Month and year provided but workspace_id is missing
+  - Tests required parameter validation
+
+  ### Expected Response
+  - Status: 400 Bad Request
+  - Response structure:
+    ```json
+    {
+      "status": false,
+      "message": "Error message containing 'workspace_id'"
+    }
+    ```
+
+  ### Notes
+  - workspace_id is a required parameter
+  - Cannot query eval summary without specifying a workspace
+}

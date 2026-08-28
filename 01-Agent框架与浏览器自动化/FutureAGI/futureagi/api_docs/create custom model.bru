@@ -1,0 +1,33 @@
+meta {
+  name: create custom model
+  type: http
+  seq: 21
+}
+
+post {
+  url: http://localhost:8000/model-hub/custom_models/create/
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: application/json, text/plain, */*
+  Accept-Language: en-GB,en-US;q=0.9,en;q=0.8
+  Authorization: Bearer {{access_token}}
+  Connection: keep-alive
+  Content-Type: application/json
+  DNT: 1
+  Origin: http://localhost:3031
+  Referer: http://localhost:3031/
+  Sec-Fetch-Dest: empty
+  Sec-Fetch-Mode: cors
+  Sec-Fetch-Site: same-site
+  User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36
+  sec-ch-ua: "Chromium";v="137", "Not/A)Brand";v="24"
+  sec-ch-ua-mobile: ?0
+  sec-ch-ua-platform: "Windows"
+}
+
+body:json {
+  {"modelName":"meta-llama-3.1-8b-instruct","modelProvider":"openai","inputTokenCost":"1","outputTokenCost":"1","configJson":{"key":"flp_lrkBKy1EP9uCqXMluK73FhDQUY1SABGBRZKs1JCYJhfwa3","apiBase":"https://api.friendli.ai/serverless/v1"}}
+}

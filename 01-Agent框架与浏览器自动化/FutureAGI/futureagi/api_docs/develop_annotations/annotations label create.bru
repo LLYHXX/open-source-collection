@@ -1,0 +1,21 @@
+meta {
+  name: annotations label create
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:8000/model-hub/annotations-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "num_rows" : 2
+  }
+}

@@ -1,0 +1,23 @@
+meta {
+  name: assign-label
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-by-name/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "template_name": "Test-labels",
+      "version": "v1",
+      "label": "Production"
+  }
+}

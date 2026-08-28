@@ -1,0 +1,398 @@
+"""
+Unit tests for UnifiedSession and UnifiedSessionStore.
+"""
+
+import json
+import os
+import tempfile
+import pytest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from datetime import datetime
+
+from praisonai.cli.session.unified import (
+    UnifiedSession,
+    UnifiedSessionStore,
+    get_session_store,
+)
+
+
+class TestUnifiedSession:
+    """Tests for UnifiedSession class."""
+    
+    def test_create_session(self):
+        """Test creating a new session."""
+        session = UnifiedSession(session_id="test-123")
+        
+        assert session.session_id == "test-123"
+        assert session.messages == []
+        assert session.total_input_tokens == 0
+        assert session.total_output_tokens == 0
+        assert session.request_count == 0
+    
+    def test_add_user_message(self):
+        """Test adding a user message."""
+        session = UnifiedSession(session_id="test-123")
+        session.add_user_message("Hello, world!")
+        
+        assert len(session.messages) == 1
+        assert session.messages[0]["role"] == "user"
+        assert session.messages[0]["content"] == "Hello, world!"
+        assert "timestamp" in session.messages[0]
+    
+    def test_add_assistant_message(self):
+        """Test adding an assistant message."""
+        session = UnifiedSession(session_id="test-123")
+        session.add_assistant_message("Hello! How can I help?")
+        
+        assert len(session.messages) == 1
+        assert session.messages[0]["role"] == "assistant"
+        assert session.messages[0]["content"] == "Hello! How can I help?"
+    
+    def test_get_chat_history(self):
+        """Test getting chat history in LLM format."""
+        session = UnifiedSession(session_id="test-123")
+        session.add_user_message("Hello")
+        session.add_assistant_message("Hi there!")
+        session.add_user_message("How are you?")
+        
+        history = session.get_chat_history()
+        
+        assert len(history) == 3
+        assert history[0] == {"role": "user", "content": "Hello"}
+        assert history[1] == {"role": "assistant", "content": "Hi there!"}
+        assert history[2] == {"role": "user", "content": "How are you?"}
+    
+    def test_get_chat_history_with_limit(self):
+        """Test getting limited chat history."""
+        session = UnifiedSession(session_id="test-123")
+        for i in range(10):
+            session.add_user_message(f"Message {i}")
+        
+        history = session.get_chat_history(max_messages=3)
+        
+        assert len(history) == 3
+        assert history[0]["content"] == "Message 7"
+        assert history[2]["content"] == "Message 9"
+    
+    def test_update_stats(self):
+        """Test updating token statistics."""
+        session = UnifiedSession(session_id="test-123")
+        session.update_stats(100, 50, 0.01)
+        session.update_stats(200, 100, 0.02)
+        
+        assert session.total_input_tokens == 300
+        assert session.total_output_tokens == 150
+        assert session.total_cost == 0.03
+        assert session.request_count == 2
+    
+    def test_clear_messages(self):
+        """Test clearing messages."""
+        session = UnifiedSession(session_id="test-123")
+        session.add_user_message("Hello")
+        session.add_assistant_message("Hi")
+        session.clear_messages()
+        
+        assert len(session.messages) == 0
+    
+    def test_message_count(self):
+        """Test message count property."""
+        session = UnifiedSession(session_id="test-123")
+        assert session.message_count == 0
+        
+        session.add_user_message("Hello")
+        session.add_assistant_message("Hi")
+        
+        assert session.message_count == 2
+    
+    def test_user_message_count(self):
+        """Test user message count property."""
+        session = UnifiedSession(session_id="test-123")
+        session.add_user_message("Hello")
+        session.add_assistant_message("Hi")
+        session.add_user_message("How are you?")
+        
+        assert session.user_message_count == 2
+    
+    def test_to_dict(self):
+        """Test converting session to dictionary."""
+        session = UnifiedSession(session_id="test-123")
+        session.add_user_message("Hello")
+        
+        data = session.to_dict()
+        
+        assert data["session_id"] == "test-123"
+        assert len(data["messages"]) == 1
+        assert "created_at" in data
+        assert "updated_at" in data
+    
+    def test_from_dict(self):
+        """Test creating session from dictionary."""
+        data = {
+            "session_id": "test-456",
+            "workspace": "/tmp/test",
+            "created_at": "2024-01-01T00:00:00",
+            "updated_at": "2024-01-01T00:00:00",
+            "messages": [{"role": "user", "content": "Hello", "timestamp": "2024-01-01T00:00:00"}],
+            "metadata": {},
+            "total_input_tokens": 100,
+            "total_output_tokens": 50,
+            "total_cost": 0.01,
+            "request_count": 1,
+            "current_model": "gpt-4o-mini",
+        }
+        
+        session = UnifiedSession.from_dict(data)
+        
+        assert session.session_id == "test-456"
+        assert session.total_input_tokens == 100
+        assert len(session.messages) == 1
+
+
+class TestUnifiedSessionStore:
+    """Tests for UnifiedSessionStore class."""
+    
+    @pytest.fixture
+    def temp_session_dir(self):
+        """Create a temporary session directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+    
+    def test_create_store(self, temp_session_dir):
+        """Test creating a session store."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        
+        assert store.session_dir == temp_session_dir
+        assert temp_session_dir.exists()
+    
+    def test_save_and_load_session(self, temp_session_dir):
+        """Test saving and loading a session."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        
+        session = UnifiedSession(session_id="test-123")
+        session.add_user_message("Hello")
+        session.add_assistant_message("Hi there!")
+        
+        store.save(session)
+        
+        # Clear cache to force reload from disk
+        store._cache.clear()
+        
+        loaded = store.load("test-123")
+        
+        assert loaded is not None
+        assert loaded.session_id == "test-123"
+        assert len(loaded.messages) == 2
+        assert loaded.messages[0]["content"] == "Hello"
+    
+    def test_get_or_create_new(self, temp_session_dir):
+        """Test get_or_create with new session."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        
+        session = store.get_or_create("new-session")
+        
+        assert session.session_id == "new-session"
+        assert (temp_session_dir / "new-session.json").exists()
+    
+    def test_get_or_create_existing(self, temp_session_dir):
+        """Test get_or_create with existing session."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        
+        # Create and save a session
+        original = UnifiedSession(session_id="existing")
+        original.add_user_message("Original message")
+        store.save(original)
+        
+        # Clear cache
+        store._cache.clear()
+        
+        # Get or create should return existing
+        session = store.get_or_create("existing")
+        
+        assert session.session_id == "existing"
+        assert len(session.messages) == 1
+        assert session.messages[0]["content"] == "Original message"
+    
+    def test_delete_session(self, temp_session_dir):
+        """Test deleting a session."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        
+        session = store.get_or_create("to-delete")
+        assert (temp_session_dir / "to-delete.json").exists()
+        
+        result = store.delete("to-delete")
+        
+        assert result is True
+        assert not (temp_session_dir / "to-delete.json").exists()
+    
+    def test_list_sessions(self, temp_session_dir):
+        """Test listing sessions."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        
+        # Create multiple sessions
+        for i in range(3):
+            session = store.get_or_create(f"session-{i}")
+            session.add_user_message(f"Message {i}")
+            store.save(session)
+        
+        sessions = store.list_sessions()
+        
+        assert len(sessions) == 3
+        assert all("session_id" in s for s in sessions)
+        assert all("message_count" in s for s in sessions)
+    
+    def test_last_session(self, temp_session_dir):
+        """Test last session tracking."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        
+        # Create sessions
+        store.get_or_create("first")
+        store.get_or_create("second")
+        
+        last_id = store.get_last_session_id()
+        assert last_id == "second"
+        
+        last_session = store.get_last_session()
+        assert last_session is not None
+        assert last_session.session_id == "second"
+    
+    def test_load_nonexistent(self, temp_session_dir):
+        """Test loading a nonexistent session."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        
+        session = store.load("nonexistent")
+        
+        assert session is None
+
+    def test_stale_cache_write_preserves_concurrent_updates(self, temp_session_dir):
+        """Stale in-process cache must not clobber messages written by another store."""
+        writer = UnifiedSessionStore(session_dir=temp_session_dir)
+        reader = UnifiedSessionStore(session_dir=temp_session_dir)
+
+        session = UnifiedSession(session_id="shared")
+        session.add_user_message("warm cache")
+        writer.save(session)
+        stale = reader.load("shared")
+
+        writer_session = writer.load("shared")
+        writer_session.add_user_message("from writer")
+        writer_session.add_assistant_message("writer reply")
+        writer.save(writer_session)
+
+        stale.add_user_message("from reader")
+        stale.add_assistant_message("reader reply")
+        reader.save(stale)
+
+        final = writer.load("shared")
+        assert len(final.messages) == 5
+        assert final.messages[1]["content"] == "from writer"
+        assert final.messages[3]["content"] == "from reader"
+
+    def test_concurrent_saves_preserve_all_messages(self, temp_session_dir):
+        """Concurrent full-session saves should not lose chat history."""
+        session_id = "concurrent"
+
+        def writer(store: UnifiedSessionStore, label: str) -> None:
+            session = store.get_or_create(session_id)
+            session.add_user_message(f"Message from {label}")
+            store.save(session)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [
+                executor.submit(writer, UnifiedSessionStore(session_dir=temp_session_dir), f"w{i}")
+                for i in range(8)
+            ]
+            for future in futures:
+                future.result()
+
+        final_store = UnifiedSessionStore(session_dir=temp_session_dir)
+        final = final_store.load(session_id)
+        assert final is not None
+        assert final.message_count == 8
+
+
+class TestUnifiedSessionFork:
+    """Tests for mid-session forking via UnifiedSessionStore.fork_session."""
+
+    @pytest.fixture
+    def temp_session_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def _seed_parent(self, store):
+        parent = store.get_or_create("parent")
+        parent.add_user_message("first")
+        parent.add_assistant_message("reply-1")
+        parent.add_user_message("second")
+        parent.add_assistant_message("reply-2")
+        store.save(parent)
+        return store.load("parent")
+
+    def test_branch_mid_session_creates_child_and_switches(self, temp_session_dir):
+        """Fork records lineage and both sessions stay listable/loadable."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        self._seed_parent(store)
+
+        fork = store.fork_session("parent", title="alt approach")
+
+        assert fork is not None
+        assert fork.session_id != "parent"
+        assert fork.parent_id == "parent"
+        assert fork.metadata.get("title") == "alt approach"
+        # Full history copied by default.
+        assert fork.message_count == 4
+
+        # Lineage recorded on both sides.
+        store._cache.clear()
+        parent = store.load("parent")
+        assert fork.session_id in parent.children_ids
+
+        # Both sessions listable and resumable.
+        listed = {s["session_id"] for s in store.list_sessions()}
+        assert "parent" in listed
+        assert fork.session_id in listed
+        assert store.load(fork.session_id) is not None
+
+    def test_branch_at_n_truncates_to_index(self, temp_session_dir):
+        """--at index truncates the fork's copied history."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        self._seed_parent(store)
+
+        # Fork keeping only messages [0..1] (first user + first reply).
+        fork = store.fork_session("parent", from_message_index=1)
+
+        assert fork is not None
+        assert fork.message_count == 2
+        assert fork.messages[0]["content"] == "first"
+        assert fork.messages[1]["content"] == "reply-1"
+
+        # Parent history is untouched.
+        assert store.load("parent").message_count == 4
+
+    def test_fork_missing_parent_returns_none(self, temp_session_dir):
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        assert store.fork_session("does-not-exist") is None
+
+    def test_lineage_persists_across_reload(self, temp_session_dir):
+        """parent_id/children_ids survive a JSON round-trip."""
+        store = UnifiedSessionStore(session_dir=temp_session_dir)
+        self._seed_parent(store)
+        fork = store.fork_session("parent")
+
+        fresh = UnifiedSessionStore(session_dir=temp_session_dir)
+        reloaded_fork = fresh.load(fork.session_id)
+        reloaded_parent = fresh.load("parent")
+        assert reloaded_fork.parent_id == "parent"
+        assert fork.session_id in reloaded_parent.children_ids
+
+
+class TestGlobalSessionStore:
+    """Tests for global session store."""
+    
+    def test_get_session_store(self):
+        """Test getting global session store."""
+        store1 = get_session_store()
+        store2 = get_session_store()
+        
+        # Should return same instance
+        assert store1 is store2

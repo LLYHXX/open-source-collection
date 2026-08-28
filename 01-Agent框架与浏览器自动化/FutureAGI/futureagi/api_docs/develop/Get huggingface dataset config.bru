@@ -1,0 +1,19 @@
+meta {
+  name: Get huggingface dataset config
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/model-hub/develops/get-huggingface-dataset-config/
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  dataset_path: dair-ai/emotion
+}

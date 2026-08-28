@@ -1,0 +1,8 @@
+# UV Global Configuration for Model Serving
+
+# Basic configuration
+index-url = "https://pypi.org/simple"
+compile-bytecode = true
+link-mode = "copy"
+prerelease = "if-necessary"
+cache-dir = ".uv-cache"

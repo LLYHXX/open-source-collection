@@ -1,0 +1,54 @@
+meta {
+  name: EvalPlayground test
+  type: http
+  seq: 54
+}
+
+post {
+  url: {{host}}/model-hub/eval-playground/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  // {
+  //     "templateId": "f4e9c6ed-298f-4a3c-ab28-47e5fa335ea3",
+  //     "model": "",
+  //     "name": "ojo",
+  //     "config": {
+  //         "mapping": {
+  //             "text": "Hi, how r you"
+  //         },
+  //         "config": {},
+  //         "reasonColumn": true
+  //     },
+  //     "errorLocalizer": false,
+  //     "is_run": false,
+  //     "save_as_template":false,
+  //     "update": true,
+  //     "log_ids": ["02624c76-d0e9-4f1a-a3dd-e10c3d79c617", "02624c76-d0e9-4f1a-a3dd-e10c3d79c618"]
+  // }
+  {
+      "templateId": "52a609dc-f37b-4df5-bc8a-f2b6d342d9d7",
+  //     "model": "",
+  //     "name": "",
+      "config": {
+          "mapping": {
+              "var": "randomly",
+              "one": "True"
+          },
+          "config": {},
+          "reasonColumn": true
+      },
+      "input_data_types": {"var": "text", "one": "text"},
+  //     "multi_choice": false,
+  //     "choices": [],
+      "errorLocalizer": true,
+      "is_run": true,
+      "log_ids": []
+  }
+}

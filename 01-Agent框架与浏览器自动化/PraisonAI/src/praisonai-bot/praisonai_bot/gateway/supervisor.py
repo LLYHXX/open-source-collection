@@ -1,0 +1,510 @@
+"""
+Channel supervision for WebSocket Gateway.
+
+Provides resilient channel management with error classification,
+unlimited retries for recoverable errors, and operator controls.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Dict, Optional
+
+from praisonaiagents.bots.protocols import HealthReason
+
+from ..bots._resilience import (
+    BackoffPolicy,
+    ConnectionMonitor,
+    is_recoverable_error,
+    is_conflict_error,
+    is_credential_error,
+    sleep_with_abort,
+)
+from .health_monitor import ChannelHealthMonitor, HealthMonitorConfig
+
+logger = logging.getLogger(__name__)
+
+
+class ChannelState(Enum):
+    """Channel supervision states."""
+    RUNNING = "running"
+    FAILED = "failed"
+    PAUSED = "paused"
+    STOPPED = "stopped"
+    # Issue #3348: the channel's credential was rejected at runtime (revoked,
+    # rotated, or expired token → 401/403). Distinct from FAILED: it is not
+    # terminal — the supervisor stops hammering the invalid token and waits for
+    # the credential to change (a reconnect/hot-reload), then auto-recovers
+    # without a full process restart. Surfaced as a degraded, redacted state.
+    CREDENTIAL_UNAVAILABLE = "credential-unavailable"
+
+
+@dataclass
+class ChannelStatus:
+    """Channel supervision status."""
+    state: ChannelState = ChannelState.STOPPED
+    last_error: Optional[str] = None
+    last_error_time: Optional[float] = None
+    next_retry_at: Optional[float] = None
+    total_recoveries: int = 0
+    manual_pause: bool = False
+    
+
+class ChannelSupervisor:
+    """Supervises channel lifecycle with resilient error handling.
+    
+    Provides:
+    - Error classification (fatal vs recoverable)
+    - Unlimited retries for recoverable errors with capped exponential backoff
+    - Manual pause/resume/reconnect controls
+    - Status tracking for health reporting
+    """
+    
+    def __init__(
+        self,
+        policy: Optional[BackoffPolicy] = None,
+        classify_fn: Optional[Callable[[BaseException, str], bool]] = None,
+        health_config: Optional[HealthMonitorConfig] = None,
+        degraded_registry: Optional[Any] = None,
+    ):
+        """Initialize channel supervisor.
+        
+        Args:
+            policy: Backoff policy for retries (uses default if None)
+            classify_fn: Error classification function (uses is_recoverable_error if None)
+            health_config: Health monitor configuration (uses defaults if None)
+            degraded_registry: Optional shared ``DegradedCapabilityRegistry`` so
+                the fleet crash-loop breaker records ONE ``gateway`` degraded
+                owner when it trips (Issue #3840). ``None`` keeps supervision
+                fully functional but silent on the aggregate degraded surface.
+        """
+        self._policy = policy or BackoffPolicy(max_attempts=0)  # Unlimited retries
+        self._classify_fn = classify_fn or is_recoverable_error
+        self._channels: Dict[str, ChannelStatus] = {}
+        self._monitors: Dict[str, ConnectionMonitor] = {}
+        self._abort_signals: Dict[str, asyncio.Event] = {}
+        self._tasks: Dict[str, asyncio.Task] = {}
+        self._bots: Dict[str, Any] = {}  # Store bot references for health checks
+        
+        # Initialize health monitor
+        self._health_monitor = ChannelHealthMonitor(
+            config=health_config,
+            health_check_fn=self._get_channel_health,
+            restart_fn=self._restart_channel_for_health,
+            degraded_registry=degraded_registry,
+        )
+        
+    def get_status(self, name: str) -> ChannelStatus:
+        """Get current status of a channel."""
+        return self._channels.get(name, ChannelStatus())
+        
+    def get_all_status(self) -> Dict[str, ChannelStatus]:
+        """Get status of all supervised channels."""
+        return dict(self._channels)
+        
+    def pause(self, name: str) -> bool:
+        """Manually pause a channel.
+        
+        Args:
+            name: Channel name
+            
+        Returns:
+            True if channel was running and paused, False otherwise
+        """
+        if name not in self._channels:
+            return False
+            
+        status = self._channels[name]
+        if status.state == ChannelState.RUNNING:
+            status.state = ChannelState.PAUSED
+            status.manual_pause = True
+            
+            # Signal abort to stop current operations
+            if name in self._abort_signals:
+                self._abort_signals[name].set()
+                
+            logger.info(f"Channel '{name}' manually paused")
+            return True
+            
+        return False
+        
+    def resume(self, name: str) -> bool:
+        """Resume a manually paused channel.
+        
+        Args:
+            name: Channel name
+            
+        Returns:
+            True if channel was paused and resumed, False otherwise
+        """
+        if name not in self._channels:
+            return False
+            
+        status = self._channels[name]
+        if status.state == ChannelState.PAUSED and status.manual_pause:
+            status.state = ChannelState.STOPPED  # Will be restarted by supervision
+            status.manual_pause = False
+            
+            # SET abort signal to wake the paused supervision loop
+            if name in self._abort_signals:
+                self._abort_signals[name].set()
+                
+            logger.info(f"Channel '{name}' manually resumed")
+            return True
+            
+        return False
+        
+    def reconnect(self, name: str) -> bool:
+        """Force reconnect of a channel.
+        
+        Args:
+            name: Channel name
+            
+        Returns:
+            True if channel exists, False otherwise
+        """
+        if name not in self._channels:
+            return False
+            
+        # Reset monitor state and force restart
+        if name in self._monitors:
+            self._monitors[name].attempt = 0
+            self._monitors[name].last_error = None
+            self._monitors[name].last_error_time = None
+            
+        status = self._channels[name]
+        status.state = ChannelState.STOPPED
+        status.manual_pause = False  # Clear manual pause flag
+        status.last_error = None
+        status.last_error_time = None
+        status.next_retry_at = None
+        
+        # Signal abort to stop current operations
+        if name in self._abort_signals:
+            self._abort_signals[name].set()
+            
+        logger.info(f"Channel '{name}' manually reconnected")
+        return True
+        
+    async def run(self, name: str, bot: Any, start_fn: Callable[[str, Any], Any]) -> None:
+        """Run a channel with supervision.
+        
+        Args:
+            name: Channel name
+            bot: Bot instance
+            start_fn: Function to start the bot (should be async)
+        """
+        # Initialize supervision state
+        if name not in self._channels:
+            self._channels[name] = ChannelStatus()
+        if name not in self._monitors:
+            # Determine platform from bot for error classification
+            platform = getattr(bot, 'platform', type(bot).__name__.lower())
+            self._monitors[name] = ConnectionMonitor(platform=platform, policy=self._policy)
+        if name not in self._abort_signals:
+            self._abort_signals[name] = asyncio.Event()
+        
+        # Store bot reference and register with health monitor
+        self._bots[name] = bot
+        self._health_monitor.register_channel(name, bot)
+            
+        status = self._channels[name]
+        monitor = self._monitors[name]
+        abort_signal = self._abort_signals[name]
+        
+        logger.info(f"Starting supervision for channel '{name}'")
+        
+        while True:
+            try:
+                # Check if manually paused
+                if status.manual_pause:
+                    status.state = ChannelState.PAUSED
+                    await abort_signal.wait()  # Wait until resumed
+                    abort_signal.clear()
+                    continue
+                    
+                # Check if task was cancelled
+                if abort_signal.is_set():
+                    abort_signal.clear()
+                    
+                status.state = ChannelState.RUNNING
+                recovering = monitor.attempt > 0
+                logger.info(f"Starting channel '{name}'..." + 
+                           (f" (attempt {monitor.attempt + 1})" if recovering else ""))
+                
+                # Start the bot in a task so it can be cancelled
+                bot_task = asyncio.create_task(start_fn(name, bot))
+                abort_task = asyncio.create_task(abort_signal.wait())
+                
+                # Issue #4043: the channel is coming back after a transient
+                # outage. Re-attempt anything the durable outbox held through the
+                # outage now, instead of leaving it undelivered until the next
+                # inbound chat() turn or a process restart. Scheduled as a
+                # background task (not awaited here) so it runs once the adapter
+                # has reconnected without blocking the supervision wait — bounded
+                # and best-effort, see _on_channel_recovered.
+                if recovering:
+                    asyncio.create_task(self._on_channel_recovered(name, bot))
+                
+                # Wait for either the bot to exit or abort signal
+                done, pending = await asyncio.wait(
+                    [bot_task, abort_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                # Cancel whichever task didn't complete
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # Check which one completed
+                if abort_task in done:
+                    # Abort signal was set - restart the loop
+                    abort_signal.clear()
+                    continue
+                    
+                # Bot exited normally
+                await bot_task  # Re-raise any exception from the bot
+                
+                # If we get here, the bot exited cleanly
+                monitor.record_success()
+                status.total_recoveries = monitor.total_recoveries  # Sync recovery count
+                status.state = ChannelState.STOPPED
+                logger.info(f"Channel '{name}' stopped cleanly")
+                break
+                
+            except asyncio.CancelledError:
+                logger.info(f"Channel '{name}' supervision cancelled")
+                status.state = ChannelState.STOPPED
+                break
+                
+            except Exception as e:
+                # Classify the error
+                is_recoverable = self._classify_fn(e, monitor.platform)
+                is_conflict = is_conflict_error(e)
+                
+                if is_conflict:
+                    # Conflict errors are fatal - another bot instance using same token
+                    status.state = ChannelState.FAILED
+                    status.last_error = f"Conflict error (fatal): {str(e)}"
+                    status.last_error_time = time.time()
+                    status.next_retry_at = None
+                    logger.error(f"Channel '{name}' failed with conflict error: {e}")
+                    break
+
+                elif is_credential_error(e, monitor.platform):
+                    # Issue #3348: the credential was rejected at runtime (401/403,
+                    # revoked/rotated/expired token). Do NOT hammer the invalid
+                    # token in a tight reconnect loop and do NOT go terminal
+                    # FAILED (which would require a full restart even after the
+                    # token is fixed). Enter a first-class, redacted degraded
+                    # state and wait for the credential to change — a reconnect()
+                    # or config hot-reload sets the abort signal, wakes this loop,
+                    # and the channel auto-recovers without a process restart. The
+                    # reason is redacted: it never includes the token, only that
+                    # the credential is unavailable.
+                    status.state = ChannelState.CREDENTIAL_UNAVAILABLE
+                    status.last_error = "credential unavailable"
+                    status.last_error_time = time.time()
+                    status.next_retry_at = None
+                    logger.error(
+                        f"Channel '{name}' credential rejected "
+                        f"(auth failure); pausing until the credential changes. "
+                        f"Fix/rotate the token and reconnect to auto-recover."
+                    )
+                    await abort_signal.wait()  # Wait for reconnect/hot-reload.
+                    abort_signal.clear()
+                    # Re-source the credential onto the *same* bot instance
+                    # before restarting from the parked state. Without this, a
+                    # reconnect() would restart the bot still holding the
+                    # rejected token and bounce straight back to
+                    # CREDENTIAL_UNAVAILABLE. A config hot-reload swaps in a
+                    # freshly-built bot (new token) via _start_single_channel, so
+                    # this hook only matters for an out-of-band repair (e.g. a
+                    # rotated env var) driving a bare reconnect(). Duck-typed and
+                    # opt-in: bots that expose refresh_credentials() get a chance
+                    # to re-read their token; all others are a no-op and rely on
+                    # start() rebuilding the adapter (which re-resolves env-var
+                    # tokens) or on hot-reload.
+                    await self._refresh_credentials(name, bot)
+                    continue
+
+                elif not is_recoverable:
+                    # Non-recoverable error - treat as fatal
+                    status.state = ChannelState.FAILED  
+                    status.last_error = f"Fatal error: {str(e)}"
+                    status.last_error_time = time.time()
+                    status.next_retry_at = None
+                    logger.error(f"Channel '{name}' failed with fatal error: {e}")
+                    break
+                    
+                else:
+                    # Recoverable error - retry with backoff
+                    delay = monitor.record_error(e)
+                    status.last_error = str(e)
+                    status.last_error_time = time.time()
+                    status.next_retry_at = time.time() + delay
+                    
+                    logger.warning(f"Channel '{name}' error (recoverable): {e}")
+                    logger.info(f"Retrying channel '{name}' in {delay:.1f}s...")
+                    
+                    # Sleep with abort signal support
+                    completed = await sleep_with_abort(delay, abort_signal)
+                    if not completed:
+                        # Aborted - check if paused or reconnect requested
+                        continue
+        
+        # Cleanup - don't overwrite terminal failure or degraded credential
+        # states (a credential-unavailable channel stays queryable as degraded).
+        if status.state not in (
+            ChannelState.FAILED,
+            ChannelState.CREDENTIAL_UNAVAILABLE,
+        ):
+            status.state = ChannelState.STOPPED
+        logger.info(f"Supervision ended for channel '{name}'")
+        
+    def cleanup(self, name: str) -> None:
+        """Clean up supervision state for a channel."""
+        self._channels.pop(name, None)
+        self._monitors.pop(name, None)
+        self._bots.pop(name, None)
+        if name in self._abort_signals:
+            self._abort_signals[name].set()
+            self._abort_signals.pop(name, None)
+        if name in self._tasks:
+            task = self._tasks.pop(name)
+            if not task.done():
+                task.cancel()
+        # Unregister from health monitor
+        self._health_monitor.unregister_channel(name)
+    
+    async def _refresh_credentials(self, name: str, bot: Any) -> None:
+        """Give a parked bot a chance to re-source its credential before restart.
+
+        Issue #3348: when a channel wakes from ``CREDENTIAL_UNAVAILABLE`` (an
+        operator repaired the token and called ``reconnect()``), the *same* bot
+        instance is about to be restarted. If the bot exposes an opt-in
+        ``refresh_credentials()`` it is invoked here so the repaired token is
+        picked up without a full restart. Duck-typed and best-effort: a bot
+        without the hook is a no-op (base ``Bot.start()`` already rebuilds its
+        adapter and re-resolves env-var tokens), and any error is swallowed so a
+        buggy hook cannot wedge supervision — the restart still proceeds and, if
+        the credential is still bad, the channel simply re-parks.
+        """
+        refresh = getattr(bot, "refresh_credentials", None)
+        if not callable(refresh):
+            return
+        try:
+            result = refresh()
+            if asyncio.iscoroutine(result):
+                await result
+            logger.info(f"Channel '{name}' credential re-sourced before restart")
+        except Exception as exc:
+            logger.warning(
+                f"Channel '{name}' credential refresh hook failed "
+                f"(continuing with restart): {exc}"
+            )
+
+    async def _on_channel_recovered(self, name: str, bot: Any) -> None:
+        """Re-drain the durable outbox after a channel recovers (Issue #4043).
+
+        The durable outbox deliberately *holds* deliverable replies through a
+        transient channel outage (attempt-and-age dead-letter policy) rather than
+        dropping them, but nothing re-attempted them once the channel came back —
+        they sat undelivered until the next inbound ``chat()`` turn or a process
+        restart. This closes that loop: when the supervisor observes a channel
+        transition from unhealthy back to connected, it triggers a bounded
+        re-drain of that platform's outbox so held replies go out promptly.
+
+        Duck-typed and best-effort: bots/adapters without a ``drain_outbox()``
+        hook are a silent no-op, and any error is swallowed so a failed re-drain
+        can never wedge supervision — the outbox's own attempt-and-age policy
+        still governs those messages.
+
+        The hook is resolved on the supervised object *itself* first — in the
+        gateway the durable platform adapter (``DurableAdapterMixin``) is passed
+        directly to ``run()``, so ``drain_outbox`` lives on ``bot`` — and only
+        then on a nested ``bot.adapter`` for wrapper bots that compose an
+        adapter. Checking both keeps built-in channels covered without assuming
+        a particular object shape.
+        """
+        drain = getattr(bot, "drain_outbox", None)
+        if not callable(drain):
+            adapter = getattr(bot, "adapter", None)
+            drain = getattr(adapter, "drain_outbox", None)
+        if not callable(drain):
+            return
+        try:
+            succeeded, failed = await drain()
+            if succeeded or failed:
+                logger.info(
+                    f"Channel '{name}' recovered: re-drained outbox "
+                    f"({succeeded} sent, {failed} failed)"
+                )
+        except Exception as exc:
+            logger.warning(
+                f"Channel '{name}' outbox re-drain on recovery failed "
+                f"(will retry on next drain): {exc}"
+            )
+
+    async def _get_channel_health(self, name: str, bot: Any) -> Any:
+        """Get health status for a channel.
+        
+        Used by the health monitor to check channel health.
+        
+        Args:
+            name: Channel name
+            bot: Bot instance
+            
+        Returns:
+            HealthResult if available
+        """
+        if hasattr(bot, "health"):
+            return await bot.health()
+        # Fallback: construct basic health result
+        from praisonaiagents.bots.protocols import HealthResult
+        status = self.get_status(name)
+        return HealthResult(
+            ok=status.state == ChannelState.RUNNING,
+            platform=getattr(bot, "platform", name),
+            is_running=status.state == ChannelState.RUNNING,
+            error=status.last_error,
+        )
+    
+    async def _restart_channel_for_health(self, name: str, reason: HealthReason) -> None:
+        """Restart a channel based on health check.
+        
+        Used by the health monitor to trigger restarts.
+        
+        Args:
+            name: Channel name
+            reason: Health reason for restart
+        """
+        logger.info(f"Health monitor requesting restart of '{name}' (reason={reason.value})")
+        
+        # Trigger restart via reconnect first
+        self.reconnect(name)
+        
+        # Then update status with health reason (after reconnect clears it)
+        if name in self._channels:
+            self._channels[name].last_error = f"Health check failed: {reason.value}"
+            self._channels[name].last_error_time = time.time()
+    
+    async def start_health_monitoring(self) -> None:
+        """Start the health monitor."""
+        await self._health_monitor.start()
+    
+    async def stop_health_monitoring(self) -> None:
+        """Stop the health monitor."""
+        await self._health_monitor.stop()
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get health monitor status."""
+        return self._health_monitor.get_status()

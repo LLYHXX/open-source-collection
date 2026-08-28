@@ -1,0 +1,23 @@
+meta {
+  name: Get Insights Metrics
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/insight/metrics/{{insightId}}/
+  body: none
+  auth: bearer
+}
+
+params:query {
+  ~search_query: fine
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  insightId:
+}

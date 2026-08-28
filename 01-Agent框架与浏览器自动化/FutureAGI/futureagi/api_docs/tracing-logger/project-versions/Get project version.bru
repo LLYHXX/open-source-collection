@@ -1,0 +1,31 @@
+meta {
+  name: Get project version
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/tracer/project-version/:id
+  body: json
+  auth: bearer
+}
+
+params:query {
+  ~project_version: 947f51e7-19c8-4a2f-a239-f1fd2ede64ee
+}
+
+params:path {
+  id: fea271ba-9e1f-4dc2-ad2b-ccb298f0a901
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "TEST_PROJECT",
+    "model_type": "Ranking",
+    "trace_type": "experiment"
+  }
+}

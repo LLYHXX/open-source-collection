@@ -1,0 +1,35 @@
+meta {
+  name: update Eval template
+  type: http
+  seq: 27
+}
+
+post {
+  url: {{host}}/model-hub/update-eval-template
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "description": "Hello boiii",
+    "criteria": "check if {{variable_1}} is similar to {{variable_2}} bhula main",
+    "multi_choice": false,
+    "choices_map": {
+      "no": "neutral",
+      "yes": "neutral",
+      "maybe": "neutral",
+      "ehh_dont_know": "neutral"
+    },
+    "model": "turing_small",
+    "eval_tags": ["SAFETY","TEXT","FUTURE_EVALS","AUDIO"],
+  "eval_template_id": "a0081366-6050-406a-a52a-8675b891bae1",
+    "check_internet": true
+  }
+
+
+}

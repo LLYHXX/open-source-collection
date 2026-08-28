@@ -1,0 +1,57 @@
+{
+    "evals": [
+        {
+            "id": "8529c8c4-e49f-4dd1-998b-9a17de670067",
+            "name": "Answer Similarity",
+            "template_name": "Answer Similarity",
+            "eval_template_name": "Answer Similarity",
+            "eval_required_keys": [
+                "expected_response",
+                "response"
+            ],
+            "eval_template_tags": [
+                "FUNCTION"
+            ],
+            "description": "Evaluates the similarity between the expected and actual responses",
+            "model": "",
+            "column_id": "69f7de3c-1a28-4cb5-84bd-7a228022a0bb"
+        },
+        {
+            "id": "3eb67953-d98c-4ee5-b89c-df79649eec9e",
+            "name": "Groundedness",
+            "template_name": "Groundedness",
+            "eval_template_name": "Groundedness",
+            "eval_required_keys": [
+                "output",
+                "input"
+            ],
+            "eval_template_tags": [
+                "FUTURE_EVALS",
+                "RAG",
+                "LLMS",
+                "AUDIO"
+            ],
+            "description": "Evaluates if the response is grounded in the provided context",
+            "model": "",
+            "column_id": "b1192fb8-411a-4b70-acbb-f6b894a2fff0"
+        },
+        {
+            "id": "c3f0eb75-3620-43e2-b025-538966d5e3e0",
+            "name": "Context Adherence",
+            "template_name": "Context Adherence",
+            "eval_template_name": "Context Adherence",
+            "eval_required_keys": [
+                "output",
+                "context"
+            ],
+            "eval_template_tags": [
+                "HALLUCINATION",
+                "RAG",
+                "FUTURE_EVALS"
+            ],
+            "description": "Measures how well responses stay within the provided context",
+            "model": "",
+            "column_id": "501fe96d-25fc-4ea3-b25e-4aa3d920c8e1"
+        }
+    ]
+}

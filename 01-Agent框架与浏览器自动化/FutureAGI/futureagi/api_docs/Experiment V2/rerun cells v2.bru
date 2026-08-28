@@ -1,0 +1,65 @@
+meta {
+  name: rerun cells v2
+  type: http
+  seq: 12
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/rerun-cells/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "cells": [
+      {
+        "column_id": "3c69a3bd-222c-4c12-80e3-c4b6b87901bb",
+        "row_id": "f20b903a-94f7-4592-99ec-07757820e6fc"
+      }
+    ],
+    // "source_ids": [],
+    // "user_eval_metric_ids": ["uuid1", "uuid2"],
+    "failed_only": true,
+    "max_concurrent_rows": 10
+  }
+}
+
+vars:pre-request {
+  experimentId: a7631e3c-b701-46e8-9df9-b3cb5fab4672
+}
+
+docs {
+  ## Rerun Cells V2
+
+  Reruns specific cells or entire columns in a V2 experiment.
+  Uses a unique workflow ID per invocation, allowing concurrent reruns.
+  Resets affected output cells and dependent eval cells to RUNNING before starting.
+
+  ### Request Body
+
+  **Cell-level rerun (recommended):**
+  - `cells` — Array of `{column_id, row_id}` pairs. BE determines rerun type from column source:
+    - Output column (source=experiment): reruns prompt/agent + dependent evals for that row
+    - Per-EDT eval column (source=experiment_evaluation): reruns only that eval for that EDT + row
+    - Base eval column (source=evaluation): reruns that eval for all rows
+
+  **Bulk operations (backward compat):**
+  - `source_ids` — Array of EDT UUIDs for full column reruns
+  - `user_eval_metric_ids` — Array of UserEvalMetric UUIDs to rerun only those evals (mutually exclusive with source_ids)
+
+  **Options:**
+  - `failed_only` — If true, only rerun cells in ERROR status, default false
+  - `max_concurrent_rows` — Max rows processed concurrently, default 10
+
+  At least one of `cells`, `source_ids`, or `user_eval_metric_ids` must be provided.
+
+  ### Response
+  ```json
+  {"message": "Cell rerun has started.", "data": {"workflow_id": "rerun-experiment-cells-..."}, "status": 200}
+  ```
+}

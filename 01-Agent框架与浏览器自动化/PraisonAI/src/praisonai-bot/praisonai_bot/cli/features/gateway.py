@@ -1,0 +1,1060 @@
+"""
+Gateway CLI commands for PraisonAI.
+
+Provides CLI commands for managing the WebSocket gateway.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+# Restart-intent exit-code protocol (Issue #2437). Source of truth lives in
+# core; fall back to the sysexits.h values only when running against an older
+# core that predates the protocol. We import the gateway package first and read
+# the symbols off it, so a genuinely broken core install (an ImportError raised
+# *while importing* praisonaiagents.gateway) still surfaces instead of being
+# silently masked by the fallback — only the absence of the new symbols
+# (AttributeError) triggers the compatibility shims.
+
+
+def _gateway_exit_protocol_fallbacks():
+    """Build the (constants, FatalConfigError, classifier) fallback tuple."""
+    ok, restart, fatal = 0, 75, 78
+
+    class FatalConfigError(Exception):
+        """Fallback fatal-config error when core lacks the protocol."""
+
+    def classify_exit_reason(exc):
+        if exc is None or isinstance(exc, KeyboardInterrupt):
+            return ok
+        if isinstance(exc, FatalConfigError):
+            return fatal
+        return restart
+
+    return ok, restart, fatal, FatalConfigError, classify_exit_reason
+
+
+try:
+    import praisonaiagents.gateway as _gw
+
+    GATEWAY_OK_EXIT_CODE = _gw.GATEWAY_OK_EXIT_CODE
+    GATEWAY_RESTART_EXIT_CODE = _gw.GATEWAY_RESTART_EXIT_CODE
+    GATEWAY_FATAL_CONFIG_EXIT_CODE = _gw.GATEWAY_FATAL_CONFIG_EXIT_CODE
+    FatalConfigError = _gw.FatalConfigError
+    classify_exit_reason = _gw.classify_exit_reason
+except (ModuleNotFoundError, AttributeError):  # pragma: no cover - old/absent core
+    (
+        GATEWAY_OK_EXIT_CODE,
+        GATEWAY_RESTART_EXIT_CODE,
+        GATEWAY_FATAL_CONFIG_EXIT_CODE,
+        FatalConfigError,
+        classify_exit_reason,
+    ) = _gateway_exit_protocol_fallbacks()
+
+
+def _load_praisonai_env_file() -> Dict[str, str]:
+    """Load ``~/.praisonai/.env`` into ``os.environ`` (without overwriting).
+
+    Daemons launched by ``launchd`` / ``systemd`` don't inherit the user's
+    shell env and don't auto-source dotfiles, so secrets written by
+    ``praisonai onboard`` (e.g. ``TELEGRAM_BOT_TOKEN``) are missing when
+    the gateway starts in the background. We load them here so the
+    YAML ``${VAR}`` substitution in ``GatewayServer.load_gateway_config``
+    resolves correctly.
+
+    Existing ``os.environ`` values take precedence (so user-set shell
+    vars always win). Returns the dict of keys we loaded (for logging).
+    """
+    env_path = Path(os.environ.get("PRAISONAI_ENV_FILE")
+                    or (Path.home() / ".praisonai" / ".env"))
+    loaded: Dict[str, str] = {}
+    if not env_path.exists():
+        return loaded
+    try:
+        for raw in env_path.read_text().splitlines():
+            s = raw.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            if not k:
+                continue
+            if k in os.environ:
+                continue  # don't clobber existing env
+            os.environ[k] = v
+            loaded[k] = v
+    except OSError as exc:
+        logger.warning("Could not read %s: %s", env_path, exc)
+    if loaded:
+        logger.info(
+            "Loaded %d env var(s) from %s: %s",
+            len(loaded), env_path, ", ".join(sorted(loaded.keys())),
+        )
+    return loaded
+
+
+# Runtime start-flag keys that materially change gateway behaviour and only
+# exist on ``start`` (durability, concurrency ceiling, OpenAI-compat surface,
+# lifecycle). Persisting them lets a direct ``restart`` replay the exact
+# posture the process was started with, instead of silently reverting to
+# defaults (#3349).
+_START_FLAG_KEYS = (
+    "agent_file", "config_file", "drain_timeout", "max_concurrent_runs",
+    "queue_depth", "overflow_policy", "reliability", "openai_api", "mcp",
+    "identity_store", "scale_to_zero", "idle_minutes", "drain_marker",
+    "watchdog", "watchdog_timeout",
+)
+
+
+def _start_flags_path(host: str, port: int) -> Path:
+    """Path to the persisted start-flags file, keyed by the bound host+port.
+
+    Keying by host:port lets multiple gateways on one machine each keep their
+    own launch posture, matching how the PID lock is keyed (#3349).
+    """
+    home = Path(os.environ.get("PRAISONAI_HOME") or (Path.home() / ".praisonai"))
+    safe_host = str(host).replace(":", "_")
+    return home / f"gateway.start.{safe_host}.{port}.json"
+
+
+def _persist_start_flags(host: str, port: int, flags: Dict) -> None:
+    """Persist the CLI-only runtime start flags so ``restart`` can replay them.
+
+    Only non-``None`` values are stored (``None`` means "fall back to YAML"),
+    so a restart reproduces the running process faithfully. Best-effort: a
+    write failure never blocks start (#3349).
+    """
+    import json
+
+    path = _start_flags_path(host, port)
+    payload = {k: v for k, v in flags.items() if v is not None}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    except OSError as exc:  # pragma: no cover — advisory only
+        logger.warning("Could not persist gateway start flags to %s: %s", path, exc)
+
+
+def load_start_flags(host: str, port: int) -> Dict:
+    """Load the persisted start flags for a gateway bound to host:port.
+
+    Returns an empty dict when no artefact exists (or it is unreadable), so
+    a first-ever ``restart`` behaves exactly as before (#3349).
+    """
+    import json
+
+    path = _start_flags_path(host, port)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:  # pragma: no cover — advisory only
+        logger.warning("Could not read gateway start flags from %s: %s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if k in _START_FLAG_KEYS}
+
+
+class GatewayHandler:
+    """Handler for gateway CLI commands."""
+    
+    def __init__(self):
+        self._gateway = None
+    
+    def start(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        agent_file: Optional[str] = None,
+        config_file: Optional[str] = None,
+        drain_timeout: Optional[float] = None,
+        max_concurrent_runs: Optional[int] = None,
+        queue_depth: Optional[int] = None,
+        overflow_policy: Optional[str] = None,
+        reliability: Optional[str] = None,
+        openai_api: Optional[bool] = None,
+        mcp: Optional[bool] = None,
+        identity_store: Optional[str] = None,
+        scale_to_zero: Optional[bool] = None,
+        idle_minutes: Optional[float] = None,
+        drain_marker: Optional[str] = None,
+        watchdog: Optional[bool] = None,
+        watchdog_timeout: Optional[float] = None,
+    ) -> int:
+        """Start the gateway server.
+
+        Returns a supervisor-friendly exit code (Issue #2437):
+
+        * ``0`` — clean shutdown (Ctrl+C / SIGTERM drain).
+        * ``75`` (``EX_TEMPFAIL``) — transient failure; ask the supervisor
+          to restart.
+        * ``78`` (``EX_CONFIG``) — fatal configuration error (bad/missing
+          ``gateway.yaml``, no platforms, duplicate token); the supervisor
+          should stop restarting so the operator can fix the config.
+
+        Args:
+            host: Host to bind to
+            port: Port to listen on
+            agent_file: Optional path to agent configuration file
+            config_file: Optional path to gateway.yaml for multi-bot mode
+            drain_timeout: Optional graceful-drain window in seconds (#2375).
+                Overrides any ``gateway.drain_timeout`` in the YAML config.
+                ``0`` disables; ``None`` falls back to the config value.
+            max_concurrent_runs: Optional gateway-wide ceiling on concurrent
+                agent runs (#2454). Overrides ``gateway.max_concurrent_runs``.
+                ``0`` disables; ``None`` falls back to the config value.
+            queue_depth: Optional bounded wait-queue depth (#2454). Overrides
+                ``gateway.queue_depth``.
+            overflow_policy: Optional overflow behaviour when the queue is full
+                (#2454): ``reject`` | ``queue`` | ``shed_oldest``. Overrides
+                ``gateway.overflow_policy``.
+            reliability: Optional named reliability posture (#2531):
+                ``production`` | ``default`` | ``off``. Composes graceful drain
+                + inbound admission in one switch. Overrides
+                ``gateway.reliability``; explicit ``--drain-timeout`` /
+                ``--max-concurrent-runs`` still win.
+            identity_store: Optional path to the cross-platform identity
+                link-map JSON (#3020). Enables one continuous session + memory
+                per paired/linked user across channels. Overrides the
+                ``identity:`` block in the YAML; ``None`` falls back to it.
+        """
+        # Ensure INFO-level logs surface to bot-stdout.log / bot-stderr.log
+        # when running under launchd / systemd. Many key lifecycle events
+        # (bot start, channel routing, scheduler tick, retries) are already
+        # emitted via `logger.info()` — they just weren't visible with the
+        # default WARNING root level. Only configure if nothing is set yet,
+        # so users/embedders keep control.
+        _root = logging.getLogger()
+        if not _root.handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s %(name)s %(levelname)s %(message)s",
+            )
+        if _root.level > logging.INFO or _root.level == logging.NOTSET:
+            _root.setLevel(logging.INFO)
+
+        # Load ~/.praisonai/.env BEFORE any config parsing or ${VAR}
+        # substitution — daemons don't inherit shell env.
+        _load_praisonai_env_file()
+
+        # Snapshot the CLI-only runtime flags this process was launched with so a
+        # later direct ``gateway restart`` can replay the exact posture (durable
+        # delivery, concurrency ceiling, OpenAI-compat surface, lifecycle)
+        # instead of silently reverting to defaults (#3349). The snapshot is only
+        # WRITTEN once startup validation passes and the gateway is about to bind
+        # (``_commit_start_flags`` below): a start attempt that fails import /
+        # config / agent-file validation must NOT clobber the running gateway's
+        # saved posture, or its next restart would replay the rejected attempt.
+        start_flags = {
+            "agent_file": agent_file,
+            "config_file": config_file,
+            "drain_timeout": drain_timeout,
+            "max_concurrent_runs": max_concurrent_runs,
+            "queue_depth": queue_depth,
+            "overflow_policy": overflow_policy,
+            "reliability": reliability,
+            "openai_api": openai_api,
+            "mcp": mcp,
+            "identity_store": identity_store,
+            "scale_to_zero": scale_to_zero,
+            "idle_minutes": idle_minutes,
+            "drain_marker": drain_marker,
+            "watchdog": watchdog,
+            "watchdog_timeout": watchdog_timeout,
+        }
+
+        def _commit_start_flags() -> None:
+            # Best-effort — never blocks start (#3349).
+            _persist_start_flags(host, port, start_flags)
+
+        logger.info(
+            "Gateway starting (host=%s port=%s config=%s agents=%s)",
+            host, port, config_file or "-", agent_file or "-",
+        )
+        try:
+            from praisonai_bot.gateway import WebSocketGateway
+            from praisonaiagents.gateway import GatewayConfig
+        except ImportError as e:
+            # Missing optional deps is a config/setup problem the operator
+            # must fix; restarting won't help (#2437).
+            print(f"Error: Gateway requires additional dependencies. {e}")
+            print("Install with: pip install praisonai[api]")
+            return GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+        # Multi-bot mode: load from gateway.yaml
+        if config_file:
+            config = GatewayConfig(host=host, port=port)
+            self._gateway = WebSocketGateway(config=config)
+            # CLI --drain-timeout overrides gateway.drain_timeout in YAML (#2375)
+            if drain_timeout is not None:
+                self._gateway._drain_timeout_override = drain_timeout
+            # CLI admission-control flags override gateway.* in YAML (#2454)
+            if max_concurrent_runs is not None:
+                self._gateway._max_concurrent_runs_override = max_concurrent_runs
+            if queue_depth is not None:
+                self._gateway._queue_depth_override = queue_depth
+            if overflow_policy is not None:
+                self._gateway._overflow_policy_override = overflow_policy
+            # CLI --reliability preset overrides gateway.reliability in YAML (#2531)
+            if reliability is not None:
+                self._gateway._reliability_override = reliability
+            # CLI --openai-api / --mcp override gateway.api.* in YAML (#2715)
+            if openai_api is not None:
+                self._gateway._openai_api_override = openai_api
+            if mcp is not None:
+                self._gateway._mcp_override = mcp
+            # CLI --identity-store enables cross-platform continuity, overriding
+            # the gateway.yaml ``identity:`` block (#3020). A constructor-set
+            # resolver on the gateway always wins over both.
+            if identity_store is not None:
+                try:
+                    from praisonai_bot.bots import StoreBackedIdentityResolver
+                    self._gateway._identity_resolver = (
+                        StoreBackedIdentityResolver.from_env(
+                            path=os.path.expanduser(identity_store)
+                        )
+                    )
+                    # Mark explicit so the YAML ``identity:`` block (and its
+                    # hot-reload reconciliation) never clobbers the CLI store.
+                    self._gateway._identity_resolver_explicit = True
+                    logger.info(
+                        "Gateway cross-platform identity resolution enabled "
+                        "(store=%s)", identity_store,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Could not enable identity resolver from "
+                        "--identity-store %s: %s", identity_store, e,
+                    )
+            # CLI lifecycle flags override gateway.lifecycle.* in YAML (#3021)
+            if scale_to_zero is not None:
+                self._gateway._scale_to_zero_override = scale_to_zero
+            if idle_minutes is not None:
+                self._gateway._idle_minutes_override = idle_minutes
+            if drain_marker is not None:
+                self._gateway._drain_marker_override = drain_marker
+            # CLI --watchdog / --watchdog-timeout override gateway.watchdog.*
+            # in YAML (#3410): opt-in event-loop liveness backstop.
+            if watchdog is not None:
+                self._gateway._watchdog_override = watchdog
+            if watchdog_timeout is not None:
+                self._gateway._watchdog_timeout_override = watchdog_timeout
+            print(f"Loading gateway config from {config_file}")
+            # Config wiring validated; the gateway is about to bind. Persist the
+            # launch posture now so a restart can replay it, but only after the
+            # attempt has cleared validation (#3349).
+            _commit_start_flags()
+            try:
+                asyncio.run(self._gateway.start_with_config(config_file))
+            except KeyboardInterrupt:
+                print("\nStopping gateway...")
+                asyncio.run(self._gateway.stop_channels(drain_timeout=drain_timeout))
+                asyncio.run(self._gateway.stop(drain_timeout=drain_timeout))
+                return GATEWAY_OK_EXIT_CODE
+            except FatalConfigError as e:
+                # Duplicate token, no platforms, invalid credentials, etc.
+                print(f"Fatal config error: {e}")
+                return GATEWAY_FATAL_CONFIG_EXIT_CODE
+            except (FileNotFoundError, ValueError) as e:
+                # A missing, malformed, or schema-invalid gateway.yaml is
+                # unrecoverable until an operator fixes it. ``load_gateway_config``
+                # raises ``ValueError`` for empty/non-dict YAML, a missing
+                # ``agents``/``channels`` section, or a missing channel token —
+                # all fatal-config conditions that must not crash-loop (#2437).
+                print(f"Fatal config error: {e}")
+                return GATEWAY_FATAL_CONFIG_EXIT_CODE
+            except Exception as e:
+                print(f"Error starting gateway: {e}")
+                return classify_exit_reason(e)
+            return GATEWAY_OK_EXIT_CODE
+
+        # Standard WebSocket-only mode
+        config = GatewayConfig(host=host, port=port)
+        self._gateway = WebSocketGateway(
+            config=config, openai_api=openai_api, mcp=mcp
+        )
+        # CLI --watchdog also applies in no-config mode (#3410): build the
+        # opt-in liveness watchdog directly since start_with_config's YAML
+        # wiring is skipped here. No-op unless --watchdog is passed.
+        if watchdog:
+            self._gateway._watchdog_override = watchdog
+            self._gateway._watchdog_timeout_override = watchdog_timeout
+            self._gateway._configure_watchdog(
+                self._gateway._merge_watchdog_overrides(None)
+            )
+        # Resolved graceful-drain window for this no-config run. Defaults to the
+        # explicit ``--drain-timeout`` (``None`` → gateway default) and is
+        # replaced below by the ``--reliability`` preset's drain when a preset
+        # is selected, so the shutdown path honours the preset window (#2531).
+        resolved_drain_timeout: Optional[float] = drain_timeout
+        # CLI admission-control flags also apply in no-config mode (#2454):
+        # build a shared gate directly so `--max-concurrent-runs` is honoured
+        # even without a gateway.yaml. A ``--reliability`` preset (#2531) can
+        # supply the admission ceiling too. As of #3438 the *unset* posture is
+        # safe by default (bind-aware admission ceiling + drain), so we always
+        # resolve reliability here — the resolver returns an admission ceiling
+        # unless the operator passes ``--reliability off``.
+        try:
+            from praisonai_bot.bots._admission import build_admission_gate
+            from praisonai_bot.bots._reliability import resolve_reliability
+
+            # Pass the explicit ``--drain-timeout`` through so it still wins
+            # over the preset; capture the resolved window for shutdown so
+            # ``--reliability production`` actually drains (#2531). ``host``
+            # informs the safe-by-default posture — a non-loopback bind
+            # resolves to the full production window (#3438).
+            _resolved = resolve_reliability(
+                reliability,
+                bind_host=host,
+                drain_timeout=drain_timeout,
+                max_concurrent_runs=max_concurrent_runs or 0,
+                queue_depth=queue_depth or 0,
+                overflow_policy=overflow_policy or "reject",
+            )
+            resolved_drain_timeout = _resolved.drain_timeout
+            self._gateway._admission_gate = build_admission_gate(
+                max_concurrent_runs=_resolved.max_concurrent_runs,
+                queue_depth=_resolved.queue_depth,
+                overflow_policy=_resolved.overflow_policy,
+            )
+        except Exception as e:
+            # Invalid admission-control config is unrecoverable until the
+            # operator fixes it; restarting won't help (#2437).
+            print(f"Error: invalid admission-control config: {e}")
+            return GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+
+        if agent_file:
+            try:
+                self._load_agents_from_file(agent_file)
+            except FatalConfigError as e:
+                # A missing/malformed --agents file means the gateway would
+                # start serving no agents while looking healthy to a
+                # supervisor. Treat it as fatal-config so it stops, not
+                # crash-loops, until the operator fixes it (#2437).
+                print(f"Fatal config error: {e}")
+                return GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+        print(f"Starting gateway on ws://{host}:{port}")
+        print("Press Ctrl+C to stop")
+
+        # Admission/agent wiring validated; the gateway is about to bind.
+        # Persist the launch posture now so a restart can replay it, but only
+        # after the attempt has cleared validation (#3349).
+        _commit_start_flags()
+        try:
+            asyncio.run(self._gateway.start())
+        except KeyboardInterrupt:
+            print("\nStopping gateway...")
+            # Honour the resolved graceful-drain window (explicit --drain-timeout
+            # or the --reliability preset) so a no-config restart doesn't cut
+            # in-flight turns (#2531). ``None`` falls back to the stop default.
+            if resolved_drain_timeout is not None:
+                asyncio.run(self._gateway.stop(drain_timeout=resolved_drain_timeout))
+            else:
+                asyncio.run(self._gateway.stop())
+            return GATEWAY_OK_EXIT_CODE
+        except FatalConfigError as e:
+            print(f"Fatal config error: {e}")
+            return GATEWAY_FATAL_CONFIG_EXIT_CODE
+        except Exception as e:
+            print(f"Error starting gateway: {e}")
+            return classify_exit_reason(e)
+        return GATEWAY_OK_EXIT_CODE
+    
+    def _load_agents_from_file(self, file_path: str) -> None:
+        """Load agents from a configuration file.
+
+        Raises:
+            FatalConfigError: If the file is missing, unreadable, malformed,
+                or contains no usable ``agents`` section. A broken ``--agents``
+                file is unrecoverable until fixed, so it must surface (#2437)
+                rather than silently starting an empty gateway.
+        """
+        import os
+        import yaml
+
+        if not os.path.exists(file_path):
+            raise FatalConfigError(f"Agent file not found: {file_path}")
+
+        try:
+            with open(file_path, "r") as f:
+                config = yaml.safe_load(f)
+        except (OSError, yaml.YAMLError) as e:
+            raise FatalConfigError(f"Could not read agent file {file_path}: {e}")
+
+        if not isinstance(config, dict) or not config.get("agents"):
+            raise FatalConfigError(
+                f"Agent file {file_path} has no 'agents' section"
+            )
+
+        from praisonaiagents import Agent
+
+        agents = config["agents"]
+        if not isinstance(agents, list):
+            raise FatalConfigError(
+                f"Agent file {file_path} 'agents' section must be a list"
+            )
+
+        for agent_config in agents:
+            if not isinstance(agent_config, dict):
+                raise FatalConfigError(
+                    f"Agent file {file_path} contains a non-mapping agent entry"
+                )
+            agent = Agent(
+                name=agent_config.get("name", "agent"),
+                instructions=agent_config.get("instructions", ""),
+                llm=agent_config.get("llm"),
+            )
+            agent_id = self._gateway.register_agent(agent)
+            print(f"Registered agent: {agent_id}")
+    
+    def stop(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        force: bool = False,
+        drain_timeout: Optional[float] = None,
+    ) -> None:
+        """Stop a running gateway instance.
+        
+        Args:
+            host: Gateway host
+            port: Gateway port 
+            force: Force stop (kill process)
+            drain_timeout: Seconds to wait for the process to finish its
+                in-flight drain before force-killing. Defaults to a 10s grace
+                window; ``restart --drain-timeout N`` passes N here so the old
+                process is given the full requested drain window instead of a
+                fixed 10s (#3161).
+        """
+        try:
+            from praisonai_bot.gateway.port_utils import GatewayPIDLock
+        except ImportError as e:
+            print(f"Error: Gateway utilities not available. {e}")
+            return
+        
+        pid_lock = GatewayPIDLock(host=host, port=port)
+        lock_info = pid_lock.get_lock_info()
+        
+        if not lock_info:
+            print(f"No gateway PID lock found. Gateway may not be running on {host}:{port}")
+            return
+        
+        pid = lock_info['pid']
+        is_running = lock_info['is_running']
+        
+        if not is_running:
+            print(f"Gateway process (PID {pid}) is no longer running. Cleaning up stale lock.")
+            pid_lock.release_lock()
+            return
+        
+        if force:
+            stopped = self._force_kill_process(pid)
+        else:
+            stopped = self._graceful_stop_process(pid, drain_timeout=drain_timeout)
+
+        # Only release the lock once the process is confirmed gone. A
+        # PermissionError means "I may not signal it", not "it is dead":
+        # deleting a live cross-uid holder's lock would admit a second poller
+        # for the same bot token (#4192).
+        if stopped:
+            pid_lock.release_lock()
+            print(f"Gateway stopped (PID {pid})")
+        else:
+            print(
+                f"Could not confirm PID {pid} stopped (possibly owned by another "
+                f"user); leaving the lock in place."
+            )
+    
+    def _graceful_stop_process(
+        self, pid: int, drain_timeout: Optional[float] = None
+    ) -> bool:
+        """Gracefully stop a process by sending SIGTERM.
+
+        Waits up to ``drain_timeout`` seconds (default 10) for the process to
+        finish its in-flight drain and exit before force-killing. Passing the
+        gateway's configured drain timeout here (e.g. from
+        ``restart --drain-timeout``) ensures a long drain window is respected
+        instead of an unconditional 10s cut-off (#3161).
+
+        Returns ``True`` only when the process is confirmed stopped. A
+        ``PermissionError`` (cross-uid target) returns ``False`` rather than
+        being mistaken for "already dead" (#4192).
+        """
+        import signal
+        import time
+        import os
+
+        # Grace window: honour the caller's drain timeout with a small buffer so
+        # the process can flush after finishing turns; never below 10s so the
+        # default behaviour is unchanged.
+        if drain_timeout is not None and drain_timeout > 0:
+            grace_seconds = max(10.0, float(drain_timeout) + 5.0)
+        else:
+            grace_seconds = 10.0
+        iterations = max(1, int(grace_seconds / 0.1))
+
+        try:
+            print(f"Sending stop signal to PID {pid}...")
+            os.kill(pid, signal.SIGTERM)
+
+            # Wait for graceful shutdown up to the grace window.
+            for _ in range(iterations):
+                try:
+                    os.kill(pid, 0)  # Check if process exists
+                    time.sleep(0.1)
+                except PermissionError:
+                    # Exists but owned by another user - still running.
+                    time.sleep(0.1)
+                except (OSError, ProcessLookupError):
+                    return True  # Process has stopped
+
+            print(f"Process {pid} did not stop gracefully, forcing...")
+            return self._force_kill_process(pid)
+
+        except PermissionError:
+            # We may not signal this PID - it is NOT dead. Do not let the caller
+            # release a live cross-uid holder's lock.
+            print(f"Not permitted to signal PID {pid}; it may belong to another user.")
+            return False
+        except ProcessLookupError:
+            print(f"Process {pid} not found or already stopped")
+            return True
+        except OSError:
+            print(f"Process {pid} not found or already stopped")
+            return True
+
+    def _force_kill_process(self, pid: int) -> bool:
+        """Force kill a process with SIGKILL (Windows: SIGTERM).
+
+        Returns ``True`` only when the process is confirmed gone. A
+        ``PermissionError`` returns ``False`` - "I may not kill it" is not
+        "it is dead" (#4192).
+        """
+        import signal
+        import os
+        import sys
+        import time
+
+        try:
+            print(f"Force killing PID {pid}...")
+            # Use SIGTERM on Windows since SIGKILL is not available
+            sig = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+            os.kill(pid, sig)
+        except PermissionError:
+            print(f"Not permitted to kill PID {pid}; it may belong to another user.")
+            return False
+        except (ProcessLookupError, OSError):
+            print(f"Process {pid} not found or already stopped")
+            return True
+
+        # Signalling succeeded, but delivery is not exit. Confirm the process is
+        # actually gone before the caller releases the PID lock; otherwise a new
+        # gateway could start while the old one still owns the resources (#4192).
+        for _ in range(50):  # up to ~5s
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.1)
+            except PermissionError:
+                # Reaped and PID reused by another user - or still ours but now
+                # cross-uid. Cannot confirm exit; treat as still running.
+                return False
+            except (ProcessLookupError, OSError):
+                return True
+
+        print(f"Process {pid} still present after force kill; lock retained.")
+        return False
+
+    def hooks(self, args) -> int:
+        """Manage inbound trigger hooks in a gateway.yaml file (Issue #2281).
+
+        Sub-actions: ``add``, ``list``, ``remove``. Edits the ``hooks:`` section
+        of ``gateway.yaml`` so the trigger surface is declarable from the CLI,
+        consistent with the YAML and Python surfaces.
+        """
+        import yaml
+
+        action = getattr(args, "hooks_command", None)
+        config_path = getattr(args, "config_file", None) or "gateway.yaml"
+
+        def _load() -> Dict:
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, "r") as f:
+                        data = yaml.safe_load(f) or {}
+                    if not isinstance(data, dict):
+                        print(
+                            f"Error: {config_path} must contain a YAML mapping at the root."
+                        )
+                        return {}
+                    return data
+                except Exception as e:
+                    print(f"Error reading {config_path}: {e}")
+                    return {}
+            return {}
+
+        def _save(cfg: Dict) -> None:
+            with open(config_path, "w") as f:
+                yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+        cfg = _load()
+        hooks = cfg.get("hooks") or []
+        if not isinstance(hooks, list):
+            hooks = []
+
+        if action == "list":
+            if not hooks:
+                print(f"No hooks configured in {config_path}")
+                return 0
+            print(f"Hooks in {config_path}:")
+            for h in hooks:
+                if isinstance(h, dict):
+                    print(
+                        f"  POST /hooks/{h.get('path')}  "
+                        f"-> agent={h.get('agent') or '<default>'} "
+                        f"deliver_to={h.get('deliver_to') or '-'}"
+                    )
+            return 0
+
+        if action == "remove":
+            path = getattr(args, "path", None)
+            if not path:
+                print("Error: hook path required")
+                return 1
+            path = path.strip().strip("/")
+            new_hooks = [
+                h for h in hooks
+                if not (isinstance(h, dict) and h.get("path") == path)
+            ]
+            if len(new_hooks) == len(hooks):
+                print(f"No hook '{path}' found in {config_path}")
+                return 1
+            cfg["hooks"] = new_hooks
+            _save(cfg)
+            print(f"Removed hook '{path}' from {config_path}")
+            return 0
+
+        if action == "add":
+            path = getattr(args, "path", None)
+            if not path:
+                print("Error: hook path required (e.g. 'gmail')")
+                return 1
+            path = path.strip().strip("/")
+            entry: Dict = {"path": path}
+            if getattr(args, "agent", None):
+                entry["agent"] = args.agent
+            if getattr(args, "action_type", None):
+                entry["action"] = args.action_type
+            if getattr(args, "auth", None):
+                entry["auth"] = args.auth
+            if getattr(args, "session_key", None):
+                entry["session_key"] = args.session_key
+            if getattr(args, "idempotency_key", None):
+                entry["idempotency_key"] = args.idempotency_key
+            if getattr(args, "deliver_to", None):
+                entry["deliver_to"] = args.deliver_to
+            if getattr(args, "message", None):
+                entry["message"] = args.message
+
+            # Replace any existing hook on the same path.
+            hooks = [
+                h for h in hooks
+                if not (isinstance(h, dict) and h.get("path") == path)
+            ]
+            hooks.append(entry)
+            cfg["hooks"] = hooks
+            _save(cfg)
+            print(f"Added hook 'POST /hooks/{path}' to {config_path}")
+            return 0
+
+        print("Usage: praisonai gateway hooks {add|list|remove} ...")
+        return 1
+
+    def status(self, host: str = "127.0.0.1", port: int = 8765, deep: bool = False) -> None:
+        """Check gateway status.
+        
+        Args:
+            host: Gateway host
+            port: Gateway port
+            deep: Print per-channel health rows from /health
+        """
+        import urllib.request
+        import json
+        
+        # Check PID lock info first
+        try:
+            from praisonai_bot.gateway.port_utils import GatewayPIDLock, is_port_in_use
+            pid_lock = GatewayPIDLock(host=host, port=port)
+            lock_info = pid_lock.get_lock_info()
+            
+            if lock_info:
+                pid = lock_info['pid']
+                is_running = lock_info['is_running']
+                lock_host = lock_info['host']
+                lock_port = lock_info['port']
+                
+                if is_running:
+                    print(f"Gateway PID lock: Process {pid} running ({lock_host}:{lock_port})")
+                else:
+                    print(f"Gateway PID lock: Stale lock (process {pid} not running)")
+            else:
+                print("Gateway PID lock: No lock file found")
+            
+            # Check if port is in use
+            if is_port_in_use(host, port):
+                print(f"Port {host}:{port}: In use")
+            else:
+                print(f"Port {host}:{port}: Available")
+                
+        except ImportError:
+            print("PID lock status: Utilities not available")
+        except Exception as e:  # noqa: BLE001
+            # PID lock inspection is advisory only; never let it block the
+            # authoritative /health probe (e.g. os.kill SystemError on Windows).
+            print(f"PID lock status: Unavailable ({e})")
+        
+        # Try to connect to health endpoint
+        url = f"http://{host}:{port}/health"
+        
+        try:
+            import time as _time
+
+            with urllib.request.urlopen(url, timeout=5) as response:
+                data = json.loads(response.read().decode())
+                print(f"Gateway Status: {data.get('status', 'unknown')}")
+                print(f"  Uptime: {data.get('uptime', 0):.1f}s")
+                print(f"  Agents: {data.get('agents', 0)}")
+                print(f"  Sessions: {data.get('sessions', 0)}")
+                print(f"  Clients: {data.get('clients', 0)}")
+                if data.get("last_inbound_at"):
+                    age = _time.time() - float(data["last_inbound_at"])
+                    print(
+                        f"  Last inbound: "
+                        f"{_time.strftime('%H:%M:%S', _time.localtime(data['last_inbound_at']))} "
+                        f"({age:.0f}s ago)"
+                    )
+                # Issue #4339: surface degraded owners (channels, providers, and
+                # now durability — a session/idempotency store that fell back to
+                # in-memory) so an operator is told when the bot is running
+                # non-durably instead of it being a silent log line. Always
+                # printed (not gated on ``deep``) since a degraded state is
+                # exactly what an at-a-glance status check should reveal.
+                degraded_owners = data.get("degraded_owners") or []
+                if degraded_owners:
+                    print("  Degraded:")
+                    for owner in degraded_owners:
+                        kind = owner.get("owner_kind", "?")
+                        oid = owner.get("owner_id", "?")
+                        reason = owner.get("reason", "—")
+                        hint = owner.get("retry_hint", "")
+                        line = f"    ✗ {kind}:{oid} — {reason}"
+                        if hint:
+                            line += f"  fix: {hint}"
+                        print(line)
+                channels = data.get("channels") or {}
+                if channels and deep:
+                    print("  Channels:")
+                    for name, ch in channels.items():
+                        running = ch.get("running", False)
+                        state = (ch.get("supervision") or {}).get("state", "—")
+                        reason = ch.get("reason", "—")
+                        probe_ok = (ch.get("probe") or {}).get("ok")
+                        last = ch.get("last_activity")
+                        last_s = f"{_time.time() - last:.0f}s ago" if last else "—"
+                        mark = "✓" if running else "✗"
+                        probe_s = f" probe_ok={probe_ok}" if probe_ok is not None else ""
+                        print(
+                            f"    {mark} {name}: running={running} state={state} "
+                            f"reason={reason} last_activity={last_s}{probe_s}"
+                        )
+                if deep:
+                    self._print_version_skew(host, port)
+                self._print_reload_status(data)
+        except Exception as e:
+            print(f"Gateway not reachable at {url}")
+            print(f"Error: {e}")
+
+    @staticmethod
+    def _print_version_skew(host: str, port: int) -> None:
+        """Warn when the running gateway version differs from the installed CLI."""
+        import json
+        import urllib.request
+
+        try:
+            from importlib.metadata import version as pkg_version
+        except ImportError:
+            from importlib_metadata import version as pkg_version  # type: ignore
+
+        try:
+            cli_version = pkg_version("praisonai-bot")
+        except Exception:
+            return
+
+        url = f"http://{host}:{port}/info"
+        try:
+            req = urllib.request.Request(url)
+            token = __import__("os").environ.get("GATEWAY_AUTH_TOKEN", "").strip()
+            # Only attach the bearer token where it cannot leak to a network
+            # observer: over loopback (never on the wire). A remote plaintext
+            # HTTP probe deliberately omits it rather than expose the credential.
+            if token and host in ("127.0.0.1", "localhost", "::1"):
+                req.add_header("Authorization", f"Bearer {token}")
+            with urllib.request.urlopen(req, timeout=3) as response:
+                data = json.loads(response.read().decode())
+        except Exception:
+            return
+
+        runtime_version = data.get("version")
+        if runtime_version and runtime_version != cli_version:
+            print(
+                f"  Version skew: running gateway reports {runtime_version}, "
+                f"installed praisonai-bot is {cli_version}"
+            )
+
+    @staticmethod
+    def _print_reload_status(data: dict) -> None:
+        """Render config hot-reload observability from /health (Issue #3049).
+
+        Surfaces the last reload outcome, applied vs on-disk config revision
+        (drift), and watcher liveness so an operator can see whether the last
+        edit took effect without scraping logs.
+        """
+        import time as _time
+
+        reload_info = data.get("reload")
+        if reload_info:
+            last_result = reload_info.get("last_result", "never")
+            last_at = reload_info.get("last_at")
+            when = ""
+            if last_at:
+                try:
+                    when = " at " + _time.strftime(
+                        "%H:%M:%S", _time.localtime(last_at)
+                    )
+                except Exception:
+                    when = ""
+            line = f"  Reload: {str(last_result).upper()}{when}"
+            error = reload_info.get("error")
+            if error:
+                line += f"  {error}"
+            changed = reload_info.get("changed_paths")
+            if changed:
+                line += "  changed=" + ",".join(changed)
+            print(line)
+            print(f"  Watcher: {reload_info.get('watcher', 'unknown')}")
+
+        applied = data.get("applied_config_revision")
+        on_disk = data.get("on_disk_config_revision")
+        if applied or on_disk:
+            if applied and on_disk and applied != on_disk:
+                print(
+                    f"  Config: on-disk {on_disk}  !=  applied {applied}   "
+                    "(change not in effect)"
+                )
+            elif applied and on_disk:
+                print(f"  Config: {applied} (up to date)")
+            else:
+                print(f"  Config: applied {applied or on_disk}")
+
+
+def handle_gateway_command(args) -> int:
+    """Handle gateway CLI command.
+    
+    Now uses the unified configuration schema for all bot/gateway operations.
+    
+    Args:
+        args: List of CLI arguments (from main.py unknown_args) or argparse Namespace.
+    """
+    # Route the public ``praisonai gateway ...`` entry point to the SINGLE
+    # canonical Typer command app so it advertises exactly the same command
+    # surface -- and the same safe ``start`` (auto-discovery, config-version
+    # migration, credential + tool preflight, ``--openai-api``/``--mcp``) -- as
+    # ``praisonai-bot gateway ...``. One command surface, one ``start``: the
+    # gateway's own degraded-state retry hints (``praisonai gateway doctor`` /
+    # ``doctor --fix`` / ``test``) now name commands the operator can actually
+    # run from the ``praisonai`` binary (#3966).
+    import click
+    from typer.main import get_command
+
+    from praisonai_bot.cli.commands.gateway import app as gateway_app
+
+    # Typer may drive the command with a vendored copy of click
+    # (``typer._click``) whose exception classes are distinct from the
+    # top-level ``click`` ones. Catch both families so unknown-subcommand /
+    # bad-flag errors degrade to an exit code with a rendered message rather
+    # than a traceback, regardless of the installed Typer version (#3966).
+    click_exception_types = [click.ClickException]
+    abort_types = [click.exceptions.Abort]
+    try:  # pragma: no cover - only one click family is present at runtime
+        from typer import _click as _typer_click  # type: ignore
+
+        click_exception_types.append(_typer_click.exceptions.ClickException)
+        abort_types.append(_typer_click.exceptions.Abort)
+    except (ImportError, AttributeError):
+        # Typer without a vendored ``_click`` (or a differing layout): the
+        # top-level ``click`` families already loaded above are sufficient.
+        pass
+    click_exception_types = tuple(click_exception_types)
+    abort_types = tuple(abort_types)
+
+    # A pre-parsed argparse ``Namespace`` (legacy internal callers) is adapted
+    # back to an argv list so there is exactly one dispatch path through the
+    # canonical Typer app; a plain list is passed straight through.
+    argv = args if isinstance(args, list) else _namespace_to_gateway_argv(args)
+
+    command = get_command(gateway_app)
+    try:
+        # ``standalone_mode=False`` returns the command's value (exit code)
+        # instead of calling ``sys.exit`` — so the caller (parse_args) can
+        # ``sys.exit`` once at the top level, matching the argparse contract.
+        return command(args=list(argv), standalone_mode=False) or 0
+    except abort_types:
+        # Ctrl+C at a prompt → clean interrupt.
+        return 1
+    except click_exception_types as exc:
+        # Unknown subcommand / bad flags: render the message (the way click
+        # would in standalone mode) and surface a non-zero code instead of a
+        # traceback, so the public CLI degrades gracefully like the canonical
+        # binary rather than dead-ending (#3966).
+        exc.show()
+        return exc.exit_code
+    except SystemExit as exc:  # --help and other explicit exits
+        code = exc.code
+        return code if isinstance(code, int) else (0 if code is None else 1)
+
+
+def _namespace_to_gateway_argv(args) -> list:
+    """Adapt a legacy argparse ``Namespace`` to a ``gateway`` argv list.
+
+    Only ``start``/``status``/``hooks`` were ever produced by the old argparse
+    parser; anything else falls back to ``start`` (its historical default) so
+    the canonical Typer app handles it identically to the public path.
+    """
+    subcommand = getattr(args, "gateway_command", None) or "start"
+    argv: list = [subcommand]
+    if subcommand in ("start", "status"):
+        host = getattr(args, "host", None)
+        port = getattr(args, "port", None)
+        if host is not None:
+            argv += ["--host", str(host)]
+        if port is not None:
+            argv += ["--port", str(port)]
+    if subcommand == "start":
+        if getattr(args, "agents", None):
+            argv += ["--agents", str(args.agents)]
+        if getattr(args, "config_file", None):
+            argv += ["--config", str(args.config_file)]
+    if subcommand == "hooks":
+        hooks_command = getattr(args, "hooks_command", None)
+        if hooks_command:
+            argv.append(hooks_command)
+    return argv

@@ -1,0 +1,450 @@
+import React, { useMemo, useCallback, useEffect, useRef } from "react";
+import PropTypes from "prop-types";
+import { LoadingScreen } from "src/components/loading-screen";
+import {
+  Box,
+  Paper,
+  useTheme,
+  Alert,
+  Button,
+} from "@mui/material";
+import { Outlet, useLocation, useNavigate, useParams } from "react-router";
+import { ErrorBoundary } from "react-error-boundary";
+import { logger } from "src/utils/logger";
+import { isChunkError } from "src/utils/lazyWithRetry";
+
+import { useObserveHeader } from "../project/context/ObserveHeaderContext";
+import { useUrlState } from "src/routes/hooks/use-url-state";
+
+import ObserveHeader from "./ObserveHeader";
+import {
+  ObserveTabBar,
+  ViewConfigModal,
+  TabContextMenu,
+} from "src/components/observe-tabs";
+import { useTabStoreShallow } from "./LLMTracing/tabStore";
+import { useGetProjectDetails } from "src/api/project/project-detail";
+import { useQueryClient } from "@tanstack/react-query";
+import { useGetSavedViews, SAVED_VIEWS_KEY } from "src/api/project/saved-views";
+import ReplayDrawer from "./ReplayDrawer/ReplayDrawer";
+import {
+  resetReplaySessionsStore,
+  resetSessionsGridStore,
+} from "./SessionsView/ReplaySessions/store";
+import { resetTraceGridStore } from "./LLMTracing/states";
+import { resetTabStore } from "./LLMTracing/tabStore";
+
+// Loading component for tab content
+const TabContentLoader = () => (
+  <LoadingScreen
+    variant="orbit"
+    sx={{ minHeight: "60vh", backgroundColor: "background.paper" }}
+  />
+);
+
+const TAB_ERROR_MESSAGE = "Could not load this tab";
+
+const TabContentError = ({ error, resetErrorBoundary }) => {
+  // Chunk load errors bubble to the app-level boundary's silent reload.
+  if (isChunkError(error)) throw error;
+
+  // A full reload actually changes state, unlike resetErrorBoundary() alone.
+  const handleRetry = () => {
+    resetErrorBoundary();
+    window.location.reload();
+  };
+
+  return (
+    <Box sx={{ p: 2, backgroundColor: "background.paper" }}>
+      <Alert
+        severity="error"
+        action={
+          <Button color="inherit" size="small" onClick={handleRetry}>
+            Retry
+          </Button>
+        }
+      >
+        {TAB_ERROR_MESSAGE}
+      </Alert>
+    </Box>
+  );
+};
+
+TabContentError.propTypes = {
+  error: PropTypes.instanceOf(Error),
+  resetErrorBoundary: PropTypes.func.isRequired,
+};
+
+// Contains a tab's render errors to the tab, so one bad cell cannot blank the page.
+const TabErrorBoundary = ({ children, resetKey }) => {
+  return (
+    <ErrorBoundary
+      FallbackComponent={TabContentError}
+      resetKeys={[resetKey]}
+      onError={(error) => logger.error("Observe tab render failed", error)}
+    >
+      <React.Suspense fallback={<TabContentLoader />}>{children}</React.Suspense>
+    </ErrorBoundary>
+  );
+};
+
+TabErrorBoundary.propTypes = {
+  children: PropTypes.node.isRequired,
+  resetKey: PropTypes.string,
+};
+
+// Map observe tab keys to route + URL params
+const TAB_TO_ROUTE = {
+  traces: { route: "llm-tracing", params: { selectedTab: "trace" } },
+  sessions: { route: "sessions", params: {} },
+  users: { route: "users", params: {} },
+};
+
+const ObservePage = React.memo(() => {
+  const { headerConfig, setActiveViewConfig } = useObserveHeader();
+  const theme = useTheme();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { observeId } = useParams();
+  const { data: projectDetail } = useGetProjectDetails(observeId);
+  const { data: savedViewsData } = useGetSavedViews(observeId);
+  const queryClient = useQueryClient();
+
+  // Tab store state for modals and context menu
+  const {
+    createModalOpen,
+    editModalView,
+    contextMenuAnchor,
+    closeCreateModal,
+    closeContextMenu,
+    startRenaming,
+  } = useTabStoreShallow((s) => ({
+    createModalOpen: s.createModalOpen,
+    editModalView: s.editModalView,
+    contextMenuAnchor: s.contextMenuAnchor,
+    closeCreateModal: s.closeCreateModal,
+    closeContextMenu: s.closeContextMenu,
+    startRenaming: s.startRenaming,
+  }));
+
+  // Active tab for the new tab system
+  const [activeTab, setActiveTab] = useUrlState("tab", "traces");
+
+  const currentRouteSegment = useMemo(() => {
+    const segments = location.pathname.split("/").filter(Boolean);
+    return segments[segments.length - 1] || "llm-tracing";
+  }, [location.pathname]);
+
+  // Derive active tab from URL on initial load / route changes
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const tab = params.get("tab");
+    // Saved-view tabs own the `tab` key — don't overwrite with the route
+    // default. Without this guard, a click on a sessions/users saved view
+    // would land on the route, this effect would fire, and `tab=view-<id>`
+    // would be replaced by `tab=sessions` (or `tab=users`), wiping the
+    // active-view-id needed by Save view.
+    if (tab && tab.startsWith("view-")) return;
+    if (currentRouteSegment === "sessions") {
+      setActiveTab("sessions");
+    } else if (currentRouteSegment === "users") {
+      setActiveTab("users");
+    } else if (currentRouteSegment === "llm-tracing") {
+      const selectedTab = params.get("selectedTab");
+      if (selectedTab === "spans") {
+        setActiveTab("spans");
+      } else if (!tab || tab === "traces") {
+        setActiveTab("traces");
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRouteSegment]);
+
+  // Hydrate activeViewConfig on hard-refresh / direct URL load. handleTabChange
+  // sets it on click, but a page reload re-mounts with no in-memory state —
+  // children read activeViewConfig for extraFilters, visibleColumns, etc.,
+  // and without this all of those fall back to defaults until the user clicks
+  // the tab again. Re-runs only when the URL tab key or the saved-views list
+  // changes; the value for `tab=view-<id>` is stable across saved-views
+  // refetches so we don't churn the apply effect on every mutation invalidate.
+  const lastHydratedTabRef = useRef(null);
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const tab = params.get("tab");
+    if (!tab || !tab.startsWith("view-")) {
+      lastHydratedTabRef.current = null;
+      return;
+    }
+    if (lastHydratedTabRef.current === tab) return;
+    const customViews = savedViewsData?.custom_views ?? [];
+    if (!customViews.length) return;
+    const view = customViews.find((v) => `view-${v.id}` === tab);
+    if (!view?.config) return;
+    lastHydratedTabRef.current = tab;
+    setActiveViewConfig(view.config);
+  }, [location.search, savedViewsData, setActiveViewConfig]);
+
+  // Handle tab change from ObserveTabBar
+  const handleTabChange = useCallback(
+    (tabKey) => {
+      // setActiveTab is redundant here: navigate() below updates the URL and
+      // useUrlState's external-sync effect will update the state. Skipping
+      // the explicit call saves one setSearchParams round and the
+      // corresponding re-render cascade.
+
+      // Set activeViewConfig from saved view data. Read from queryClient
+      // directly rather than the `savedViewsData` closure, which can be stale
+      // immediately after an optimistic cache write.
+      let activeConfig = null;
+      let viewTabType = "traces";
+      if (tabKey.startsWith("view-")) {
+        const viewId = tabKey.replace("view-", "");
+        const cached = queryClient.getQueryData([SAVED_VIEWS_KEY, observeId]);
+        const customViews = cached?.custom_views ?? [];
+        const view = customViews.find((v) => v.id === viewId);
+        activeConfig = view?.config || null;
+        viewTabType = view?.tab_type ?? "traces";
+      }
+
+      let navTo = null;
+      if (tabKey.startsWith("view-")) {
+        const isUsersView =
+          viewTabType === "users" || viewTabType === "user_detail";
+        const isSessionsView = viewTabType === "sessions";
+        let routeSegment = "llm-tracing";
+        if (isUsersView) routeSegment = "users";
+        else if (isSessionsView) routeSegment = "sessions";
+        const basePath = `/dashboard/observe/${observeId}/${routeSegment}`;
+
+        const params = new URLSearchParams();
+        params.set("tab", tabKey);
+
+        if (isUsersView) {
+          // Users-typed views use a different config schema (config.filters is
+          // an object, not an array) and its own URL-state key pair.
+          if (activeConfig?.filters?.dateFilter) {
+            params.set(
+              "userDateFilter",
+              JSON.stringify(activeConfig.filters.dateFilter),
+            );
+          }
+        } else if (isSessionsView) {
+          // Sessions uses sessionFilter / sessionDateFilter URL keys.
+          if (activeConfig?.filters) {
+            params.set("sessionFilter", JSON.stringify(activeConfig.filters));
+          }
+          if (activeConfig?.display?.dateFilter) {
+            params.set(
+              "sessionDateFilter",
+              JSON.stringify(activeConfig.display.dateFilter),
+            );
+          }
+        } else {
+          // Trace / Span views — pick URL keys that match LLMTracingView's
+          // useLLMTracingFilters registrations.
+          const isSpans = viewTabType === "spans";
+          const selectedTabValue = isSpans ? "spans" : "trace";
+          const primaryFilterKey = isSpans
+            ? "primarySpanFilter"
+            : "primaryTraceFilter";
+          const primaryDateKey = isSpans
+            ? "primarySpanDateFilter"
+            : "primaryTraceDateFilter";
+          const compareFilterKey = isSpans
+            ? "compareSpansFilter"
+            : "compareTraceFilter";
+          const compareDateKey = isSpans
+            ? "compareSpansDateFilter"
+            : "compareTraceDateFilter";
+
+          params.set("selectedTab", selectedTabValue);
+          if (activeConfig?.filters) {
+            params.set(primaryFilterKey, JSON.stringify(activeConfig.filters));
+          }
+          if (activeConfig?.display?.dateFilter) {
+            params.set(
+              primaryDateKey,
+              JSON.stringify(activeConfig.display.dateFilter),
+            );
+          }
+          if (activeConfig?.compare_filters) {
+            params.set(
+              compareFilterKey,
+              JSON.stringify(activeConfig.compare_filters),
+            );
+          }
+          if (activeConfig?.compare_date_filter) {
+            params.set(
+              compareDateKey,
+              JSON.stringify(activeConfig.compare_date_filter),
+            );
+          }
+        }
+
+        navTo = `${basePath}?${params.toString()}`;
+      } else {
+        const config = TAB_TO_ROUTE[tabKey];
+        if (config) {
+          const basePath = `/dashboard/observe/${observeId}/${config.route}`;
+          const params = new URLSearchParams();
+          params.set("tab", tabKey);
+          Object.entries(config.params).forEach(([k, v]) => params.set(k, v));
+          navTo = `${basePath}?${params.toString()}`;
+        }
+      }
+
+      // Set config + navigate together so React batches them into one render — a
+      // deferred config set left the URL naming a view while config was null.
+      setActiveViewConfig(activeConfig);
+      if (navTo) navigate(navTo, { replace: true });
+    },
+    [observeId, navigate, queryClient, setActiveViewConfig],
+  );
+
+  // Memoized styles
+  const containerStyles = useMemo(
+    () => ({
+      display: "flex",
+      flexDirection: "column",
+      height: "100vh",
+      backgroundColor: "background.paper",
+    }),
+    [],
+  );
+
+  const headerPaperStyles = useMemo(
+    () => ({
+      paddingX: theme.spacing(2),
+      paddingTop: theme.spacing(2),
+      borderRadius: 0,
+      boxShadow: "none",
+      backgroundColor: "background.paper",
+      flexShrink: 0,
+    }),
+    [theme],
+  );
+
+  const tabsPaperStyles = useMemo(
+    () => ({
+      paddingX: theme.spacing(2),
+      paddingTop: theme.spacing(0.5),
+      paddingBottom: theme.spacing(0.5),
+      boxShadow: "none",
+      backgroundColor: "background.paper",
+      flexShrink: 0,
+    }),
+    [theme],
+  );
+
+  const contentStyles = useMemo(
+    () => ({
+      flex: 1,
+      overflow: "auto",
+      backgroundColor: "background.paper",
+    }),
+    [],
+  );
+
+  useEffect(() => {
+    return () => {
+      resetReplaySessionsStore();
+      resetSessionsGridStore();
+      resetTraceGridStore();
+      resetTabStore();
+      headerConfig?.gridApi?.deselectAll();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [observeId]);
+
+  if (!observeId) {
+    return (
+      <Box sx={{ p: 3, backgroundColor: "background.paper" }}>
+        <Alert severity="error">
+          Invalid observe ID. Please check the URL and try again.
+        </Alert>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={containerStyles}>
+      {/* Header Section */}
+      <Paper sx={headerPaperStyles}>
+        <ObserveHeader
+          text={headerConfig.text}
+          filterTrace={headerConfig.filterTrace}
+          filterSpan={headerConfig.filterSpan}
+          selectedTab={headerConfig.selectedTab}
+          filterSession={headerConfig.filterSession}
+          filterUsers={headerConfig.filterUsers}
+          searchUsers={headerConfig.searchUsers}
+          sortUsers={headerConfig.sortUsers}
+          refreshData={headerConfig.refreshData}
+          resetFilters={headerConfig.resetFilters}
+        />
+      </Paper>
+
+      {/* Tabs Section */}
+      <Paper sx={tabsPaperStyles}>
+        <ObserveTabBar
+          projectId={observeId}
+          activeTab={activeTab}
+          onTabChange={handleTabChange}
+          projectSource={projectDetail?.source}
+        />
+      </Paper>
+
+      {/* Filter chips slot — FilterChips portals here */}
+      <Box
+        id="observe-filter-chips-slot"
+        sx={{ px: 2, flexShrink: 0, bgcolor: "background.paper" }}
+      />
+
+      {/* Content Section */}
+      <Box sx={contentStyles}>
+        <TabErrorBoundary resetKey={currentRouteSegment}>
+          <Outlet />
+        </TabErrorBoundary>
+      </Box>
+      <ReplayDrawer
+        gridApi={headerConfig?.gridApi}
+        activeRoute={currentRouteSegment}
+        projectDetail={projectDetail}
+      />
+
+      {/* View config modal (create / edit) */}
+      <ViewConfigModal
+        open={createModalOpen}
+        onClose={closeCreateModal}
+        mode={editModalView ? "edit" : "create"}
+        initialValues={editModalView}
+        projectId={observeId}
+        onSuccess={(newView) => {
+          if (newView?.id) {
+            handleTabChange(`view-${newView.id}`);
+          }
+        }}
+      />
+
+      {/* Tab context menu (right-click on custom view tabs) */}
+      {contextMenuAnchor && (
+        <TabContextMenu
+          anchorPosition={contextMenuAnchor}
+          view={
+            savedViewsData?.custom_views?.find(
+              (v) => v.id === contextMenuAnchor.viewId,
+            ) ?? null
+          }
+          projectId={observeId}
+          onClose={closeContextMenu}
+          onRename={startRenaming}
+          onTabChange={handleTabChange}
+        />
+      )}
+    </Box>
+  );
+});
+
+ObservePage.displayName = "ObservePage";
+
+export default ObservePage;

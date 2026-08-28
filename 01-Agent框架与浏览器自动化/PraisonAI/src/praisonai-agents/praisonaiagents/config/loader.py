@@ -1,0 +1,1033 @@
+"""
+Configuration Loader for PraisonAI Agents.
+
+Loads configuration from multiple sources with precedence:
+1. Explicit parameters (highest)
+2. Environment variables
+3. Config file (.praisonai/config.toml, .praisonai/config.yaml, or praisonai.toml/.yaml)
+4. Defaults (lowest)
+
+Zero Performance Impact:
+- Config is loaded lazily on first access
+- No file I/O at import time
+- Cached after first load
+
+Usage:
+    from praisonaiagents.config.loader import get_config, get_default
+    
+    # Get entire config
+    config = get_config()
+    
+    # Get specific default with fallback
+    model = get_default("model", "gpt-4o-mini")
+    memory_config = get_default("memory", {})
+    
+    # Validate config file
+    errors = validate_config(config.to_dict())
+"""
+
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass, field
+
+
+# ============================================================================
+# CONFIG VALIDATION SCHEMA
+# ============================================================================
+# Defines valid keys and types for config file validation
+
+VALID_PLUGINS_KEYS = {
+    "enabled": (bool, list, str),  # bool, list of plugin names, or "true"/"false"
+    "auto_discover": (bool,),
+    "directories": (list,),
+    "allow_project_plugins": (bool,),  # opt-in trust gate for ./.praisonai/plugins/*.py
+}
+
+VALID_DEFAULTS_KEYS = {
+    # LLM settings
+    "model": (str,),
+    "small_model": (str,),
+    "base_url": (str,),
+    # Feature flags
+    "allow_delegation": (bool,),
+    "allow_code_execution": (bool,),
+    "code_execution_mode": (str,),
+    # Feature configs (nested dicts with 'enabled' key)
+    "memory": (dict, bool),
+    "knowledge": (dict, bool),
+    "planning": (dict, bool),
+    "reflection": (dict, bool),
+    "guardrails": (dict, bool),
+    "web": (dict, bool),
+    "output": (dict, str),  # dict or preset string
+    "execution": (dict, str),  # dict or preset string
+    "caching": (dict, bool),
+    "autonomy": (dict, bool),
+    "skills": (dict, list),
+    "retry": (dict, bool),
+}
+
+VALID_ROOT_KEYS = {"plugins", "defaults"}
+
+
+class ConfigValidationError(Exception):
+    """Raised when config file has validation errors."""
+    
+    def __init__(self, errors: List[str]):
+        self.errors = errors
+        message = "Config validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+        super().__init__(message)
+
+# Global config cache (lazy loaded)
+_config_cache: Optional[Dict[str, Any]] = None
+_config_loaded: bool = False
+_defaults_has_values: Optional[bool] = None
+
+
+def _default_project_plugins_dir():
+    """Return project-local plugins directory via paths.py."""
+    from ..paths import get_project_data_dir
+    return get_project_data_dir() / "plugins"
+
+
+def _default_global_plugins_dir():
+    """Return user-global plugins directory via paths.py."""
+    from ..paths import get_plugins_dir
+    return get_plugins_dir()
+
+
+def get_project_data_dir():
+    """Re-export for local use in config search."""
+    from ..paths import get_project_data_dir as _gpd
+    return _gpd()
+
+
+@dataclass
+class PluginsConfig:
+    """Configuration for the plugin system."""
+    enabled: Union[bool, List[str]] = False  # True, False, or list of plugin names
+    auto_discover: bool = True
+    # Opt-in trust gate for executing project-local single-file plugins
+    # (./.praisonai/plugins/*.py). Default False so a cloned repo cannot run
+    # arbitrary plugin code until the user explicitly authorises it.
+    allow_project_plugins: bool = False
+    directories: List[str] = field(default_factory=lambda: [
+        str(_default_project_plugins_dir()),
+        str(_default_global_plugins_dir())
+    ])
+    # Per-plugin option maps keyed by plugin name, e.g.
+    # {"pii_guardrail": {"redact": ["email"]}}. Delivered to each plugin's
+    # on_config hook. Reserved keys (enabled/auto_discover/directories) are
+    # never included here.
+    options: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "enabled": self.enabled,
+            "auto_discover": self.auto_discover,
+            "allow_project_plugins": self.allow_project_plugins,
+            "directories": self.directories,
+        }
+        # Flatten per-plugin option maps back to top level for round-tripping.
+        for name, opts in self.options.items():
+            result[name] = opts
+        return result
+
+
+@dataclass  
+class DefaultsConfig:
+    """Default configuration for Agent parameters."""
+    # LLM defaults
+    model: Optional[str] = None
+    # Cheap/fast auxiliary model for internal LLM calls (title generation,
+    # summarisation/compaction). Falls back to ``model`` when unset.
+    small_model: Optional[str] = None
+    base_url: Optional[str] = None
+    
+    # Feature flags
+    allow_delegation: bool = False
+    allow_code_execution: bool = False
+    code_execution_mode: str = "safe"
+    
+    # Feature configs (nested dicts)
+    memory: Optional[Dict[str, Any]] = None
+    knowledge: Optional[Dict[str, Any]] = None
+    planning: Optional[Dict[str, Any]] = None
+    reflection: Optional[Dict[str, Any]] = None
+    guardrails: Optional[Dict[str, Any]] = None
+    web: Optional[Dict[str, Any]] = None
+    output: Optional[Dict[str, Any]] = None
+    execution: Optional[Dict[str, Any]] = None
+    caching: Optional[Dict[str, Any]] = None
+    autonomy: Optional[Dict[str, Any]] = None
+    skills: Optional[Dict[str, Any]] = None
+    retry: Optional[Dict[str, Any]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "model": self.model,
+            "small_model": self.small_model,
+            "base_url": self.base_url,
+            "allow_delegation": self.allow_delegation,
+            "allow_code_execution": self.allow_code_execution,
+            "code_execution_mode": self.code_execution_mode,
+            "memory": self.memory,
+            "knowledge": self.knowledge,
+            "planning": self.planning,
+            "reflection": self.reflection,
+            "guardrails": self.guardrails,
+            "web": self.web,
+            "output": self.output,
+            "execution": self.execution,
+            "caching": self.caching,
+            "autonomy": self.autonomy,
+            "skills": self.skills,
+            "retry": self.retry,
+        }
+
+
+@dataclass
+class PraisonConfig:
+    """Root configuration for PraisonAI Agents."""
+    plugins: PluginsConfig = field(default_factory=PluginsConfig)
+    defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "plugins": self.plugins.to_dict(),
+            "defaults": self.defaults.to_dict(),
+        }
+
+
+def _find_config_file() -> Optional[Path]:
+    """Find config file in standard locations.
+
+    Both TOML and the unified YAML surface (``.praisonai/config.yaml``) are
+    discovered so the documented declarative plugin config actually reaches the
+    agents runtime.
+
+    Search order:
+    1. .praisonai/config.toml then .praisonai/config.yaml (project-local)
+    2. praisonai.toml then praisonai.yaml (project root)
+    3. ~/.praisonai/config.toml then ~/.praisonai/config.yaml (user global)
+
+    Returns:
+        Path to config file if found, None otherwise
+    """
+    # Project-local locations
+    cwd = Path.cwd()
+    project_data = get_project_data_dir()
+    local_paths = [
+        project_data / "config.toml",
+        project_data / "config.yaml",
+        project_data / "config.yml",
+        cwd / "praisonai.toml",
+        cwd / "praisonai.yaml",
+        cwd / "praisonai.yml",
+    ]
+    
+    for path in local_paths:
+        if path.exists():
+            return path
+    
+    # User global location
+    from ..paths import get_data_dir
+    data_dir = get_data_dir()
+    for global_path in (
+        data_dir / "config.toml",
+        data_dir / "config.yaml",
+        data_dir / "config.yml",
+    ):
+        if global_path.exists():
+            return global_path
+    
+    return None
+
+
+def _discover_config_files() -> List[Path]:
+    """Discover all config files ordered lowest→highest precedence.
+
+    Returns an ordered list ``[global, …ancestors…, project]`` so callers can
+    deep-merge left-to-right: the user-global ``~/.praisonai/config.*`` provides
+    defaults, project configs discovered by walking up from the current
+    directory override them, and the nearest (deepest) project config wins.
+
+    A project config that sets one key therefore keeps every global default for
+    the rest, fixing the previous first-file-wins behaviour where any project
+    config silently shadowed the global one.
+
+    For each directory only the first matching filename (in ``config.toml``,
+    ``config.yaml``, ``config.yml``, ``praisonai.{toml,yaml,yml}`` order) is
+    used, preserving today's per-location precedence.
+
+    Returns:
+        Ordered list of existing config paths (lowest precedence first). Empty
+        when no config files exist anywhere.
+    """
+    files: List[Path] = []
+
+    # User global location (lowest precedence).
+    from ..paths import get_data_dir
+    data_dir = get_data_dir()
+    for global_path in (
+        data_dir / "config.toml",
+        data_dir / "config.yaml",
+        data_dir / "config.yml",
+    ):
+        if global_path.exists():
+            files.append(global_path)
+            break
+
+    # Project configs discovered by walking up from cwd to the filesystem root.
+    # Collected root→cwd so the nearest (deepest) config is folded last and wins.
+    ancestor_files: List[Path] = []
+    cwd = Path.cwd()
+    for directory in [cwd, *cwd.parents]:
+        project_data = directory / ".praisonai"
+        candidates = [
+            project_data / "config.toml",
+            project_data / "config.yaml",
+            project_data / "config.yml",
+            directory / "praisonai.toml",
+            directory / "praisonai.yaml",
+            directory / "praisonai.yml",
+        ]
+        for path in candidates:
+            if path.exists():
+                ancestor_files.append(path)
+                break
+    ancestor_files.reverse()
+    files.extend(ancestor_files)
+
+    return files
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge ``override`` onto ``base`` (dicts recurse, else replace).
+
+    Nested mappings are merged key-by-key so a higher-precedence layer can set a
+    single nested key without discarding sibling keys from lower layers. Any
+    non-dict value (including lists) at a given key replaces the base value.
+
+    Returns a new dict; inputs are not mutated.
+    """
+    result = dict(base)
+    for key, value in override.items():
+        existing = result.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            result[key] = _deep_merge(existing, value)
+        else:
+            result[key] = value
+    return result
+
+
+def _parse_toml(path: Path) -> Dict[str, Any]:
+    """Parse TOML file with fallback for Python < 3.11.
+    
+    Args:
+        path: Path to TOML file
+        
+    Returns:
+        Parsed config dict
+    """
+    try:
+        # Python 3.11+ has built-in tomllib
+        import tomllib
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except ImportError:
+        # Fallback for Python < 3.11
+        try:
+            import tomli
+            with open(path, "rb") as f:
+                return tomli.load(f)
+        except ImportError:
+            # No TOML parser available - return empty config
+            import logging
+            logging.debug(
+                "TOML parser not available. Install tomli for Python < 3.11: "
+                "pip install tomli"
+            )
+            return {}
+
+
+def _parse_yaml(path: Path) -> Dict[str, Any]:
+    """Parse a YAML config file. Returns {} if PyYAML is unavailable.
+
+    YAML is an optional dependency in the core SDK, so a missing parser is
+    treated as an absent config rather than an error.
+    """
+    try:
+        import yaml
+    except ImportError:
+        import logging
+        logging.debug(
+            "PyYAML not available; cannot read YAML config. Install pyyaml to "
+            "use .praisonai/config.yaml."
+        )
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    return data if isinstance(data, dict) else {}
+
+
+def _parse_config_file(config_path: Path) -> Dict[str, Any]:
+    """Parse a single config file (TOML or YAML), returning {} on failure."""
+    try:
+        if config_path.suffix.lower() in (".yaml", ".yml"):
+            return _parse_yaml(config_path)
+        return _parse_toml(config_path)
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to load config from {config_path}: {e}")
+        return {}
+
+
+def _load_config() -> Dict[str, Any]:
+    """Load configuration by deep-merging all discovered config files.
+
+    Files are folded lowest→highest precedence (global first, nearest project
+    last) so a project config selectively overrides global defaults instead of
+    shadowing them entirely. When exactly one file exists the merged result
+    equals parsing that file alone, preserving backward compatibility.
+
+    Returns:
+        Merged config dict (empty if no config file found)
+    """
+    config_paths = _discover_config_files()
+    if not config_paths:
+        return {}
+
+    # Fast path: a single file needs no merge and matches prior behaviour.
+    if len(config_paths) == 1:
+        return _parse_config_file(config_paths[0])
+
+    merged: Dict[str, Any] = {}
+    for config_path in config_paths:
+        merged = _deep_merge(merged, _parse_config_file(config_path))
+    return merged
+
+
+def _dict_to_plugins_config(data: Dict[str, Any]) -> PluginsConfig:
+    """Convert dict to PluginsConfig.
+
+    Reserved keys (enabled/auto_discover/directories) configure the plugin
+    system; any other key whose value is a mapping is treated as a per-plugin
+    option map delivered to that plugin's ``on_config`` hook.
+    """
+    reserved = {"enabled", "auto_discover", "directories", "allow_project_plugins"}
+    options = {
+        name: value
+        for name, value in data.items()
+        if name not in reserved and isinstance(value, dict)
+    }
+    return PluginsConfig(
+        enabled=data.get("enabled", False),
+        auto_discover=data.get("auto_discover", True),
+        allow_project_plugins=data.get("allow_project_plugins", False),
+        directories=data.get("directories", [
+            str(_default_project_plugins_dir()),
+            str(_default_global_plugins_dir())
+        ]),
+        options=options,
+    )
+
+
+def _dict_to_defaults_config(data: Dict[str, Any]) -> DefaultsConfig:
+    """Convert dict to DefaultsConfig."""
+    return DefaultsConfig(
+        model=data.get("model"),
+        small_model=data.get("small_model"),
+        base_url=data.get("base_url"),
+        allow_delegation=data.get("allow_delegation", False),
+        allow_code_execution=data.get("allow_code_execution", False),
+        code_execution_mode=data.get("code_execution_mode", "safe"),
+        memory=data.get("memory"),
+        knowledge=data.get("knowledge"),
+        planning=data.get("planning"),
+        reflection=data.get("reflection"),
+        guardrails=data.get("guardrails"),
+        web=data.get("web"),
+        output=data.get("output"),
+        execution=data.get("execution"),
+        caching=data.get("caching"),
+        autonomy=data.get("autonomy"),
+        skills=data.get("skills"),
+        retry=data.get("retry"),
+    )
+
+
+def _dict_to_praison_config(data: Dict[str, Any]) -> PraisonConfig:
+    """Convert dict to PraisonConfig."""
+    plugins_data = data.get("plugins", {})
+    defaults_data = data.get("defaults", {})
+    
+    return PraisonConfig(
+        plugins=_dict_to_plugins_config(plugins_data),
+        defaults=_dict_to_defaults_config(defaults_data),
+    )
+
+
+def get_config(reload: bool = False) -> PraisonConfig:
+    """Get the global configuration.
+    
+    Loads config lazily on first access and caches it.
+    
+    Args:
+        reload: Force reload from file
+        
+    Returns:
+        PraisonConfig instance
+    """
+    global _config_cache, _config_loaded
+    
+    if not _config_loaded or reload:
+        raw_config = _load_config()
+        _config_cache = _dict_to_praison_config(raw_config)
+        _config_loaded = True
+    
+    return _config_cache
+
+
+def get_plugins_config() -> PluginsConfig:
+    """Get plugins configuration.
+    
+    Returns:
+        PluginsConfig instance
+    """
+    return get_config().plugins
+
+
+def get_defaults_config() -> DefaultsConfig:
+    """Get defaults configuration.
+    
+    Returns:
+        DefaultsConfig instance
+    """
+    return get_config().defaults
+
+
+def get_default(key: str, fallback: Any = None) -> Any:
+    """Get a specific default value.
+    
+    Args:
+        key: Config key (e.g., "model", "memory", "memory.backend")
+        fallback: Value to return if key not found
+        
+    Returns:
+        Config value or fallback
+    """
+    defaults = get_defaults_config()
+    
+    # Handle nested keys like "memory.backend"
+    if "." in key:
+        parts = key.split(".")
+        value = getattr(defaults, parts[0], None)
+        if value is None:
+            return fallback
+        for part in parts[1:]:
+            if isinstance(value, dict):
+                value = value.get(part)
+            else:
+                return fallback
+            if value is None:
+                return fallback
+        return value
+    
+    # Simple key
+    value = getattr(defaults, key, None)
+    return value if value is not None else fallback
+
+
+def _agent_section_value(key: str) -> Optional[Any]:
+    """Read ``agent.<key>`` from the raw config file, if present.
+
+    The CLI config surface (``praisonai_code`` resolver) and the published JSON
+    schema place model settings under a top-level ``agent`` section (e.g.
+    ``agent.small_model``), whereas this loader's typed defaults live under
+    ``defaults``. Both surfaces read the same ``.praisonai/config.yaml`` file,
+    so honour ``agent.<key>`` here as well to avoid silently ignoring
+    schema-guided config.
+    """
+    raw = _load_config()
+    agent = raw.get("agent")
+    if isinstance(agent, dict):
+        return agent.get(key)
+    return None
+
+
+def get_small_model(primary_model: Optional[str] = None, fallback: Optional[str] = None) -> Optional[str]:
+    """Resolve the auxiliary/"small" model for cheap internal LLM calls.
+
+    Resolution order:
+    1. ``defaults.small_model`` (or the equivalent ``agent.small_model`` CLI
+       namespace) from the config file, if set.
+    2. The supplied ``primary_model`` (e.g. the running agent's model).
+    3. ``defaults.model`` (or ``agent.model``) from the config file, if set.
+    4. ``fallback`` (preserves today's hardcoded behaviour when nothing else
+       is configured).
+
+    Both the ``defaults.*`` (typed loader) and ``agent.*`` (CLI resolver / JSON
+    schema) namespaces are honoured because they read the same config file; a
+    user following schema autocomplete (``agent.small_model``) is therefore not
+    silently ignored.
+
+    This keeps internal calls (title generation, summarisation/compaction) on
+    a configured cheap model, and — when unset — on the primary model rather
+    than a hardcoded third-party default.
+
+    Args:
+        primary_model: The primary model to fall back to when no auxiliary
+            model is configured.
+        fallback: Final fallback used only when neither ``small_model`` nor a
+            primary model is available.
+
+    Returns:
+        The resolved auxiliary model identifier, or ``fallback``.
+    """
+    small = get_default("small_model") or _agent_section_value("small_model")
+    if small:
+        return small
+    if primary_model:
+        return primary_model
+    config_model = get_default("model") or _agent_section_value("model")
+    if config_model:
+        return config_model
+    return fallback
+
+
+def is_plugins_enabled() -> bool:
+    """Check if plugins are enabled via config or env var.
+    
+    Returns:
+        True if plugins should be enabled
+    """
+    # Check env var first (highest precedence)
+    env_value = os.environ.get("PRAISONAI_PLUGINS", "").lower()
+    if env_value:
+        if env_value in ("true", "1", "yes", "on"):
+            return True
+        if env_value in ("false", "0", "no", "off"):
+            return False
+        # Treat as comma-separated list of plugin names
+        return True
+    
+    # Check config file
+    plugins_config = get_plugins_config()
+    if isinstance(plugins_config.enabled, bool):
+        if plugins_config.enabled:
+            return True
+        # Explicit global disable wins over per-plugin blocks.
+        if "enabled" in _raw_plugins_section():
+            return False
+    if isinstance(plugins_config.enabled, list):
+        return len(plugins_config.enabled) > 0
+    # A bare string (e.g. TOML `enabled = "pii_guardrail"`) is treated as a
+    # single plugin name, matching the list-of-names semantics.
+    if isinstance(plugins_config.enabled, str):
+        return bool(plugins_config.enabled.strip())
+
+    # Per-plugin option blocks imply plugins are in use even without a global
+    # 'enabled' flag, unless every block sets enabled: false.
+    options = plugins_config.options
+    if options:
+        return any(opts.get("enabled", True) for opts in options.values())
+
+    return False
+
+
+def _raw_plugins_section() -> Dict[str, Any]:
+    """Return the raw ``[plugins]`` mapping from the loaded config file."""
+    raw = _load_config()
+    section = raw.get("plugins", {})
+    return section if isinstance(section, dict) else {}
+
+
+def get_enabled_plugins() -> Optional[List[str]]:
+    """Get list of enabled plugins (if specific list provided).
+    
+    Returns:
+        List of plugin names, or None if all plugins enabled
+    """
+    # Check env var first
+    env_value = os.environ.get("PRAISONAI_PLUGINS", "").lower()
+    if env_value and env_value not in ("true", "1", "yes", "on", "false", "0", "no", "off"):
+        # Treat as comma-separated list
+        return [p.strip() for p in env_value.split(",") if p.strip()]
+    
+    # Check config file
+    plugins_config = get_plugins_config()
+    if isinstance(plugins_config.enabled, list):
+        return plugins_config.enabled
+    # A bare string names a single plugin to allow.
+    if isinstance(plugins_config.enabled, str) and plugins_config.enabled.strip():
+        return [plugins_config.enabled.strip()]
+
+    # Derive an allow-list from per-plugin blocks: if any plugin block sets
+    # enabled explicitly, honour those flags (enabled: false disables).
+    options = plugins_config.options
+    if options and any("enabled" in opts for opts in options.values()):
+        return [
+            name for name, opts in options.items()
+            if opts.get("enabled", True)
+        ]
+
+    return None  # All plugins enabled
+
+
+def get_plugin_options() -> Dict[str, Dict[str, Any]]:
+    """Get per-plugin option maps from the unified project config.
+
+    Returns:
+        Mapping of ``{plugin_name: options_dict}``. Empty when no per-plugin
+        options are configured. The reserved ``enabled`` flag (if present in a
+        plugin block) is preserved so plugins can read it via ``on_config``.
+    """
+    return dict(get_plugins_config().options)
+
+
+def _config_write_target() -> Path:
+    """Resolve the config file the CLI should write plugin enable/disable to.
+
+    Returns the *highest-precedence* existing config file (the one that wins
+    after the deep merge) so the CLI mutates the same file the runtime honours.
+    Using ``_discover_config_files()[-1]`` — rather than ``_find_config_file()``
+    which only sees cwd + global — ensures that when a nearer ancestor config
+    overrides the global, the CLI writes that ancestor file instead of a
+    lower-precedence global whose change would be silently overridden on reload.
+    Falls back to the project-local ``.praisonai/config.yaml`` — the unified
+    surface — when no config exists yet. This closes the config split-brain
+    where the CLI wrote a file the runtime never read.
+    """
+    config_paths = _discover_config_files()
+    if config_paths:
+        return config_paths[-1]
+    return get_project_data_dir() / "config.yaml"
+
+
+def _dump_config_file(path: Path, data: Dict[str, Any]) -> None:
+    """Write ``data`` to ``path`` as YAML or TOML based on its suffix."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.suffix.lower() in (".yaml", ".yml"):
+        import yaml
+
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+    else:
+        try:
+            import tomli_w
+        except ImportError:
+            # Do NOT write a YAML sidecar: the runtime keeps reading the
+            # original .toml (higher precedence), so the write would be
+            # silently lost and re-introduce the config split-brain. Fail
+            # fast with a remediation hint instead.
+            raise RuntimeError(
+                f"Cannot write TOML config {path}: no TOML writer available. "
+                "Install tomli-w (pip install tomli-w), or convert the config "
+                "to .praisonai/config.yaml."
+            ) from None
+        with open(path, "wb") as f:
+            tomli_w.dump(data, f)
+
+
+def set_plugin_enabled(name: str, enabled: bool) -> Path:
+    """Persist a plugin's enabled state to the config the runtime reads.
+
+    Mutates the ``plugins.enabled`` allow-list in the project's config file
+    (the same file ``get_enabled_plugins`` reads), creating
+    ``.praisonai/config.yaml`` if no config exists yet. This is the single
+    source of truth the CLI and runtime share — no separate JSON file.
+
+    Args:
+        name: Plugin name to enable/disable.
+        enabled: True to add to the allow-list, False to remove it.
+
+    Returns:
+        The path of the config file that was written.
+    """
+    target = _config_write_target()
+    # Seed from the *target* file only (not the merged view) so we round-trip the
+    # exact file we write back to; merging in lower-precedence globals here would
+    # persist inherited keys into the target and defeat the fall-through design.
+    raw = _parse_config_file(target) if target.exists() else {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    plugins = raw.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = {}
+        raw["plugins"] = plugins
+
+    has_enabled_key = "enabled" in plugins
+    current = plugins.get("enabled")
+    # Normalise the enabled flag into a list of names we can mutate.
+    if isinstance(current, list):
+        names = [str(n) for n in current]
+    elif isinstance(current, str) and current.strip():
+        names = [current.strip()]
+    elif current is True:
+        # Explicit "all plugins enabled" mode. Collapsing this to an allow-list
+        # would silently disable every other plugin, so we only touch this
+        # state when the requested change is well-defined:
+        #   - enable: already enabled, no-op (leave "all enabled" intact)
+        #   - disable: cannot be expressed as an allow-list without naming the
+        #     full set, so refuse rather than disable everything.
+        if enabled:
+            clear_config_cache()
+            return target
+        raise ValueError(
+            f"Cannot disable '{name}': plugins.enabled is currently set to "
+            "'all' (true). Set plugins.enabled to an explicit list of plugin "
+            "names first, then disable individual plugins."
+        )
+    elif current is None and not has_enabled_key:
+        # No allow-list configured yet (fresh config): start an empty list so
+        # the first enable produces [name] and the first disable is a no-op.
+        names = []
+    else:
+        # Falsy explicit value (e.g. enabled: false) — start from empty.
+        names = []
+
+    if enabled:
+        if name not in names:
+            names.append(name)
+    else:
+        names = [n for n in names if n != name]
+
+    plugins["enabled"] = names
+    _dump_config_file(target, raw)
+    clear_config_cache()
+    return target
+
+
+def _defaults_has_any_values() -> bool:
+    """Return True if config file defines any defaults (cached after first check)."""
+    global _defaults_has_values
+    if _defaults_has_values is None:
+        defaults = get_defaults_config()
+        _defaults_has_values = any(
+            getattr(defaults, key, None) is not None
+            for key in (
+                "model", "small_model", "base_url", "memory", "knowledge",
+                "planning", "reflection", "guardrails", "web", "output",
+                "execution", "caching", "autonomy", "skills", "retry",
+            )
+        )
+    return _defaults_has_values
+
+
+def clear_config_cache() -> None:
+    """Clear the config cache (for testing)."""
+    global _config_cache, _config_loaded, _defaults_has_values
+    _config_cache = None
+    _config_loaded = False
+    _defaults_has_values = None
+
+
+def validate_config(config: Dict[str, Any], raise_on_error: bool = False) -> List[str]:
+    """Validate config file structure and types.
+    
+    Args:
+        config: Raw config dict (from TOML parsing)
+        raise_on_error: If True, raise ConfigValidationError on errors
+        
+    Returns:
+        List of validation error messages (empty if valid)
+        
+    Example:
+        config = {"plugins": {"enabled": True}, "defaults": {"model": "gpt-4o"}}
+        errors = validate_config(config)
+        if errors:
+            print("Config errors:", errors)
+    """
+    errors = []
+    
+    # Check root keys
+    for key in config.keys():
+        if key not in VALID_ROOT_KEYS:
+            similar = _suggest_similar_key(key, VALID_ROOT_KEYS)
+            if similar:
+                errors.append(f"Unknown root key '{key}'. Did you mean '{similar}'?")
+            else:
+                errors.append(f"Unknown root key '{key}'. Valid keys: {', '.join(sorted(VALID_ROOT_KEYS))}")
+    
+    # Validate [plugins] section
+    if "plugins" in config:
+        plugins = config["plugins"]
+        if not isinstance(plugins, dict):
+            errors.append(f"[plugins] must be a table, got {type(plugins).__name__}")
+        else:
+            for key, value in plugins.items():
+                if key not in VALID_PLUGINS_KEYS:
+                    similar = _suggest_similar_key(key, VALID_PLUGINS_KEYS.keys())
+                    if similar:
+                        errors.append(f"[plugins] Unknown key '{key}'. Did you mean '{similar}'?")
+                    else:
+                        errors.append(f"[plugins] Unknown key '{key}'. Valid keys: {', '.join(sorted(VALID_PLUGINS_KEYS.keys()))}")
+                else:
+                    valid_types = VALID_PLUGINS_KEYS[key]
+                    if not isinstance(value, valid_types):
+                        errors.append(f"[plugins.{key}] Expected {_format_types(valid_types)}, got {type(value).__name__}")
+    
+    # Validate [defaults] section
+    if "defaults" in config:
+        defaults = config["defaults"]
+        if not isinstance(defaults, dict):
+            errors.append(f"[defaults] must be a table, got {type(defaults).__name__}")
+        else:
+            for key, value in defaults.items():
+                if key not in VALID_DEFAULTS_KEYS:
+                    similar = _suggest_similar_key(key, VALID_DEFAULTS_KEYS.keys())
+                    if similar:
+                        errors.append(f"[defaults] Unknown key '{key}'. Did you mean '{similar}'?")
+                    else:
+                        errors.append(f"[defaults] Unknown key '{key}'. Valid keys: {', '.join(sorted(VALID_DEFAULTS_KEYS.keys()))}")
+                else:
+                    valid_types = VALID_DEFAULTS_KEYS[key]
+                    if not isinstance(value, valid_types):
+                        errors.append(f"[defaults.{key}] Expected {_format_types(valid_types)}, got {type(value).__name__}")
+                    # Validate nested feature configs
+                    if isinstance(value, dict) and key in ("memory", "knowledge", "planning", "reflection", 
+                                                           "guardrails", "web", "output", "execution", 
+                                                           "caching", "autonomy", "context"):
+                        nested_errors = _validate_feature_config(key, value)
+                        errors.extend(nested_errors)
+    
+    if raise_on_error and errors:
+        raise ConfigValidationError(errors)
+    
+    return errors
+
+
+def _suggest_similar_key(key: str, valid_keys) -> Optional[str]:
+    """Suggest a similar valid key using simple string matching."""
+    key_lower = key.lower()
+    for valid in valid_keys:
+        # Exact match after lowercasing
+        if valid.lower() == key_lower:
+            return valid
+        # Prefix match
+        if valid.lower().startswith(key_lower) or key_lower.startswith(valid.lower()):
+            return valid
+        # Substring match
+        if key_lower in valid.lower() or valid.lower() in key_lower:
+            return valid
+    return None
+
+
+def _format_types(types: tuple) -> str:
+    """Format type tuple for error messages."""
+    type_names = []
+    for t in types:
+        if t is bool:
+            type_names.append("bool")
+        elif t is str:
+            type_names.append("str")
+        elif t is dict:
+            type_names.append("table")
+        elif t is list:
+            type_names.append("array")
+        else:
+            type_names.append(t.__name__)
+    return " or ".join(type_names)
+
+
+def _validate_feature_config(feature: str, config: Dict[str, Any]) -> List[str]:
+    """Validate a nested feature config (memory, knowledge, etc.)."""
+    errors = []
+    
+    # Common valid keys for feature configs
+    common_keys = {"enabled", "backend", "provider", "preset", "verbose"}
+    
+    # Feature-specific valid keys
+    feature_keys = {
+        "memory": {"enabled", "backend", "provider", "use_long_term", "use_short_term", 
+                   "user_id", "session_id", "db_path", "collection_name"},
+        "knowledge": {"enabled", "sources", "provider", "chunk_size", "chunk_overlap"},
+        "planning": {"enabled", "max_steps", "reasoning"},
+        "reflection": {"enabled", "max_reflect", "min_reflect", "llm"},
+        "guardrails": {"enabled", "max_retries", "validator"},
+        "web": {"enabled", "search", "fetch", "provider"},
+        "output": {"enabled", "verbose", "markdown", "stream", "metrics", "preset"},
+        "execution": {"enabled", "max_iter", "max_rpm", "max_execution_time", "preset"},
+        "caching": {"enabled", "prompt_caching", "ttl"},
+        "autonomy": {"enabled", "max_steps", "approval_required"},
+        "context": {"enabled", "max_tokens", "strategy"},
+    }
+    
+    valid_keys = feature_keys.get(feature, common_keys)
+    
+    for key in config.keys():
+        if key not in valid_keys:
+            similar = _suggest_similar_key(key, valid_keys)
+            if similar:
+                errors.append(f"[defaults.{feature}.{key}] Unknown key. Did you mean '{similar}'?")
+            # Don't error on unknown nested keys - allow flexibility
+    
+    return errors
+
+
+def get_config_path() -> Optional[Path]:
+    """Get the path to the config file if it exists.
+    
+    Returns:
+        Path to config file, or None if not found
+    """
+    return _find_config_file()
+
+
+# Convenience function to merge config defaults with explicit params
+def apply_config_defaults(
+    param_name: str,
+    explicit_value: Any,
+    config_class: Optional[type] = None,
+) -> Any:
+    """Apply config defaults to a parameter if not explicitly set.
+    
+    Args:
+        param_name: Name of the parameter (e.g., "memory", "knowledge")
+        explicit_value: Value explicitly passed by user (None if not set)
+        config_class: Optional config class to instantiate
+        
+    Returns:
+        Resolved value with config defaults applied
+        
+    Example:
+        # User passes memory=True, config has memory.backend="postgres"
+        # Result: MemoryConfig with backend="postgres"
+        
+        memory = apply_config_defaults("memory", True, MemoryConfig)
+    """
+    # If user explicitly passed a value, respect it
+    if explicit_value is not None:
+        # If True and we have config defaults, merge them
+        if explicit_value is True:
+            if not _defaults_has_any_values():
+                return explicit_value
+            config_defaults = get_default(param_name)
+            if config_defaults and isinstance(config_defaults, dict):
+                if config_class:
+                    # Check if enabled key exists and is True
+                    if config_defaults.get("enabled", True):
+                        return config_class(**{k: v for k, v in config_defaults.items() if k != "enabled"})
+                return config_defaults
+        return explicit_value
+    
+    # Fast path: no config defaults file values — skip lookups
+    if not _defaults_has_any_values():
+        return None
+    
+    # Check if config has defaults for this param
+    config_defaults = get_default(param_name)
+    if config_defaults is None:
+        return None
+    
+    # If config has enabled=True, return the config
+    if isinstance(config_defaults, dict):
+        if config_defaults.get("enabled", False):
+            if config_class:
+                return config_class(**{k: v for k, v in config_defaults.items() if k != "enabled"})
+            return True
+    
+    return None

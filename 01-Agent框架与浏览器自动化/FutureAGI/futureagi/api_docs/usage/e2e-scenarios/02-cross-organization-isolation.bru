@@ -1,0 +1,52 @@
+meta {
+  name: 02 - E2E - Cross-Organization Data Isolation
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/usage/usage-summary/?month=1&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 1
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## End-to-End: Cross-Organization Data Isolation
+
+  ### Test Scenario
+  Tests that users can only see their own organization's data:
+
+  1. Login as User A (Organization A)
+  2. Query usage endpoints - should see only Org A data
+  3. Login as User B (Organization B)
+  4. Query same endpoints - should see only Org B data
+  5. Verify no cross-contamination of data
+
+  ### Expected Response
+  - Status: 200 OK
+  - Response contains only data for the authenticated user's organization
+  - organization_name and organization_id match the user's org
+
+  ### Testing Steps
+  1. Use access token for User A
+  2. Call all three usage endpoints
+  3. Note the organization_id and data volumes
+  4. Switch to access token for User B
+  5. Call the same endpoints
+  6. Verify organization_id is different
+  7. Verify data doesn't overlap
+
+  ### Security Check
+  - Even if you know another org's workspace_id, you should get 403 Forbidden
+  - No data leakage between organizations
+  - Each user sees only their organization's usage
+}

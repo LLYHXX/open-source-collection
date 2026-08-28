@@ -1,0 +1,101 @@
+meta {
+  name: Get Possible Edge Mappings
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}/agent-playground/graphs/:graph_id/versions/:version_id/nodes/:node_id/possible-edge-mappings/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  version_id: {{version_id}}
+  node_id: {{node_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  node_id: 51fbb228-5e25-59bb-a001-7e858fb57574
+  graph_id: 8da2b6d9-fded-468d-9cff-821cefa1cecf
+  version_id: 0b8b2ded-9988-453d-b4b6-e9dd59a06055
+}
+
+docs {
+  # Get Possible Edge Mappings
+
+  Returns all source nodes that have NodeConnections targeting this node, along with their output ports.
+
+  This endpoint helps the frontend determine what edges can be created by showing:
+  - Which nodes are connected at the NodeConnection level
+  - What output ports are available on those source nodes
+  - The NodeConnection IDs for reference
+
+  ## Path Parameters
+  - `graph_id`: Graph UUID
+  - `version_id`: Graph version UUID
+  - `node_id`: Target node UUID
+
+  ## Response
+
+  Returns an array of source nodes, each containing:
+  - `source_node_id`: UUID of the source node
+  - `source_node_name`: Name of the source node
+  - `node_connection_id`: UUID of the NodeConnection between source and target
+  - `output_ports`: Array of all output ports on the source node
+
+  ### Example Response
+  ```json
+  {
+    "status": true,
+    "result": [
+      {
+        "source_node_id": "51fbb228-5e25-59bb-a001-7e858fb57579",
+        "source_node_name": "Text Processor",
+        "node_connection_id": "8da2b6d9-fded-468d-9cff-821cefa1cecf",
+        "output_ports": [
+          {
+            "id": "bda62703-6788-41c1-b103-1cd9a56f6677",
+            "key": "response",
+            "display_name": "result",
+            "direction": "output",
+            "data_schema": {"type": "string"},
+            "required": true,
+            "default_value": null,
+            "metadata": {},
+            "ref_port_id": null
+          },
+          {
+            "id": "cda62703-6788-41c1-b103-1cd9a56f6678",
+            "key": "custom",
+            "display_name": "metadata",
+            "direction": "output",
+            "data_schema": {"type": "object"},
+            "required": false,
+            "default_value": null,
+            "metadata": {},
+            "ref_port_id": null
+          }
+        ]
+      }
+    ]
+  }
+  ```
+
+  ## Use Cases
+
+  1. **Edge Creation UI**: When user wants to create an edge to a node, show available source ports
+  2. **Connection Validation**: Check if NodeConnection exists before allowing edge creation
+  3. **Port Selection**: Display source nodes and ports in a dropdown/list for edge creation
+
+  ## Notes
+  - Only returns nodes with active NodeConnections (soft-deleted connections excluded)
+  - Returns all output ports regardless of existing edges (frontend can filter)
+  - Empty array if node has no incoming NodeConnections
+  - Ports are ordered by display_name
+}

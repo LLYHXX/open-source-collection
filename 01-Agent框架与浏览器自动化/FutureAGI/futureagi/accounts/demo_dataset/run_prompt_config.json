@@ -1,0 +1,23 @@
+{
+    "config": {
+        "dataset_id": "7a72ec40-cab4-415e-9096-b9044b3df04d",
+        "name": "generated answer",
+        "model": "gpt-4o-mini",
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "given {{2e25aa95-7fb0-4804-8319-219cb7981c63}}, answer the {{cf635e5b-92af-460d-a62b-8b22c64287d9}}"}]
+            }
+        ],
+        "temperature": 0.5,
+        "frequency_penalty": 1.0,
+        "presence_penalty": 1.0,
+        "max_tokens": 4085,
+        "top_p": 1.0,
+        "response_format": null,
+        "tool_choice": null,
+        "tools": [],
+        "output_format": "string",
+        "concurrency": 5
+    }
+}

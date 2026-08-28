@@ -1,0 +1,29 @@
+meta {
+  name: GET users in Organization
+  type: http
+  seq: 9
+}
+
+get {
+  url: http://localhost:8000/model-hub/organizations/ce7c8a6b-eb3f-4fd6-98f8-9ebf69e645fe/users/
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json, text/plain, */*
+  Accept-Language: en-GB,en-US;q=0.9,en;q=0.8
+  Authorization: Bearer {{access_token}}
+  Connection: keep-alive
+  DNT: 1
+  Origin: http://localhost:3031
+  Referer: http://localhost:3031/
+  Sec-Fetch-Dest: empty
+  Sec-Fetch-Mode: cors
+  Sec-Fetch-Site: same-site
+  User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
+  sec-ch-ua: "Chromium";v="131", "Not_A Brand";v="24"
+  sec-ch-ua-mobile: ?0
+  sec-ch-ua-platform: "macOS"
+  Cookie: {{xsrf_cookie}}
+}

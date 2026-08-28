@@ -1,0 +1,25 @@
+meta {
+  name: switch workspace
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{host}}/accounts/workspace/switch/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "newWorkspaceId": "{{workspace_id}}"
+  }
+}

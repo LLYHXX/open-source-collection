@@ -1,0 +1,57 @@
+eval_id: 170
+name: cohen_kappa
+description: Computes Cohen's Kappa coefficient for inter-rater agreement. Accounts for agreement occurring by chance. Range
+  -1 to 1, normalized to 0-1 for scoring. Useful for classification evaluation with imbalanced classes.
+criteria: Measures agreement between predicted and expected labels beyond what would be expected by chance.
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    output: Predicted label(s)
+    expected: Expected label(s)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return [str(v).strip().lower() for v in val]
+            if isinstance(val, str):
+                try:
+                    p = json.loads(val)
+                    if isinstance(p, list):
+                        return [str(v).strip().lower() for v in p]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                return [val.strip().lower()]
+            return [str(val).strip().lower()]
+        preds = _parse(kwargs.get("output", output))
+        labels = _parse(kwargs.get("expected", expected))
+        if not preds and not labels:
+            return {"score": 1.0, "reason": "Both empty"}
+        if len(preds) != len(labels):
+            return {"score": 0.0, "reason": f"Length mismatch: {len(preds)} vs {len(labels)}"}
+        n = len(labels)
+        cats = sorted(set(labels) | set(preds))
+        po = sum(1 for p, l in zip(preds, labels) if p == l) / n
+        pe = sum((sum(1 for p in preds if p == c)/n) * (sum(1 for l in labels if l == c)/n) for c in cats)
+        if pe >= 1.0:
+            kappa = 1.0 if po == 1.0 else 0.0
+        else:
+            kappa = (po - pe) / (1 - pe)
+        score = (kappa + 1) / 2
+        return {"score": float(score), "reason": f"Cohen's Kappa: {kappa:.4f}, normalized={score:.4f}"}

@@ -1,0 +1,21 @@
+meta {
+  name: fetch folders
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/model-hub/prompt-folders/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "name": "test_folder_2"
+    }
+}

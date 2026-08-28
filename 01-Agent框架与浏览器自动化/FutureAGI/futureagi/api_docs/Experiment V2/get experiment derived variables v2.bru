@@ -1,0 +1,43 @@
+meta {
+  name: get experiment derived variables v2
+  type: http
+  seq: 24
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/derived-variables/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+docs {
+  ## Get Experiment Derived Variables V2
+
+  Returns derived variables from run prompt columns in the experiment's snapshot dataset.
+  Variables from JSON-outputting run prompts are available for use in other prompts and evals.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+
+  ### Response
+  ```json
+  {
+    "result": {
+      "derived_variables": {
+        "ColumnName": {
+          "paths": ["field1", "field2.nested"],
+          "full_variables": ["ColumnName.field1", "ColumnName.field2.nested"],
+          "schema": {
+            "field1": {"type": "string", "sample": "example value"},
+            "field2.nested": {"type": "number", "sample": 42}
+          }
+        }
+      }
+    }
+  }
+  ```
+}

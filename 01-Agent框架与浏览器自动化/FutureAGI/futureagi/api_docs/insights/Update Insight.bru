@@ -1,0 +1,30 @@
+meta {
+  name: Update Insight
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/insight/update/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "id" : "ce1628c8-27b2-4aec-b96e-b2f7d40b7d53",
+      "name": "Test Insight",
+      "prompt": "Insight prompt is put here.",
+      "metricType": 1,
+      "datasets": [
+          {
+              "environment": "Production",
+              "model_version": "v1"
+          }
+      ]
+  }
+}

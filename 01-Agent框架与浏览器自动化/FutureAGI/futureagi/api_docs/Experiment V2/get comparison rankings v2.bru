@@ -1,0 +1,45 @@
+meta {
+  name: get comparison rankings v2
+  type: http
+  seq: 20
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/comparisons/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+docs {
+  ## Get Comparison Rankings V2
+
+  Returns latest comparison rankings for an experiment.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+
+  ### Response
+  ```json
+  {
+    "experiment_id": "uuid",
+    "total_comparisons": 3,
+    "comparisons": [
+      {
+        "experiment_dataset_id": "uuid",
+        "rank": 1,
+        "rank_suffix": "st",
+        "metrics": {
+          "raw": {...},
+          "normalized": {...}
+        },
+        "weights": {...},
+        "overall_rating": 8.5
+      }
+    ]
+  }
+  ```
+}

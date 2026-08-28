@@ -1,0 +1,28 @@
+meta {
+  name: download experiment csv v2
+  type: http
+  seq: 21
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/download/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+docs {
+  ## Download Experiment CSV V2
+
+  Downloads experiment results as a CSV file.
+  Includes dataset columns, experiment result columns, and evaluation columns.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+
+  ### Response
+  CSV file attachment with filename `{experiment_name}.csv`.
+}

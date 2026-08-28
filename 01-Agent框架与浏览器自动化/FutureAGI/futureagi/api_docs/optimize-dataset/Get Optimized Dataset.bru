@@ -1,0 +1,21 @@
+meta {
+  name: Get Optimized Dataset
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:8000/model-hub/optimize-dataset/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "optimization_id": "c4902a00-e8b1-4937-a091-34db5bbaeceb"
+  }
+}

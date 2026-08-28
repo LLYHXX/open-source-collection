@@ -1,0 +1,23 @@
+.rule-prompt-quill {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.rule-prompt-quill .ql-container {
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  height: 150px;
+  max-height: 150px;
+  overflow-y: auto;
+  font-family: "Inter", sans-serif;
+  background-color: var(--bg-paper);
+}
+
+/* Optional: Add hover/focus states */
+.rule-prompt-quill .ql-container:hover {
+  border-color: var(--border-hover);
+}
+
+.rule-prompt-quill .ql-container:focus-within {
+  border-color: var(--border-active);
+}

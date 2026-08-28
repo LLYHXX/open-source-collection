@@ -1,0 +1,105 @@
+meta {
+  name: Delete Graph
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/agent-playground/graphs/delete/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    // Option 1: Delete specific graphs by IDs
+    "ids": [
+      "7a45d325-6164-4973-92e2-fba2811dfb7d"
+    ]
+
+    // Option 2: Delete all graphs (cannot be combined with "ids")
+    // "select_all": true,
+    // "exclude_ids": ["7a45d325-6164-4973-92e2-fba2811dfb7d"]
+  }
+}
+
+vars:pre-request {
+  graph_id: 0d1abaa1-a95c-4ca6-b965-885fc6ea9fa4,
+}
+
+docs {
+  # Bulk Delete Graphs
+
+  Bulk soft-delete one or more graphs with reference validation.
+
+  Before deleting, checks if any graph version being deleted is referenced
+  by subgraph nodes in graphs **outside** the deletion set. If all referencing
+  graphs are also being deleted, the operation is allowed; otherwise it is blocked.
+
+  ## Request Body
+  Supports two modes (mutually exclusive):
+
+  **Mode 1 — Delete by IDs:**
+  - `ids` (required): List of graph UUIDs to delete
+
+  **Mode 2 — Delete all:**
+  - `select_all` (required): Set to `true` to delete all graphs in the org/workspace
+  - `exclude_ids` (optional): List of graph UUIDs to exclude from deletion (only valid with `select_all`)
+
+  ## Cascade Delete Order
+  For each graph, the following objects are soft-deleted in order:
+  1. Execution data for each node execution
+  2. Node executions for each graph execution
+  3. Graph executions for each version
+  4. Ports for each node
+  5. Nodes for each version
+  6. Edges for each version
+  7. Graph versions
+  8. The graph itself
+
+  ## Response (Success)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "message": "Graphs deleted successfully"
+    }
+  }
+  ```
+
+  ## Response (Not Found)
+  Returned when one or more graph IDs do not exist.
+  ```json
+  {
+    "status": false,
+    "result": {
+      "message": "Some graphs were not found.",
+      "missing_ids": ["uuid-1", "uuid-2"]
+    }
+  }
+  ```
+
+  ## Response (Blocked by Reference)
+  Returned when a graph's version is referenced by a subgraph node
+  in another graph that is not in the deletion set.
+  ```json
+  {
+    "status": false,
+    "result": {
+      "message": "Cannot delete: some graphs are referenced by other graphs that are not being deleted.",
+      "referenced_by": [
+        { "graph_id": "uuid", "graph_name": "Other Graph" }
+      ]
+    }
+  }
+  ```
+
+  ## Notes
+  - This is a soft-delete operation; data can potentially be recovered
+  - All related versions and their content are also soft-deleted
+  - Replaces the previous single-graph DELETE endpoint
+}

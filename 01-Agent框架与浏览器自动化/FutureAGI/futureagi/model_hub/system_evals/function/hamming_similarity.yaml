@@ -1,0 +1,44 @@
+eval_id: 146
+name: hamming_similarity
+description: Computes Hamming similarity between two strings. Counts matching character positions normalized by the longer string
+  length. Pads the shorter string for unequal lengths.
+criteria: Measures character-level positional similarity between two strings.
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config:
+    case_insensitive:
+      type: boolean
+      default: true
+  config_params_desc:
+    output: The generated/output text
+    expected: The expected/reference text
+    case_insensitive: Whether to lowercase before comparing (default true)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        s1 = str(kwargs.get("output", output or "")).strip()
+        s2 = str(kwargs.get("expected", expected or "")).strip()
+        case_insensitive = kwargs.get("case_insensitive", True)
+        if case_insensitive:
+            s1 = s1.lower()
+            s2 = s2.lower()
+        if not s1 and not s2:
+            return {"score": 1.0, "reason": "Hamming: 1.0 (both empty)"}
+        max_len = max(len(s1), len(s2))
+        s1p = s1.ljust(max_len, '\0')
+        s2p = s2.ljust(max_len, '\0')
+        mismatches = sum(c1 != c2 for c1, c2 in zip(s1p, s2p))
+        similarity = 1.0 - (mismatches / max_len)
+        return {"score": float(similarity), "reason": f"Hamming: {similarity:.4f} ({mismatches} mismatches / {max_len} chars)"}

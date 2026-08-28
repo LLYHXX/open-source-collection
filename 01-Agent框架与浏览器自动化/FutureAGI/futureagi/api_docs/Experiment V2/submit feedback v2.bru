@@ -1,0 +1,68 @@
+meta {
+  name: submit feedback v2
+  type: http
+  seq: 28
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/feedback/submit-feedback/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "feedback_id": "<feedback-uuid>",
+    "user_eval_metric_id": "<user-eval-metric-uuid>",
+    "action_type": "recalculate_row",
+    // "value": "Failed",
+    // "explanation": "Updated reason"
+  }
+}
+
+vars:pre-request {
+  experimentId: <experiment-uuid>
+}
+
+docs {
+  ## Submit Experiment Feedback V2
+
+  Submits a feedback action. For recalculate actions, resets affected eval cells/columns
+  to RUNNING and triggers a Temporal eval-only rerun workflow.
+
+  ### Request Body
+  - `feedback_id` (required) - UUID of the previously created feedback
+  - `user_eval_metric_id` (required) - UUID of the UserEvalMetric
+  - `action_type` (required) - One of:
+    - `retune` - Embeds feedback for RAG few-shot learning, no recalculation
+    - `recalculate_row` - Resets eval cells for the specific row, triggers temporal eval-only rerun
+    - `recalculate_dataset` - Resets ALL eval cells for the metric, triggers temporal eval-only rerun
+    - `retune_recalculate` - Embeds + recalculates the specific row (combo of retune + recalculate_row)
+  - `value` (optional) - Updated feedback value
+  - `explanation` (optional) - Updated feedback explanation
+
+  ### State Transitions
+  Before triggering the temporal workflow:
+  1. Affected eval columns are set to RUNNING status
+  2. Affected eval cells are set to RUNNING with empty value
+  3. Experiment status is set to RUNNING
+
+  ### Response
+  ```json
+  {
+    "result": {
+      "message": "Row queued for recalculation",
+      "action_type": "recalculate_row",
+      "user_eval_metric_id": "<uuid>",
+      "workflow_id": "rerun-experiment-cells-<uuid>"
+    },
+    "status": 200
+  }
+  ```
+
+  For `retune` action, no `workflow_id` is returned.
+}

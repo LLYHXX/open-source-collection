@@ -1,0 +1,61 @@
+meta {
+  name: Save User Onboarding - Custom Role
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/accounts/onboarding/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "role": "AI Research Scientist",
+    "goals": [
+      "Agent Simulation",
+      "Evaluations"
+    ]
+  }
+}
+
+docs {
+  # Save User Onboarding - Custom Role Example
+
+  This example shows saving a custom role that's not in the predefined list.
+
+  ## Request Body
+
+  ```json
+  {
+    "role": "AI Research Scientist",    // Custom role
+    "goals": ["Agent Simulation", "Evaluations"]
+  }
+  ```
+
+  ## Response
+
+  ```json
+  {
+    "success": true,
+    "data": {
+      "message": "Onboarding data saved successfully",
+      "data": {
+        "role": "AI Research Scientist",
+        "goals": ["Agent Simulation", "Evaluations"]
+      }
+    }
+  }
+  ```
+
+  ## Notes
+
+  - Any text can be entered as a custom role
+  - Custom roles are stored in the same field as predefined roles
+  - No separate "custom_role" field needed
+}

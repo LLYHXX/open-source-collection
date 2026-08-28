@@ -1,0 +1,21 @@
+meta {
+  name: Reset Annotation
+  type: http
+  seq: 8
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations/70bed15f-27a7-4e23-87bf-4baaa1599415/reset_annotations/
+  body: json
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  {"row_id":"60f51a61-91c4-4ff2-bdb6-c330443f4786"}
+}

@@ -1,0 +1,41 @@
+eval_id: 39
+name: contains_valid_link
+description: Checks for presence of valid URLs
+eval_tags:
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    text: The input text to be evaluated for valid links
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import re
+        import urllib.request
+        text = kwargs.get("text", output or "")
+        text = str(text)
+        pattern = r"(?!.*@)(?:https?://)?(?:www\.)?\S+\.\S+"
+        link_match = re.search(pattern, text)
+        if not link_match:
+            return {"score": 0.0, "reason": "No link found in output"}
+        url = link_match.group()
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        try:
+            req = urllib.request.Request(url, method='HEAD')
+            resp = urllib.request.urlopen(req, timeout=5)
+            if resp.status == 200:
+                return {"score": 1.0, "reason": f"Link {url} found and valid (status 200)"}
+            else:
+                return {"score": 0.0, "reason": f"Link {url} found but returned status {resp.status}"}
+        except Exception as e:
+            return {"score": 0.0, "reason": f"Link {url} found but unreachable: {str(e)}"}

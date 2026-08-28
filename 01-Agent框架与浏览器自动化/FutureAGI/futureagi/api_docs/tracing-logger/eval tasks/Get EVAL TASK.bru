@@ -1,0 +1,27 @@
+meta {
+  name: Get EVAL TASK
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/tracer/eval-task/:id
+  body: json
+  auth: bearer
+}
+
+params:path {
+  id: e777faee-20d4-4f11-afa8-280662ee23a4
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "TEST_PROJECT",
+    "model_type": "Ranking",
+    "trace_type": "experiment"
+  }
+}

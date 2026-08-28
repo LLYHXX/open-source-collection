@@ -1,0 +1,145 @@
+meta {
+  name: Get Referenceable Graphs
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{host}}/agent-playground/graphs/:id/referenceable-graphs/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  graph_id: 05fed664-761a-4355-ae8e-fa8616cf8861
+}
+
+docs {
+  # Get Referenceable Graphs
+
+  Returns graphs whose non-draft versions (active or inactive) can be used as `ref_graph_version` without creating a cycle.
+
+  ## Path Parameters
+  - `id`: Current graph UUID (graphs referencing this one are filtered to prevent cycles)
+
+  ## Filter Logic
+  1. Excludes the current graph (self)
+  2. Excludes graphs with only draft versions (includes active + inactive)
+  3. Excludes graphs that would create a reference cycle
+  4. Includes both user's graphs and system-wide templates
+
+  ## Response
+  ```json
+  {
+    "status": true,
+    "result": {
+      "graphs": [
+        {
+          "id": "graph-uuid-1",
+          "name": "Summarizer Pipeline",
+          "description": "Reusable summarization graph",
+          "is_template": false,
+          "versions": [
+            {
+              "id": "version-uuid-2",
+              "version_number": 2,
+              "status": "active",
+              "exposed_ports": [
+                {
+                  "id": "port-uuid-1",
+                  "display_name": "input_text",
+                  "direction": "input",
+                  "data_schema": {"type": "string"},
+                  "required": true,
+                  "default_value": null,
+                  "metadata": {}
+                },
+                {
+                  "id": "port-uuid-2",
+                  "display_name": "summary",
+                  "direction": "output",
+                  "data_schema": {"type": "string"},
+                  "required": true,
+                  "default_value": null,
+                  "metadata": {}
+                }
+              ]
+            },
+            {
+              "id": "version-uuid-1",
+              "version_number": 1,
+              "status": "inactive",
+              "exposed_ports": [
+                {
+                  "id": "port-uuid-3",
+                  "display_name": "text",
+                  "direction": "input",
+                  "data_schema": {"type": "string"},
+                  "required": true,
+                  "default_value": null,
+                  "metadata": {}
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "graph-uuid-2",
+          "name": "RAG Template",
+          "description": "Standard RAG pipeline template",
+          "is_template": true,
+          "versions": [
+            {
+              "id": "version-uuid-3",
+              "version_number": 1,
+              "status": "active",
+              "exposed_ports": [
+                {
+                  "id": "port-uuid-4",
+                  "display_name": "query",
+                  "direction": "input",
+                  "data_schema": {"type": "string"},
+                  "required": true,
+                  "default_value": null,
+                  "metadata": {}
+                },
+                {
+                  "id": "port-uuid-5",
+                  "display_name": "response",
+                  "direction": "output",
+                  "data_schema": {"type": "string"},
+                  "required": true,
+                  "default_value": null,
+                  "metadata": {}
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+  ```
+
+  ## Fields
+  - `id`: Graph UUID
+  - `name`: Graph display name
+  - `description`: Graph description (may be null)
+  - `is_template`: Whether this is a system-wide template (true) or user's graph (false)
+  - `versions`: Array of non-draft versions (active and inactive), ordered by version number descending
+    - `id`: GraphVersion UUID to use as `ref_graph_version_id` for subgraph nodes
+    - `version_number`: Version number
+    - `status`: Version status ("active" or "inactive")
+    - `exposed_ports`: Unconnected ports that form the graph's interface (deduplicated by `display_name`). Each port has `id`, `display_name`, `direction`, `data_schema`, `required`, `default_value`, and `metadata`.
+
+  ## Usage
+  Use this endpoint when the user wants to add a subgraph node. Choose a version from the `versions` array and use its `id` as the `ref_graph_version_id` for the subgraph node. Both active and inactive versions can be referenced.
+}

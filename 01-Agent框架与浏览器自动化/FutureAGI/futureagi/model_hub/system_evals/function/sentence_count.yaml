@@ -1,0 +1,50 @@
+eval_id: 153
+name: sentence_count
+description: Checks if the sentence count of text falls within a specified range. Useful for enforcing structural constraints
+  on generated text.
+eval_tags:
+- Output Validation
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  function_params_schema:
+    min_sentences:
+      type: integer
+      required: true
+      minimum: 0
+    max_sentences:
+      type: integer
+      required: true
+      minimum: 1
+  config_params_desc:
+    text: The text to count sentences in
+    min_sentences: Minimum sentence count (inclusive).
+    max_sentences: Maximum sentence count (inclusive).
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import re
+        text = str(kwargs.get("text", output or "")).strip()
+        if not text:
+            count = 0
+        else:
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            count = len([s for s in sentences if s.strip()])
+        min_s = kwargs.get("min_sentences")
+        max_s = kwargs.get("max_sentences")
+        if min_s is None or max_s is None:
+            return {"score": 0.0, "reason": "Both min_sentences and max_sentences must be provided"}
+        min_s = int(min_s)
+        max_s = int(max_s)
+        passed = min_s <= count <= max_s
+        reason = f"Sentence count {count} {'is' if passed else 'is not'} within [{min_s}, {max_s}]"
+        return {"score": 1.0 if passed else 0.0, "reason": reason}

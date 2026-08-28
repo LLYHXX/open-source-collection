@@ -1,0 +1,28 @@
+meta {
+  name: Search Knowledge Bases
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{host}}/model-hub/kb/?search=base
+  body: none
+  auth: bearer
+}
+
+params:query {
+  search: base
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  This request searches for knowledge bases by name.
+  Replace {{search_query}} with the search term.
+}

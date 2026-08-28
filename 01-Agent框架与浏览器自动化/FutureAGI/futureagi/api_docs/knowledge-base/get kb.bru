@@ -1,0 +1,24 @@
+meta {
+  name: Get Knowledge Base
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/model-hub/kb/415afb4e-e965-45ae-a8f3-d99b68ee2168/
+  body: none
+  auth: bearer
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  This request retrieves details of a specific knowledge base.
+  Replace {{knowledge_base_id}} with the actual ID of the knowledge base.
+}

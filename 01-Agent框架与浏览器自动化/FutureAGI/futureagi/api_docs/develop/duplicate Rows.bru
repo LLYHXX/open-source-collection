@@ -1,0 +1,22 @@
+meta {
+  name: duplicate Rows
+  type: http
+  seq: 22
+}
+
+post {
+  url: {{host}}/model-hub/develops/d4996d4f-d78a-47d6-8b44-760ed6cd8f43/duplicate-rows/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "row_ids" : [],
+    "num_copies" : 1
+  }
+}

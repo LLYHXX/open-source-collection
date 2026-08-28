@@ -1,0 +1,28 @@
+meta {
+  name: get annotations
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/tracer/trace-annotation/get_annotation_values/
+  body: json
+  auth: bearer
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "observation_span_id": "bbadfd19ab5341be",
+    "annotators": ["0307f98d-6a12-4c04-82de-68e46fe7585d"]
+    "exclude_annotators": ["0307f98d-6a12-4c04-82de-68e46fe7585d"]
+  }
+}

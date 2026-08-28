@@ -1,0 +1,39 @@
+eval_id: 38
+name: one_line
+description: Checks if the text is a single line
+eval_tags:
+- Output Validation
+- Output Format
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    text: The input text to be evaluated
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        text = kwargs.get("text", output or "")
+        text = str(text).strip()
+        if not text:
+            return {"score": 0.0, "reason": "Text is empty"}
+
+        lines = [l for l in text.split("\n") if l.strip()]
+        words = text.split()
+        sentences = [s.strip() for s in text.replace("!", ".").replace("?", ".").split(".") if s.strip()]
+
+        if len(lines) > 1:
+            return {"score": 0.0, "reason": f"Text has {len(lines)} lines, expected 1"}
+        if len(sentences) > 2:
+            return {"score": 0.0, "reason": f"Text has {len(sentences)} sentences, too many for one line"}
+        if len(words) > 50:
+            return {"score": 0.0, "reason": f"Text has {len(words)} words, too long for one line"}
+
+        return {"score": 1.0, "reason": f"Text is a single line ({len(words)} words, {len(sentences)} sentence(s))"}

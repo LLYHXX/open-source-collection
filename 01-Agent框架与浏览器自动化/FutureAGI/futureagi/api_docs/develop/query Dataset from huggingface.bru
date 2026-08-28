@@ -1,0 +1,23 @@
+meta {
+  name: query Dataset from huggingface
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{host}}/model-hub/develops/create-dataset-from-huggingface/
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  model_type: GenerativeLLM
+  new_dataset_name: test-hugging
+  huggingface_dataset_name: dair-ai/emotion
+  huggingface_dataset_config: split
+  huggingface_dataset_split: test
+}

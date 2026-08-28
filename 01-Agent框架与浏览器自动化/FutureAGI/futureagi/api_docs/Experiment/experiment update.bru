@@ -1,0 +1,44 @@
+meta {
+  name: experiment update
+  type: http
+  seq: 3
+}
+
+put {
+  url: http://localhost:8000/model-hub/experiments/update/e3ff8522-b423-4946-8f9c-3527f986db6c/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "name": "Test pydantic",
+      "dataset_id": "d88474b7-2d2d-48da-a988-0e0b2b26559d",
+    "column_id": "38f5c3ea-1652-4691-be9b-ddca7151f1f5",
+      "prompt_config": [
+      {
+        "name":"prompt-1",
+        "messages" : [{"role" : "user", "content": "yoyy"}],
+        "model" : ["gpt-4o-mini"],
+        "configuration" : {
+          "temperature": 0.7,
+          "frequency_penalty": 0.0,
+          "presence_penalty": 0.0,
+          "max_tokens": 2000,
+          "top_p": null,
+          "response_format": null,
+          "tool_choice":null,
+          "tools": null
+        }
+      }
+    ],
+      "user_eval_template_ids": [
+          "f36ff146-3e0d-49f1-8d72-dead636dc44d"
+      ]
+
+  }
+}

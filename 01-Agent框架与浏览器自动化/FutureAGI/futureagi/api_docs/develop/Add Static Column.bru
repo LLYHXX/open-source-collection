@@ -1,0 +1,22 @@
+meta {
+  name: Add Static Column
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{host}}/model-hub/develops/48582471-1651-4c44-bd31-602163628499/add_static_column/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "new_column_name" : "new_column1",
+    "column_type" : "text"
+  }
+}

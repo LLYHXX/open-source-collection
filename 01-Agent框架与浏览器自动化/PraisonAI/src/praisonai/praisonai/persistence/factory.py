@@ -1,0 +1,167 @@
+"""
+Factory functions for creating store instances.
+
+Provides lazy loading of backend implementations to avoid importing
+unused dependencies. Uses registry pattern for extensibility.
+"""
+
+import logging
+from typing import Any, Dict, Literal, Optional
+
+from .config import PersistenceConfig
+from .registry import StoreRegistry, get_default_registry
+
+logger = logging.getLogger(__name__)
+
+
+def create_conversation_store(
+    backend: str,
+    url: Optional[str] = None,
+    mode: Literal["sync", "async", "auto"] = "auto", 
+    *,
+    registry: Optional[StoreRegistry] = None,
+    **options: Any
+):
+    """
+    Create a ConversationStore instance using the registry pattern.
+    
+    Args:
+        backend: Backend type (postgres, mysql, sqlite, etc.) 
+        url: Connection URL
+        mode: "sync" for blocking, "async" for async-only, "auto" for legacy behavior
+        **options: Backend-specific options
+    
+    Returns:
+        ConversationStore instance
+    
+    Example:
+        # Async-safe SQLite store
+        store = create_conversation_store(
+            "sqlite", 
+            path="./conversations.db",
+            mode="async"
+        )
+        
+        # Sync-only SQLite store (multi-agent safe)
+        store = create_conversation_store(
+            "sqlite",
+            path="./conversations.db", 
+            mode="sync"
+        )
+    """
+    
+    # Validate mode parameter
+    if mode not in ("sync", "async", "auto"):
+        raise ValueError(f"Invalid conversation mode: {mode}. Expected sync|async|auto")
+    
+    # Handle sync/async mode routing
+    if mode == "sync" and backend in ("sqlite", "postgres", "mysql"):
+        backend_name = f"sync_{backend}"
+    elif mode == "async" and backend in ("sqlite", "postgres", "mysql"):
+        backend_name = f"async_{backend}"
+    elif mode == "auto":
+        # Legacy behavior - use existing backend as-is
+        backend_name = backend
+    else:
+        backend_name = backend
+    
+    registry = registry or get_default_registry("conversation")
+    return registry.create(backend_name, url=url, **options)
+
+
+def create_knowledge_store(
+    backend: str,
+    url: Optional[str] = None,
+    *,
+    registry: Optional[StoreRegistry] = None,
+    **options: Any
+):
+    """
+    Create a KnowledgeStore instance using the registry pattern.
+    
+    Args:
+        backend: Backend type (qdrant, pinecone, chroma, etc.)
+        url: Connection URL
+        **options: Backend-specific options
+    
+    Returns:
+        KnowledgeStore instance
+    
+    Example:
+        store = create_knowledge_store(
+            "qdrant",
+            url="http://localhost:6333"
+        )
+    """
+    registry = registry or get_default_registry("knowledge")
+    return registry.create(backend, url=url, **options)
+
+
+def create_state_store(
+    backend: str,
+    url: Optional[str] = None,
+    *,
+    registry: Optional[StoreRegistry] = None,
+    **options: Any
+):
+    """
+    Create a StateStore instance using the registry pattern.
+    
+    Args:
+        backend: Backend type (redis, dynamodb, firestore, etc.)
+        url: Connection URL
+        **options: Backend-specific options
+    
+    Returns:
+        StateStore instance
+    
+    Example:
+        store = create_state_store(
+            "redis",
+            url="redis://localhost:6379"
+        )
+    """
+    registry = registry or get_default_registry("state")
+    return registry.create(backend, url=url, **options)
+
+
+def create_stores_from_config(config: PersistenceConfig) -> Dict[str, Any]:
+    """
+    Create all configured stores from a PersistenceConfig.
+    
+    Returns:
+        Dict with keys: conversation, knowledge, state (values may be None)
+    """
+    stores = {
+        "conversation": None,
+        "knowledge": None,
+        "state": None,
+    }
+    
+    if config.conversation_store:
+        # Extract mode from conversation_options if present
+        conversation_options = dict(config.conversation_options) 
+        mode = conversation_options.pop("mode", "auto")
+        
+        stores["conversation"] = create_conversation_store(
+            config.conversation_store,
+            url=config.conversation_url,
+            mode=mode,
+            **conversation_options
+        )
+    
+    if config.knowledge_store:
+        stores["knowledge"] = create_knowledge_store(
+            config.knowledge_store,
+            url=config.knowledge_url,
+            **config.knowledge_options
+        )
+    
+    if config.state_store:
+        stores["state"] = create_state_store(
+            config.state_store,
+            url=config.state_url,
+            **config.state_options
+        )
+    
+    return stores

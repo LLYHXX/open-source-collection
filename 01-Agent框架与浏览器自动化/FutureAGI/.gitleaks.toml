@@ -1,0 +1,44 @@
+# Extends the default gitleaks ruleset.
+# https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and documented placeholders"
+
+# Paths that contain only test fixtures / example values.
+paths = [
+    '''(?i)/tests?/.*\.(py|go)$''',
+    '''_test\.go$''',
+    '''/test_[^/]+\.py$''',               # test_foo.py at any depth
+    '''/test_mcp_server/''',              # MCP server test scaffolding directory
+    '''(?i)/templates/.*\.html$''',       # email templates (figmeta + Mailgun placeholders)
+    '''(?i)\.bru$''',                     # Bruno API collection — uses {{env}} vars
+    '''docs/.*\.md$''',                   # documentation examples
+    '''\.env\.example$''',
+]
+
+# Specific stopwords that are clearly placeholder values anywhere they appear.
+stopwords = [
+    "YOUR_API_KEY",
+    "YOUR-API-KEY",
+    "your-api-key",
+    "your-qdrant-api-key",
+    "sk-EXAMPLE-REDACTED",
+    "test-api-key",
+    "test-vapi-api-key",
+    "test-retell-api-key",
+    "valid-api-key-123",
+    "REDACTED",
+    "EXAMPLE",
+]
+
+# Specific regex patterns to allow (false positives surfaced by entropy/default rules).
+regexes = [
+    '''ProviderChoices\.VAPI''',          # enum value, not a key
+    '''eyJhbGciOiJSUzI1NiJ9\.test''',     # truncated test JWT
+    '''glpat-ABCDEFGHIJKLMNOPQRST''',     # literal test input for secret-detection guardrail
+    '''sk_live_ABCDEFGHIJKLMNOPQRSTuvwx''',
+    '''FwoGZXIvYXdzEBYaDHqa0AP''',        # AWS session token format test fixture
+]

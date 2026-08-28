@@ -1,0 +1,19 @@
+meta {
+  name: Project SDK code
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/tracer/project/prototype_sdk_code/?project_type=experiment
+  body: none
+  auth: bearer
+}
+
+params:query {
+  project_type: experiment
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

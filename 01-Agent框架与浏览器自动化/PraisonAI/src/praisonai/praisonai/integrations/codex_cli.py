@@ -1,0 +1,297 @@
+"""
+OpenAI Codex CLI Integration.
+
+Provides integration with OpenAI's Codex CLI for AI-powered coding tasks.
+
+Features:
+- Non-interactive execution with `codex exec`
+- Full auto mode for file modifications
+- Sandbox modes for security
+- JSON streaming output
+- Structured output with schemas
+
+Usage:
+    from praisonai.integrations import CodexCLIIntegration
+    
+    # Create integration
+    codex = CodexCLIIntegration(workspace="/path/to/project")
+    
+    # Execute a coding task
+    result = await codex.execute("Fix the authentication bug")
+    
+    # Execute with full auto (allows file modifications)
+    codex_auto = CodexCLIIntegration(full_auto=True)
+    result = await codex_auto.execute("Refactor the module")
+    
+    # Use as agent tool
+    tool = codex.as_tool()
+"""
+
+import json
+import os
+from typing import AsyncIterator, Dict, Any, Optional, List
+
+from .base import BaseCLIIntegration
+
+
+_UNSET = object()
+
+
+class CodexCLIIntegration(BaseCLIIntegration):
+    """
+    Integration with OpenAI's Codex CLI.
+    
+    Attributes:
+        full_auto: Whether to allow file modifications
+        sandbox: Sandbox mode ("default", "danger-full-access")
+        json_output: Whether to use JSON streaming output
+        output_schema: Path to JSON schema for structured output
+    """
+
+    display_label = "Codex CLI (refactoring)"
+    install_hint = "npm install -g @openai/codex"
+
+    VALID_APPROVAL_MODES = {"suggest", "auto-edit", "full-auto"}
+
+    def __init__(
+        self,
+        workspace: str = ".",
+        timeout: int = 300,
+        approval_mode: str = "suggest",  # suggest, auto-edit, full-auto
+        sandbox: str = "default",
+        json_output: bool = False,
+        output_schema: Optional[str] = None,
+        output_file: Optional[str] = None,
+        provider: Optional[str] = None,  # OpenAI, OpenRouter, Azure, Gemini, etc.
+        # Backward compatibility
+        full_auto: Optional[bool] = None,
+    ):
+        """
+        Initialize Codex CLI integration.
+        
+        Args:
+            workspace: Working directory for CLI execution
+            timeout: Timeout in seconds for CLI execution
+            approval_mode: Approval mode ("suggest", "auto-edit", "full-auto")
+            sandbox: Sandbox mode ("default", "danger-full-access")
+            json_output: Whether to use JSON streaming output (--json)
+            output_schema: Path to JSON schema for structured output
+            output_file: Path to save the final output (-o)
+            provider: Model provider ("openai", "openrouter", "azure", "gemini", "ollama", etc.)
+        """
+        super().__init__(workspace=workspace, timeout=timeout)
+        
+        # Handle backward compatibility
+        if full_auto is not None:
+            approval_mode = "full-auto" if full_auto else "suggest"
+
+        if approval_mode not in self.VALID_APPROVAL_MODES:
+            raise ValueError(
+                f"Invalid approval_mode: '{approval_mode}'. "
+                f"Must be one of: {', '.join(sorted(self.VALID_APPROVAL_MODES))}"
+            )
+        
+        self.approval_mode = approval_mode
+        self.sandbox = sandbox
+        self.json_output = json_output
+        self.output_schema = output_schema
+        self.output_file = output_file
+        self.provider = provider
+        
+        # Backward compatibility
+        self.full_auto = approval_mode == "full-auto"
+    
+    @property
+    def cli_command(self) -> str:
+        """Return the CLI command name."""
+        return "codex"
+    
+    def _build_command(
+        self,
+        task: str,
+        *,
+        json_output: Optional[bool] = None,
+        output_schema: Optional[str] = None,
+        output_file: Any = _UNSET,
+        **options,
+    ) -> List[str]:
+        """
+        Build the Codex CLI command.
+        
+        Args:
+            task: The task to execute
+            json_output: JSON output override (defaults to self.json_output)
+            output_schema: Output schema override (defaults to self.output_schema)
+            output_file: Output file override. Omit to use self.output_file;
+                pass ``None`` explicitly to disable the instance default and
+                parse stdout instead.
+            **options: Additional options
+            
+        Returns:
+            List of command arguments
+        """
+        json_output = self.json_output if json_output is None else json_output
+        output_schema = self.output_schema if output_schema is None else output_schema
+        output_file = self.output_file if output_file is _UNSET else output_file
+        
+        cmd = ["codex", "exec", "--skip-git-repo-check"]
+        
+        # Add working directory
+        cmd.extend(["-C", self.workspace])
+        
+        # Add task
+        cmd.append(task)
+        
+        # Add approval mode
+        if self.approval_mode == "full-auto":
+            cmd.append("--full-auto")
+        elif self.approval_mode == "auto-edit":
+            cmd.append("--auto-edit")
+        # suggest is the default, no flag needed
+        
+        # Add sandbox mode if not default
+        if self.sandbox and self.sandbox != "default":
+            cmd.extend(["--sandbox", self.sandbox])
+        
+        # Add JSON output flag if enabled
+        if json_output:
+            cmd.append("--json")
+        
+        # Add output schema if specified
+        if output_schema:
+            cmd.extend(["--output-schema", output_schema])
+        
+        # Add output file if specified
+        if output_file:
+            cmd.extend(["-o", output_file])
+        
+        # Add provider if specified
+        if self.provider:
+            cmd.extend(["--provider", self.provider])
+        
+        return cmd
+    
+    async def execute(self, prompt: str, **options) -> str:
+        """
+        Execute Codex CLI and return the result.
+        
+        Args:
+            prompt: The task/prompt to execute
+            **options: Additional options
+            
+        Returns:
+            str: The CLI output
+        """
+        cmd = self._build_command(prompt, **options)
+        
+        output = await self.execute_async(cmd)
+        
+        # Parse JSON Lines output if json_output is enabled
+        if self.json_output:
+            return self._parse_json_events(output)
+        
+        return output
+    
+    def _parse_json_events(self, output: str) -> str:
+        """
+        Parse JSON Lines output and extract the final result.
+        
+        Args:
+            output: Raw JSON Lines output
+            
+        Returns:
+            str: The extracted result
+        """
+        result_parts = []
+        
+        for line in output.strip().split('\n'):
+            if not line.strip():
+                continue
+            
+            try:
+                event = json.loads(line)
+                event_type = event.get("type", "")
+                
+                # Extract agent messages
+                if event_type == "item.completed":
+                    item = event.get("item", {})
+                    if item.get("type") == "agent_message":
+                        text = item.get("text", "")
+                        if text:
+                            result_parts.append(text)
+                
+            except json.JSONDecodeError:
+                continue
+        
+        return '\n'.join(result_parts) if result_parts else output
+    
+    async def stream(self, prompt: str, **options) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Stream output from Codex CLI.
+        
+        Args:
+            prompt: The task/prompt to execute
+            **options: Additional options
+            
+        Yields:
+            dict: Parsed JSON events from the CLI
+        """
+        # Ensure JSON output is enabled for streaming (per-call override, no
+        # instance mutation); drop caller json_output so the forced value wins.
+        options.pop("json_output", None)
+        cmd = self._build_command(prompt, json_output=True, **options)
+        
+        async for line in self.stream_async(cmd):
+            if line.strip():
+                try:
+                    event = json.loads(line)
+                    yield event
+                except json.JSONDecodeError:
+                    yield {"type": "text", "content": line}
+    
+    async def execute_with_schema(
+        self, 
+        prompt: str, 
+        schema_path: str,
+        output_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute Codex with structured output schema.
+        
+        Args:
+            prompt: The task/prompt to execute
+            schema_path: Path to the JSON schema file
+            output_path: Optional path to save the output
+            
+        Returns:
+            dict: Parsed structured output
+        """
+        # Per-call overrides threaded through _build_command, no instance mutation.
+        # Pass output_path (or explicit None) so an unset path parses stdout
+        # rather than silently writing to the instance-default output file.
+        cmd = self._build_command(
+            prompt,
+            output_schema=schema_path,
+            output_file=output_path,
+        )
+        output = await self.execute_async(cmd)
+        
+        # If output file was specified, read from it
+        if output_path and os.path.exists(output_path):
+            with open(output_path, 'r') as f:
+                return json.load(f)
+        
+        # Otherwise parse the output
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            return {"result": output}
+    
+    def get_env(self) -> Dict[str, str]:
+        """Get environment variables for CLI execution."""
+        env = super().get_env()
+        
+        # Codex uses ChatGPT authentication or API key
+        # The CLI handles authentication internally
+        
+        return env

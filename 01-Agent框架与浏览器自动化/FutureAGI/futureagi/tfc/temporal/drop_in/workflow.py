@@ -1,0 +1,126 @@
+"""
+Generic task runner workflow for drop-in Celery replacement.
+
+This workflow executes any registered activity by name, mimicking Celery's
+behavior of running tasks asynchronously.
+"""
+
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import Any, Optional
+
+from temporalio import workflow
+from temporalio.common import RetryPolicy
+from temporalio.workflow import VersioningIntent
+
+
+@dataclass
+class TaskRunnerInput:
+    """Input for TaskRunnerWorkflow."""
+
+    activity_name: str
+    args: list[Any]
+    kwargs: dict[str, Any]
+    queue: str = "default"
+    time_limit: Optional[int] = None  # Override default timeout
+    max_retries: Optional[int] = None
+    retry_delay: Optional[int] = None
+    schedule_to_start_timeout: Optional[int] = None  # Seconds; defaults to 12h
+
+
+@dataclass
+class TaskRunnerOutput:
+    """Output from TaskRunnerWorkflow."""
+
+    activity_name: str
+    result: Any
+    status: str
+    error: Optional[str] = None
+
+
+# Default retry policy (matches common Celery patterns)
+DEFAULT_RETRY_POLICY = RetryPolicy(
+    initial_interval=timedelta(seconds=5),
+    maximum_interval=timedelta(minutes=5),
+    maximum_attempts=3,
+    backoff_coefficient=2.0,
+)
+
+
+def _resolve_retry_policy(input: TaskRunnerInput) -> RetryPolicy:
+    """Build a RetryPolicy from TaskRunnerInput's decorator-derived fields.
+
+    Returns DEFAULT_RETRY_POLICY when ``max_retries`` is None — covers both
+    activities whose decorator does not set max_retries and in-flight
+    workflows whose serialized inputs predate the field. Otherwise builds
+    a per-activity policy where decorator's ``max_retries`` (retries beyond
+    the first attempt) maps to Temporal's ``maximum_attempts`` (which counts
+    the first attempt too): ``max_retries=0 -> maximum_attempts=1``.
+    """
+    if input.max_retries is None:
+        return DEFAULT_RETRY_POLICY
+    return RetryPolicy(
+        initial_interval=timedelta(seconds=input.retry_delay or 5),
+        maximum_interval=timedelta(minutes=5),
+        maximum_attempts=max(1, input.max_retries + 1),
+        backoff_coefficient=2.0,
+    )
+
+
+@workflow.defn
+class TaskRunnerWorkflow:
+    """
+    Generic workflow that runs any activity by name.
+
+    This is the backbone of the drop-in replacement - it allows starting
+    any activity via start_activity() without needing a dedicated workflow.
+    """
+
+    @workflow.run
+    async def run(self, input: TaskRunnerInput) -> TaskRunnerOutput:
+        # NOTE: Do NOT use workflow.logger here - it uses Python's stdlib logging
+        # which acquires locks and causes deadlocks in Temporal workflows.
+        # Logging should be done in activities instead.
+
+        try:
+            # Get timeout from activity metadata or use default
+            time_limit = input.time_limit or 3600 * 12  # 12 hours default
+            schedule_to_start_seconds = (
+                input.schedule_to_start_timeout or 3600 * 12
+            )  # 12 hours default
+
+            retry_policy = _resolve_retry_policy(input)
+
+            # Don't pin to workflow's build_id; bound stuck-time as safety net.
+            result = await workflow.execute_activity(
+                input.activity_name,
+                {
+                    "args": input.args,
+                    "kwargs": input.kwargs,
+                },
+                start_to_close_timeout=timedelta(seconds=time_limit),
+                schedule_to_start_timeout=timedelta(
+                    seconds=schedule_to_start_seconds
+                ),
+                heartbeat_timeout=timedelta(minutes=5),
+                retry_policy=retry_policy,
+                versioning_intent=VersioningIntent.DEFAULT,
+            )
+
+            return TaskRunnerOutput(
+                activity_name=input.activity_name,
+                result=result,
+                status="completed",
+            )
+
+        except Exception as e:
+            # Re-raise to mark workflow as Failed in Temporal UI
+            # Error details will be visible in Temporal's UI
+            raise
+
+
+__all__ = [
+    "TaskRunnerInput",
+    "TaskRunnerOutput",
+    "TaskRunnerWorkflow",
+]

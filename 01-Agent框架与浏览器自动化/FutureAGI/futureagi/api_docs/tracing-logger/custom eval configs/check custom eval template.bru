@@ -1,0 +1,21 @@
+meta {
+  name: check custom eval template
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/tracer/custom-eval-config/get_custom_eval_by_name
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "eval_template_name": "custom-eval-1"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "name": "@the-librarian/pi-extension",
+  "version": "1.21.0",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Pi coding-agent package for The Librarian: the 7 memory/handoff tools + primer injection, backed by a remote Librarian MCP server.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "author": {
+    "name": "Jim Sangwine",
+    "email": "jim@sangwine.net"
+  },
+  "homepage": "https://github.com/code-ministry-ltd/the-librarian/tree/main/integrations/pi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/code-ministry-ltd/the-librarian.git",
+    "directory": "integrations/pi"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "memory",
+    "handoff",
+    "mcp",
+    "librarian",
+    "recall",
+    "cross-harness"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/librarian/index.ts"
+    ]
+  },
+  "files": [
+    "extensions",
+    "README.md"
+  ],
+  "scripts": {
+    "test:vitest": "vitest run",
+    "test": "pnpm run test:vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "@librarian/mcp-server": "workspace:*",
+    "@types/node": "^26.2.0",
+    "typebox": "^1.3.11",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

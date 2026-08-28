@@ -1,0 +1,24 @@
+meta {
+  name: Add data from huggingface
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{host}}/model-hub/develops/e3eb926a-5053-434d-87c6-97dacd87631c/add_rows_from_huggingface/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "num_rows": "2",
+    "huggingface_dataset_name": "fka/awesome-chatgpt-prompts",
+    "huggingface_dataset_config": "default",
+    "huggingface_dataset_split": "train"
+  }
+}

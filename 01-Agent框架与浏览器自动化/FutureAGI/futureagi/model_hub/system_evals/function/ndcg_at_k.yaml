@@ -1,0 +1,78 @@
+eval_id: 127
+name: ndcg_at_k
+description: 'NDCG@K (Normalized Discounted Cumulative Gain): Measures ranking quality at top K, giving more credit to relevant
+  chunks that appear earlier.'
+criteria: NDCG@K emphasizes placing relevant chunks earlier in rank.
+eval_tags:
+- RAG
+- Retrieval Systems
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - hypothesis
+  - reference
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  function_params_schema:
+    k:
+      type: integer
+      default: null
+      nullable: true
+      minimum: 1
+  config_params_desc:
+    hypothesis: Retrieved chunks in ranked order (array/JSON string).
+    reference: Ground-truth relevant chunks (array/JSON string).
+    k: How many top results to evaluate (K). Leave empty to use the full retrieved list.
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        import ast
+        import math
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return val
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                try:
+                    return ast.literal_eval(val)
+                except (ValueError, SyntaxError):
+                    pass
+                return [val]
+            return list(val)
+        reference = _parse(kwargs.get("reference", expected))
+        hypothesis = _parse(kwargs.get("hypothesis", output))
+        k = kwargs.get("k", None)
+        if not reference:
+            return {"score": 0.0, "reason": "NDCG@K requires at least one ground-truth item"}
+        if k is not None:
+            k = int(k)
+            hypothesis = hypothesis[:k]
+        ground_truth_set = set(str(x) for x in reference)
+        # DCG: binary relevance (1 if relevant, 0 if not)
+        dcg = 0.0
+        for i, item in enumerate(hypothesis):
+            rel = 1.0 if str(item) in ground_truth_set else 0.0
+            dcg += rel / math.log2(i + 2)  # i+2 because rank starts at 1, log2(1)=0
+        # Ideal DCG: all relevant items at the top
+        n_relevant = min(len(ground_truth_set), len(hypothesis))
+        idcg = 0.0
+        for i in range(n_relevant):
+            idcg += 1.0 / math.log2(i + 2)
+        if idcg == 0.0:
+            score = 0.0
+        else:
+            score = dcg / idcg
+        k_label = k if k is not None else len(hypothesis)
+        return {"score": float(score), "reason": f"NDCG@{k_label}: {score:.3f} (DCG={dcg:.3f}, IDCG={idcg:.3f})"}

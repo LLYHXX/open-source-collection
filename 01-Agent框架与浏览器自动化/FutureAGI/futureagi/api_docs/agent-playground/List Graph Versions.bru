@@ -1,0 +1,84 @@
+meta {
+  name: List Graph Versions
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{host}}/agent-playground/graphs/:id/versions/?page_number=1&page_size=10&search=
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page_number: 1
+  page_size: 10
+  ~search:
+}
+
+params:path {
+  id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  graph_id: d3ab5ee9-0070-4a04-8416-1d9fb23e9686
+}
+
+docs {
+  # List Graph Versions
+
+  List all versions for a graph. Returns lightweight version info (no nodes/edges).
+
+  ## Path Parameters
+  - `id`: Graph UUID
+
+  ## Response
+  Versions are ordered by version_number descending (newest first):
+  ```json
+  {
+    "status": true,
+    "result": {
+      "versions": [
+        {
+          "id": "version-uuid-3",
+          "version_number": 3,
+          "status": "draft",
+          "tags": [],
+          "commit_message": null,
+          "created_at": "2024-01-17T10:30:00Z"
+        },
+        {
+          "id": "version-uuid-2",
+          "version_number": 2,
+          "status": "active",
+          "tags": ["production"],
+          "commit_message": "Added error handling",
+          "created_at": "2024-01-16T10:30:00Z"
+        },
+        {
+          "id": "version-uuid-1",
+          "version_number": 1,
+          "status": "inactive",
+          "tags": [],
+          "commit_message": "Initial release",
+          "created_at": "2024-01-15T10:30:00Z"
+        }
+      ]
+    }
+  }
+  ```
+
+  ## Version Statuses
+  - `draft`: Work in progress, can be edited via auto-save
+  - `active`: Published production version (only one per graph)
+  - `inactive`: Historical version, previously active
+
+  ## Notes
+  - No nodes/edges included for performance
+  - Use Get Graph Version endpoint for full version details
+  - A graph can have multiple drafts but only one active version
+}

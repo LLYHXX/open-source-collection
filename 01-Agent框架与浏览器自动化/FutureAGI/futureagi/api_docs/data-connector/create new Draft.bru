@@ -1,0 +1,25 @@
+meta {
+  name: create new Draft
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/data-connector/draft?connector_type=kb
+  body: none
+  auth: bearer
+}
+
+params:query {
+  connector_type: kb
+}
+
+headers {
+  ~X-Api-Key: {{api_key}}
+  ~X-Secret-Key: {{secret_key}}
+  ~token:
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

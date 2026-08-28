@@ -1,0 +1,23 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}Payment Reminder — Future AGI{% endblock %}
+{% block preheader %}Retry unsuccessful. Please update your payment method.{% endblock %}
+{% block txid %}◦ BILLING / REMINDER{% endblock %}
+{% block content %}
+<h1 class="hx" style="font-family:'Inter',sans-serif; font-size:26px; line-height:1.2; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:0 0 14px 0;">Payment still pending</h1>
+<p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:0 0 16px 0;">
+  We retried your payment but it was not successful. Your account remains active for now — but please update your payment method soon.
+</p>
+
+<div class="log" style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:10px; padding:20px 22px; margin:22px 0; font-family:'Inter',sans-serif; color:#c7c7cc;">
+  <p class="log-hdr" style="margin:0 0 12px 0; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+    <span style="display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:10px; vertical-align:middle; background:#f59e0b; box-shadow:0 0 8px rgba(245,158,11,0.45);"></span>Warn<span style="color:#71717a; font-weight:500; margin-left:6px;">· Retry unsuccessful</span>
+  </p>
+  <p style="margin:0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.6; color:#c7c7cc;">
+    If this isn't resolved in <strong style="color:#fafafa;">{{ days_until_downgrade|default:"11" }} days</strong>, your account will be downgraded to Free and you'll lose access to paid features.
+  </p>
+</div>
+
+<div style="margin: 8px 0 0 0;">
+  {% include "billing/_button.html" with url=base_url|add:"/dashboard/settings/billing" text="Update payment method" variant="warn" %}
+</div>
+{% endblock %}

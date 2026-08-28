@@ -1,0 +1,67 @@
+meta {
+  name: create experiment v2 - image
+  type: http
+  seq: 5
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Image Generation Experiment",
+    "dataset_id": "d88474b7-2d2d-48da-a988-0e0b2b26559d",
+    "column_id": "38f5c3ea-1652-4691-be9b-ddca7151f1f5",
+    "experiment_type": "image",
+    "prompt_config": [
+      {
+        "name": "dalle3-gen",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Generate an image of: {{description}}"
+              }
+            ]
+          }
+        ],
+        "model": "dall-e-3",
+        "model_params": {
+          "providers": "openai"
+        },
+        "configuration": {},
+        "output_format": "image"
+      },
+      {
+        "name": "sdxl-gen",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Generate an image of: {{description}}"
+              }
+            ]
+          }
+        ],
+        "model": "stable-diffusion-xl",
+        "model_params": {
+          "providers": "stability"
+        },
+        "configuration": {},
+        "output_format": "image"
+      }
+    ],
+    "user_eval_metrics": []
+  }
+}

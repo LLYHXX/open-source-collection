@@ -1,0 +1,37 @@
+meta {
+  name: api call
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8000/model-hub/datasets/508a4a94-b9dd-4677-a677-003f0cdad258/add-api-column/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "column_name": "api_result",
+    "config": {
+      "url": "http://localhost:8000/model-hub/datasets/huggingface/list/",
+      "method": "POST",
+      "params": {
+        "param1": {"type": "PlainText", "value": "value1"},
+        "param2": {"type": "Secret", "value": "secret-uuid"},
+        "param3": {"type": "Variable", "value": "column-uuid-1"}
+      },
+      "headers": {
+        "Authorization": {"type": "Secret", "value": "api-key-uuid"},
+        "Custom-Header": {"type": "Variable", "value": "column-uuid-2"}
+      },
+      "body": { "search_query": "chat" },
+      "output_type": "string"
+    },
+    "concurrency": 5
+  }
+}

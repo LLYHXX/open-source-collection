@@ -1,0 +1,75 @@
+eval_id: 94
+name: is_good_summary
+description: Evaluates if a summary is clear, well-structured, and includes the most important points from the source material.
+criteria: "You are evaluating whether the output is a well-structured summary that captures the key points of the source material.\n\
+  \n## Criteria\n\n1. Key point coverage: All essential themes, arguments, and conclusions from the source should be present.\n\
+  \   - Pass: Captures the main argument, supporting points, and conclusion.\n   - Fail: Misses a major theme or conclusion\
+  \ from the source.\n\n2. Factual accuracy: The summary must not distort, exaggerate, or misrepresent source information.\n\
+  \   - Pass: Facts and figures match the source exactly.\n   - Fail: Changes a statistic or misattributes a claim.\n\n3.\
+  \ Organization and compression: Information should be logically ordered and substantially shorter than the source.\n   -\
+  \ Pass: Well-organized, reads coherently, significantly shorter.\n   - Fail: Disjointed extracted sentences or nearly as\
+  \ long as the source.\n\n## Anti-bias Rules\n\n- A short accurate summary scores higher than a long one that adds unsupported\
+  \ details.\n- Brief contextual framing (e.g., \"This article discusses...\") is acceptable if it adds no false claims.\n\
+  - DO NOT penalize summaries of short source material that cannot achieve significant compression.\n\n## Scoring\n\nReturn\
+  \ 'Passed' if the summary accurately captures main points, is well-organized, and appropriately condensed. Return 'Failed'\
+  \ if it misses key information, distorts facts, or is poorly structured.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    input: The source material
+    output: The summary to be evaluated
+  param_modalities:
+    input:
+    - TEXT
+    - AUDIO
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether the output is a well-structured summary that captures the key points of the source\
+    \ material.\n\n## Criteria\n\n1. Key point coverage: All essential themes, arguments, and conclusions from the source\
+    \ should be present.\n   - Pass: Captures the main argument, supporting points, and conclusion.\n   - Fail: Misses a major\
+    \ theme or conclusion from the source.\n\n2. Factual accuracy: The summary must not distort, exaggerate, or misrepresent\
+    \ source information.\n   - Pass: Facts and figures match the source exactly.\n   - Fail: Changes a statistic or misattributes\
+    \ a claim.\n\n3. Organization and compression: Information should be logically ordered and substantially shorter than\
+    \ the source.\n   - Pass: Well-organized, reads coherently, significantly shorter.\n   - Fail: Disjointed extracted sentences\
+    \ or nearly as long as the source.\n\n## Anti-bias Rules\n\n- A short accurate summary scores higher than a long one that\
+    \ adds unsupported details.\n- Brief contextual framing (e.g., \"This article discusses...\") is acceptable if it adds\
+    \ no false claims.\n- DO NOT penalize summaries of short source material that cannot achieve significant compression.\n\
+    \n## Scoring\n\nReturn 'Passed' if the summary accurately captures main points, is well-organized, and appropriately condensed.\
+    \ Return 'Failed' if it misses key information, distorts facts, or is poorly structured.\n\n## Inputs\n\n<input>{{input}}</input>\n\
+    \n<output>{{output}}</output>"

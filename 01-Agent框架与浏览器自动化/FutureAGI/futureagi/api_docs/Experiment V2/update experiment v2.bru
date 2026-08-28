@@ -1,0 +1,91 @@
+meta {
+  name: update experiment v2
+  type: http
+  seq: 8
+}
+
+put {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "column_id": "c1b50877-99b1-4066-9389-da837995e9e4",
+    "prompt_config": [
+      {
+        "id": "140410ef-d14f-44d3-baf7-e3077c050704",
+        "name": "prompt-1-gpt-4o-mini",
+        "promptId": "67a0d6a7-ec16-4e84-837a-c60abbc2d8ff",
+        "promptName": "Untitled-5",
+        "promptVersion": "11e41c80-8538-42d4-b4f0-a51665de28b0",
+        "promptVersionName": "v2",
+        "model": "gpt-4o-mini",
+        "modelDisplayName": null,
+        "modelConfig": {},
+        "modelParams": {
+          "topP": 1,
+          "logoUrl": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png",
+          "providers": "openai",
+          "maxTokens": 4085,
+          "temperature": 0.5,
+          "responseFormat": "text",
+          "presencePenalty": 1,
+          "frequencyPenalty": 1
+        },
+        "configuration": {
+          "tools": null,
+          "toolChoice": null
+        },
+        "outputFormat": "string",
+        "messages": null,
+        "voiceInputColumnId": null,
+        "order": 0
+      }
+    ],
+    "user_eval_metrics": [
+      {
+        "id": "2f8c3f5d-ee72-4ad0-aa5a-9f176f389cf0",
+        "templateId": "8fb9c73b-ff61-432a-9e7d-8741fa8317bf",
+        "name": "Context relevance",
+        "config": {
+          "config": {},
+          "mapping": {
+            "input": "8f64d612-5419-4adc-9350-a5ec83e2cd67",
+            "output": "output"
+          },
+          "reasonColumn": false
+        },
+        "model": "turing_flash",
+        "errorLocalizer": false,
+        "kbId": null
+      }
+    ]
+  }
+}
+
+vars:pre-request {
+  experimentId: 3fa12def-a77c-4b01-a0be-70e4928ff75c
+}
+
+docs {
+  ## Update Experiment V2
+
+  ID-based partial update. Only changed configs trigger selective re-run.
+  All fields are optional — only send what changed.
+
+  ### Request Body
+  - `column_id` — Update ground truth column (no re-run)
+  - `prompt_config` — Prompt/agent configs. Include `id` (from GET detail) to update existing; omit `id` to add new.
+  - `user_eval_metrics` — Eval configs. Include `id` (from GET detail) to update existing; omit `id` to add new.
+
+  Configs present in GET detail but omitted from the update payload are removed (soft-deleted).
+
+  ### Response
+  Returns updated experiment detail (same as GET detail).
+}

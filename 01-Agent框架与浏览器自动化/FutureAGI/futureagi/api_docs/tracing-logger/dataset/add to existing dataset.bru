@@ -1,0 +1,56 @@
+meta {
+  name: add to existing dataset
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/tracer/dataset/add_to_existing_dataset/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_id": "2afac06b-b9cf-4e7b-b066-5393f8f268ca",
+    "trace_ids": ["bec502fc-2673-40e1-a947-18d824e92d8f","d4774e59-14ad-46b4-a98f-e77aae916868"],
+    "span_ids": ["b491191a08c44d6b"],
+    "mapping_config": [
+      {
+        "col_name": "input",
+        "data_type": "text",
+        "span_field": "input"
+      },
+      {
+        "col_name": "output_dataset",
+        "data_type": "text",
+        "span_field": "output"
+      },
+      {
+        "col_name": "span_type",
+        "data_type": "text",
+        "span_field": "observation_type"
+      },
+      {
+        "col_name": "latency_ms",
+        "data_type": "integer"
+      },
+      {
+        "col_name": "model",
+        "data_type": "text"
+      }
+    ],
+   "new_mapping_config": [
+        {
+        "col_name": "input11",
+        "data_type": "text",
+        "span_field": "input"
+      }
+    ]
+
+  }
+}

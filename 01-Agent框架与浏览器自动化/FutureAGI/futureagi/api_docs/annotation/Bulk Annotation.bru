@@ -1,0 +1,114 @@
+meta {
+  name: Bulk Annotation
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{host}}/tracer/bulk-annotation/
+  body: json
+  auth: bearer
+}
+
+headers {
+  content-type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "records": [
+      {
+        "observation_span_id": "425147b1-eff3-4967-b43e-19946453f801",
+        "annotations": [
+          {
+            "annotation_label_id": "0644e1e1-71cb-4330-b1f9-e67ae74d4a82",
+            "value": "Looks good"
+          },
+          {
+            "annotation_label_id": "19aab492-6a77-47a2-b533-a35695aaf5c3",
+            "value_float": 4
+          },
+          {
+            "annotation_label_id": "7a6020bf-8c4e-40e4-aa7f-5f55606cbecf",
+            "value_bool": true
+          }
+        ],
+        "notes": [
+          {
+            "text": "Conversation handled well"
+          }
+        ]
+      },
+      {
+        "observation_span_id": "deb6ea04-9e3b-438e-8dde-ab2b7634122f",
+        "annotations": [
+          {
+            "annotation_label_id": "ca9d3641-0cfe-49ff-adde-888c1cae2d45",
+            "value_float": 75
+          },
+          {
+            "annotation_label_id": "c1236d0a-0d60-48e9-a543-e306c5c3e2b0",
+            "value_str_list": ["hi"]
+          }
+        ]
+      },
+      {
+        "observation_span_id": "eada1ee0-5645-4a5f-8f8d-a6625489e5e5",
+        "annotations": [
+          {
+            "annotation_label_id": "bf0548cd-58a3-4ee8-922d-ff1443340c6e",
+            "value_str_list": ["yes", "yo"]
+          },
+          {
+            "annotation_label_id": "7a6020bf-8c4e-40e4-aa7f-5f55606cbecf",
+            "value_bool": false
+          }
+        ],
+        "notes": [
+          {
+            "text": "Needs improvement in follow-up"
+          }
+        ]
+      },
+      {
+        "observation_span_id": "e246a96a-f671-4055-9250-c556bbaf239a",
+        "annotations": [
+          {
+            "annotation_label_id": "0644e1e1-71cb-4330-b1f9-e67ae74d4a82",
+            "value": "Average response"
+          },
+          {
+            "annotation_label_id": "19aab492-6a77-47a2-b533-a35695aaf5c3",
+            "value_float": 3
+          }
+        ]
+      },
+      {
+        "observation_span_id": "4c3fd1bb-4a32-4593-9daf-defc0330a202",
+        "annotations": [
+          {
+            "annotation_label_id": "ca9d3641-0cfe-49ff-adde-888c1cae2d45",
+            "value_float": 90
+          },
+          {
+            "annotation_label_id": "c1236d0a-0d60-48e9-a543-e306c5c3e2b0",
+            "value_str_list": ["no"]
+          },
+          {
+            "annotation_label_id": "7a6020bf-8c4e-40e4-aa7f-5f55606cbecf",
+            "value_bool": true
+          }
+        ],
+        "notes": [
+          {
+            "text": "Excellent conversation quality"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+meta {
+  name: get experiment json schema v2
+  type: http
+  seq: 23
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/json-schema/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+docs {
+  ## Get Experiment JSON Schema V2
+
+  Returns JSON schemas and images metadata for columns in the experiment's snapshot dataset.
+  Used for autocomplete suggestions when accessing JSON properties with dot notation.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+
+  ### Response
+  ```json
+  {
+    "result": {
+      "<column_id>": {
+        "name": "column_name",
+        "keys": ["path1", "path2.nested"],
+        "sample": {"path1": "value", "path2": {"nested": "value"}}
+      },
+      "<images_column_id>": {
+        "name": "images_column_name",
+        "maxImagesCount": 5
+      }
+    }
+  }
+  ```
+}

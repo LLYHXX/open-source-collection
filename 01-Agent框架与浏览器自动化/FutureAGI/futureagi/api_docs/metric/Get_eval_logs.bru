@@ -1,0 +1,47 @@
+meta {
+  name: Eval-Logs
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}/model-hub/get-eval-logs?current_page_index=0&page_size=1
+  body: json
+  auth: bearer
+}
+
+params:query {
+  current_page_index: 0
+  page_size: 1
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "eval_template_id": "25c01864-a377-4f03-b68e-de5d702fb756",
+    "filters": [
+      {
+        "column_id": "created_at",
+        "filter_config": {
+          "filter_type": "datetime",
+          "filter_op": "between",
+          "filter_value": [
+            "2025-02-15T00:00:00.000000Z",
+            "2025-02-23T00:00:00.000000Z"
+          ]
+        }
+      },
+      {
+        "column_id": "column3",
+        "filter_config":{
+          "filter_type": "text",
+          "filter_op": "contains",
+          "filter_value": "Passed"
+        }
+      }
+    ]
+  }
+}

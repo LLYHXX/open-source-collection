@@ -1,0 +1,19 @@
+meta {
+  name: get experimentdatasets table
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{host}}/model-hub/develops/30cc688a-a095-4ac3-bf3a-1ededd5373ee/get-experiment-dataset-table/?current_page_index=0
+  body: none
+  auth: bearer
+}
+
+params:query {
+  current_page_index: 0
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

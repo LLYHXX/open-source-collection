@@ -1,0 +1,66 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}You're invited to {{ org_name }} on Future AGI{% endblock %}
+{% block preheader %}{{ invited_by }} invited you to join {{ org_name }} on Future AGI.{% endblock %}
+{% block txid %}◦ INVITE / INBOUND{% endblock %}
+{% block content %}
+  <span class="eyebrow" style="display:inline-block; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#c7c7cc; background:rgba(255,255,255,0.03); border:1px solid #3f3f46; padding:5px 10px; border-radius:999px; margin-bottom:20px;">
+    <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:#fafafa; margin-right:8px; vertical-align:middle; box-shadow:0 0 8px rgba(255,255,255,0.7);"></span>New Crew Invite
+  </span>
+
+  <h1 class="hx" style="font-family:'Inter',sans-serif; font-size:28px; line-height:1.22; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:16px 0 14px 0;">
+    You're invited to {{ org_name }}
+  </h1>
+
+  <p class="px" style="font-family:'Inter',sans-serif; font-size:16px; line-height:1.65; color:#d4d4d8; margin:0 0 24px 0;">
+    <strong style="color:#fafafa;">{{ invited_by }}</strong> invited you to join <strong style="color:#fafafa;">{{ org_name }}</strong> on Future AGI — the platform for tracing, evaluating, and shipping reliable AI agents.
+  </p>
+
+  <!-- Accept panel -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 24px 0 12px 0;">
+    <tr>
+      <td style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:12px; padding: 20px 22px;">
+        <p style="margin:0 0 12px 0; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+          <span style="display:inline-block; width:5px; height:5px; background:#fafafa; border-radius:50%; margin-right:8px; vertical-align:middle;"></span>Activate your account
+        </p>
+        <p style="margin:0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.6; color:#d4d4d8;">
+          Click below to set your password and enter the workspace. Link expires in 7 days.
+        </p>
+      </td>
+    </tr>
+  </table>
+
+  <div style="margin: 20px 0 12px 0;">
+    {% include "billing/_button.html" with url=invite_link text="Accept invite →" variant="primary" %}
+  </div>
+
+  <hr style="border:none; border-top:1px solid #27272a; margin:36px 0 26px 0;">
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+    <tr>
+      <td width="32" style="padding: 0 0 14px 0;">&nbsp;</td>
+      <td style="padding: 0 0 14px 0; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">· WHAT YOU GET</td>
+    </tr>
+    <tr>
+      <td width="32" valign="top" style="padding: 10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:#71717a; letter-spacing:0.08em; border-top:1px solid #27272a;">01</td>
+      <td valign="top" style="padding: 10px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.55; color:#d4d4d8; border-top:1px solid #27272a;">
+        Real-time agent traces across the {{ org_name }} stack
+      </td>
+    </tr>
+    <tr>
+      <td width="32" valign="top" style="padding: 10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:#71717a; letter-spacing:0.08em; border-top:1px solid #27272a;">02</td>
+      <td valign="top" style="padding: 10px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.55; color:#d4d4d8; border-top:1px solid #27272a;">
+        Shared evals, datasets, and prompt history
+      </td>
+    </tr>
+    <tr>
+      <td width="32" valign="top" style="padding: 10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:#71717a; letter-spacing:0.08em; border-top:1px solid #27272a;">03</td>
+      <td valign="top" style="padding: 10px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.55; color:#d4d4d8; border-top:1px solid #27272a;">
+        Monitors and alerts so nothing breaks silently
+      </td>
+    </tr>
+  </table>
+
+  <p style="font-family:'Inter',sans-serif; font-size:12px; line-height:1.6; color:#71717a; margin:28px 0 0 0;">
+    Not expecting this? Ignore the email — no account will be created.
+  </p>
+{% endblock %}

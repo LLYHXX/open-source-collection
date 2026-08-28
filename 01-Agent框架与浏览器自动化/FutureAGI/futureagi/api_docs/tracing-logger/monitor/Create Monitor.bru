@@ -1,0 +1,26 @@
+meta {
+  name: Create Monitor
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/tracer/user-alerts/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "test_cost",
+    "metric_type": "system_metric",
+    "metric": "latency",
+    "threshold_type": "greate_than",
+    "threshold_value":"0",
+    "notification_emails": ["vivek.gupta@oodles.io"]
+  }
+}

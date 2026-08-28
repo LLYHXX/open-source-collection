@@ -1,0 +1,28 @@
+meta {
+  name: Filters Empty
+  type: http
+}
+
+post {
+  url: {{host}}/tracer/observation-span/get_graph_methods/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_id": "fd187d9d-8813-4a88-b774-1711d5f3943b",
+    "property": "average",
+    "interval": "day",
+    "filters": [],
+    "req_data_config": {
+      "id": "f7361850-f6cb-4f17-b909-34d513654f5c",
+      "output_type": "float",
+      "type": "EVAL"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}Account Downgraded — Future AGI{% endblock %}
+{% block preheader %}Your account has been moved to Free due to an unresolved payment.{% endblock %}
+{% block txid %}◦ BILLING / DOWNGRADE{% endblock %}
+{% block content %}
+<h1 class="hx" style="font-family:'Inter',sans-serif; font-size:26px; line-height:1.2; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:0 0 14px 0;">Account moved to Free</h1>
+<p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:0 0 16px 0;">
+  Due to an unresolved payment issue, your Future AGI account has been downgraded to the <strong style="color:#fafafa;">Free</strong> plan.
+</p>
+
+<div class="log" style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:10px; padding:20px 22px; margin:22px 0; font-family:'Inter',sans-serif; color:#c7c7cc;">
+  <p class="log-hdr" style="margin:0 0 14px 0; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+    <span style="display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:10px; vertical-align:middle; background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,0.55);"></span>Downgrade<span style="color:#71717a; font-weight:500; margin-left:6px;">· What changed</span>
+  </p>
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+    <tr><td style="padding:7px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.5; color:#c7c7cc;"><span style="color:#52525b; font-family:'JetBrains Mono',monospace; margin-right:10px;">·</span>Add-on features (Boost, Scale, Enterprise) deactivated</td></tr>
+    <tr><td style="padding:7px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.5; color:#c7c7cc; border-top:1px solid #1a1a1d;"><span style="color:#52525b; font-family:'JetBrains Mono',monospace; margin-right:10px;">·</span>Usage above free-tier limits will be rejected</td></tr>
+    <tr><td style="padding:7px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.5; color:#c7c7cc; border-top:1px solid #1a1a1d;"><span style="color:#52525b; font-family:'JetBrains Mono',monospace; margin-right:10px;">·</span>Your Stripe subscription has been cancelled</td></tr>
+  </table>
+</div>
+
+<p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:0 0 20px 0;">
+  Your existing data is safe. To restore access, add a valid payment method and re-subscribe.
+</p>
+
+<div style="margin: 8px 0 0 0;">
+  {% include "billing/_button.html" with url=base_url|add:"/dashboard/settings/pricing" text="Re-subscribe" variant="primary" %}
+</div>
+{% endblock %}

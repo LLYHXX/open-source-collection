@@ -1,0 +1,25 @@
+meta {
+  name: Add data from exisiting
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{host}}/model-hub/develops/058c04f3-5f20-43fe-a04d-23394f2c1114/add_rows_from_existing_dataset/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "source_dataset_id": "f830c597-fdb8-4d50-9aa6-cdf0759096e3",
+    "column_mapping": {
+     "cdd0556b-40f8-4d2f-8e17-454d3a350572": "46ba7823-c33b-4e7b-91c5-74abeb6feb63",
+     "7e5b2bf3-029c-4b43-94c0-98db377cf968": "c8a2336a-bdfe-468b-9393-ee5dd7414225"
+    }
+  }
+}

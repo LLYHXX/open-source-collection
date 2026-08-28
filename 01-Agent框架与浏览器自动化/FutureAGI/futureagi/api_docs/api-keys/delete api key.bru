@@ -1,0 +1,15 @@
+meta {
+  name: delete api key
+  type: http
+  seq: 10
+}
+
+delete {
+  url: http://localhost:8000/model-hub/api-keys/99592f12-626e-4bfb-a6f6-a62707954fa5/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

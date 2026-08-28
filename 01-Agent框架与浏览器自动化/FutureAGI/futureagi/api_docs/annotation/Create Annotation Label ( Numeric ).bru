@@ -1,0 +1,21 @@
+meta {
+  name: Create Annotation Label ( Numeric )
+  type: http
+  seq: 3
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations-labels/
+  body: json
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  ~Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  {"name":"Q1","type":"numeric","settings":{"min":0,"max":100,"step_size":5,"display_type":"slider"}}
+}

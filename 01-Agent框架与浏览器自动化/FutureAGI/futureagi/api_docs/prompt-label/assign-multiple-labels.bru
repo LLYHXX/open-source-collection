@@ -1,0 +1,22 @@
+meta {
+  name: assign-multiple-labels
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "template_version_id": "9845436b-058a-43c5-ad63-4ef5766c6ac0",
+    "label_ids": ["274b8255-49bc-45f5-8a8b-f6104366fbd0","0565f5fd-61de-4848-aed9-18ecf0ab7079"]
+  }
+}

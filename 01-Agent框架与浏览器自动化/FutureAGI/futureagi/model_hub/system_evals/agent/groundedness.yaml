@@ -1,0 +1,83 @@
+eval_id: 47
+name: groundedness
+description: Evaluates whether the output content is grounded in the provided context.
+criteria: "You are evaluating whether the output is strictly grounded in the provided context, with no unsupported claims.\n\
+  \n## Criteria\n\n1. Traceability: Every factual statement in the output must be traceable to the context.\n   - Pass: \"\
+  The company was founded in 2015\" when context states this.\n   - Fail: \"The company was founded in 2015 and has 500 employees\"\
+  \ when employee count is absent from context.\n\n2. No external knowledge injection: The output must not use world knowledge\
+  \ absent from the context.\n   - Pass: Uses only information provided in context.\n   - Fail: Adds commonly known facts\
+  \ not in the context to enrich the answer.\n\n3. No unsupported extrapolation: Conclusions must follow directly from context\
+  \ premises.\n   - Pass: \"Since revenue grew and costs were flat, margins improved.\" (both facts in context)\n   - Fail:\
+  \ \"This trend will likely continue next year.\" (speculation not in context)\n\n## Anti-bias Rules\n\n- DO NOT flag logical\
+  \ deductions clearly supported by context premises as ungrounded.\n- Common language connectors (\"therefore,\" \"as a result\"\
+  ) linking context facts are acceptable.\n- A short grounded answer scores higher than a long answer that mixes context facts\
+  \ with external knowledge.\n\n## Scoring\n\nReturn 'Passed' if every claim is supported by or logically derived from the\
+  \ context alone. Return 'Failed' if any fact or conclusion cannot be verified from the context, regardless of real-world\
+  \ accuracy.\n\n## Inputs\n\n<output>{{output}}</output>\n\n<input>{{input}}</input>\n\n<context>{{context}}</context>"
+eval_tags:
+- RAG
+- Hallucination
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - input
+  - context
+  optional_keys:
+  - input
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    output: The response to be evaluated
+    input: The input to be evaluated
+    context: The context provided for the response
+  param_modalities:
+    output: &id001
+    - TEXT
+    - AUDIO
+    - IMAGE
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    - IMAGES
+    input:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    context: *id001
+  rule_prompt: "You are evaluating whether the output is strictly grounded in the provided context, with no unsupported claims.\n\
+    \n## Criteria\n\n1. Traceability: Every factual statement in the output must be traceable to the context.\n   - Pass:\
+    \ \"The company was founded in 2015\" when context states this.\n   - Fail: \"The company was founded in 2015 and has\
+    \ 500 employees\" when employee count is absent from context.\n\n2. No external knowledge injection: The output must not\
+    \ use world knowledge absent from the context.\n   - Pass: Uses only information provided in context.\n   - Fail: Adds\
+    \ commonly known facts not in the context to enrich the answer.\n\n3. No unsupported extrapolation: Conclusions must follow\
+    \ directly from context premises.\n   - Pass: \"Since revenue grew and costs were flat, margins improved.\" (both facts\
+    \ in context)\n   - Fail: \"This trend will likely continue next year.\" (speculation not in context)\n\n## Anti-bias\
+    \ Rules\n\n- DO NOT flag logical deductions clearly supported by context premises as ungrounded.\n- Common language connectors\
+    \ (\"therefore,\" \"as a result\") linking context facts are acceptable.\n- A short grounded answer scores higher than\
+    \ a long answer that mixes context facts with external knowledge.\n\n## Scoring\n\nReturn 'Passed' if every claim is supported\
+    \ by or logically derived from the context alone. Return 'Failed' if any fact or conclusion cannot be verified from the\
+    \ context, regardless of real-world accuracy.\n\n## Inputs\n\n<output>{{output}}</output>\n\n<input>{{input}}</input>\n\
+    \n<context>{{context}}</context>"

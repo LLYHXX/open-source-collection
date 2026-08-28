@@ -1,0 +1,24 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g filter="url(#filter0_d_9645_569348)">
+<path d="M2 11C2 5.47715 6.47715 1 12 1C17.5228 1 22 5.47715 22 11C22 16.5228 17.5228 21 12 21C6.47715 21 2 16.5228 2 11Z" fill="white" shape-rendering="crispEdges"/>
+<path d="M12 1.5C17.2467 1.5 21.5 5.7533 21.5 11C21.5 16.2467 17.2467 20.5 12 20.5C6.7533 20.5 2.5 16.2467 2.5 11C2.5 5.7533 6.7533 1.5 12 1.5Z" stroke="#938FA3" stroke-opacity="0.08" shape-rendering="crispEdges"/>
+<path d="M7.33317 9.66683C7.70136 9.66683 7.99984 9.36835 7.99984 9.00016C7.99984 8.63197 7.70136 8.3335 7.33317 8.3335C6.96498 8.3335 6.6665 8.63197 6.6665 9.00016C6.6665 9.36835 6.96498 9.66683 7.33317 9.66683Z" stroke="#666666" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M11.9997 9.66683C12.3679 9.66683 12.6663 9.36835 12.6663 9.00016C12.6663 8.63197 12.3679 8.3335 11.9997 8.3335C11.6315 8.3335 11.333 8.63197 11.333 9.00016C11.333 9.36835 11.6315 9.66683 11.9997 9.66683Z" stroke="#666666" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16.6667 9.66683C17.0349 9.66683 17.3333 9.36835 17.3333 9.00016C17.3333 8.63197 17.0349 8.3335 16.6667 8.3335C16.2985 8.3335 16 8.63197 16 9.00016C16 9.36835 16.2985 9.66683 16.6667 9.66683Z" stroke="#666666" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M7.33317 13.6668C7.70136 13.6668 7.99984 13.3684 7.99984 13.0002C7.99984 12.632 7.70136 12.3335 7.33317 12.3335C6.96498 12.3335 6.6665 12.632 6.6665 13.0002C6.6665 13.3684 6.96498 13.6668 7.33317 13.6668Z" stroke="#666666" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M11.9997 13.6668C12.3679 13.6668 12.6663 13.3684 12.6663 13.0002C12.6663 12.632 12.3679 12.3335 11.9997 12.3335C11.6315 12.3335 11.333 12.632 11.333 13.0002C11.333 13.3684 11.6315 13.6668 11.9997 13.6668Z" stroke="#666666" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16.6667 13.6668C17.0349 13.6668 17.3333 13.3684 17.3333 13.0002C17.3333 12.632 17.0349 12.3335 16.6667 12.3335C16.2985 12.3335 16 12.632 16 13.0002C16 13.3684 16.2985 13.6668 16.6667 13.6668Z" stroke="#666666" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<defs>
+<filter id="filter0_d_9645_569348" x="0" y="0" width="24" height="24" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dy="1"/>
+<feGaussianBlur stdDeviation="1"/>
+<feComposite in2="hardAlpha" operator="out"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0.576471 0 0 0 0 0.560784 0 0 0 0 0.639216 0 0 0 0.16 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_9645_569348"/>
+<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_9645_569348" result="shape"/>
+</filter>
+</defs>
+</svg>

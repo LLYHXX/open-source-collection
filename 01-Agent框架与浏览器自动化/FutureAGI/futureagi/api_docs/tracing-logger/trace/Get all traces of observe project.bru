@@ -1,0 +1,64 @@
+meta {
+  name: Get all traces of observe project
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/tracer/trace/list_traces_of_session/?project_id=73f13519-3d45-4cf8-a39a-ef1a94fd00ed
+  body: json
+  auth: bearer
+}
+
+params:query {
+  project_id: 73f13519-3d45-4cf8-a39a-ef1a94fd00ed
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "filters": [
+      {
+        "column_id": "var_7",
+        "filter_config": {
+          "filter_type": "number",
+          "filter_op": "less_than",
+          "filter_value": 50,
+          "col_type": "SPAN_ATTRIBUTE"
+        }
+      }
+      // {
+      // "column_id": "56",
+      // "filter_config":
+      // {
+      // "filter_type": "number",
+      // "filter_op": "equals",
+      // "filter_value": 100
+      // }
+      // },
+      // {
+      // "column_id": "node_type",
+      // "filter_config":
+      // {
+      // "filter_type": "text",
+      // "filter_op": "equals",
+      // "filter_value": "chain"
+      // }
+      // }
+      // {
+      // "column_id": "created_at",
+      // "filter_config": {
+      // "filterType": "datetime",
+      // "filterOp": "between",
+      // "filterValue": [
+      // "2024-08-08T06:33:35.000Z",
+      // "2025-02-08T18:29:59.000Z"
+      // ]
+      // }
+      // }
+    ]
+  }
+}

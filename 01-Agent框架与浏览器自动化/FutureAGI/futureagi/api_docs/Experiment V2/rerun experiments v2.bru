@@ -1,0 +1,40 @@
+meta {
+  name: rerun experiments v2
+  type: http
+  seq: 10
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/re-run/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "experiment_ids": [
+      "223b68cc-ef87-4f2e-b3f2-af862d4ce7e1"
+    ],
+    "max_concurrent_rows": 10
+  }
+}
+
+docs {
+  ## Re-run Experiments V2
+
+  Re-runs experiments using V2 Temporal workflow.
+  Temporal's TERMINATE_IF_RUNNING policy auto-cancels any existing run.
+
+  ### Request Body
+  - `experiment_ids` — Array of experiment UUIDs to re-run (required)
+  - `max_concurrent_rows` — Max rows processed concurrently, default 10 (optional)
+
+  ### Response
+  ```json
+  {"message": "Re-Run has started for the experiments.", "status": 200}
+  ```
+}

@@ -1,0 +1,40 @@
+eval_id: 186
+name: log_loss
+description: Computes log loss (cross-entropy) for probability predictions. Returns 1/(1+loss) as score. Lower loss = higher score.
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [output, expected]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {output: Predicted probabilities (0-1), expected: True labels (0 or 1)}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json, math
+        def _p(v):
+            if v is None: return []
+            if isinstance(v, list): return [float(x) for x in v]
+            if isinstance(v, str):
+                v = v.strip()
+                if not v: return []
+                try:
+                    p = json.loads(v)
+                    if isinstance(p, list): return [float(x) for x in p]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                return [float(x.strip()) for x in v.split(",") if x.strip()]
+            return [float(v)]
+        yp, yt = _p(kwargs.get("output", output)), _p(kwargs.get("expected", expected))
+        if not yp and not yt:
+            return {"score": 1.0, "reason": "Both empty"}
+        if len(yp) != len(yt):
+            return {"score": 0.0, "reason": f"Length mismatch: {len(yp)} vs {len(yt)}"}
+        eps = 1e-15
+        loss = -sum(y*math.log(max(min(p,1-eps),eps))+(1-y)*math.log(max(min(1-p,1-eps),eps)) for y,p in zip(yt,yp))/len(yt)
+        return {"score": float(1/(1+loss)), "reason": f"Log Loss={loss:.4f}"}

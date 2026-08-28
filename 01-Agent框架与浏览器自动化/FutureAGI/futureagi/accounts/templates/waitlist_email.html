@@ -1,0 +1,44 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}You're on the Future AGI waitlist{% endblock %}
+{% block preheader %}Confirmed — we'll reach out when your access is ready.{% endblock %}
+{% block txid %}◦ WAITLIST / CONFIRMED{% endblock %}
+{% block content %}
+  <span class="eyebrow" style="display:inline-block; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#c7c7cc; background:rgba(255,255,255,0.03); border:1px solid #3f3f46; padding:5px 10px; border-radius:999px; margin-bottom:20px;">
+    <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:#fafafa; margin-right:8px; vertical-align:middle; box-shadow:0 0 8px rgba(255,255,255,0.7);"></span>Position Confirmed
+  </span>
+
+  <h1 class="hx" style="font-family:'Inter',sans-serif; font-size:28px; line-height:1.22; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:16px 0 14px 0;">
+    You're on the waitlist
+  </h1>
+
+  <p class="px" style="font-family:'Inter',sans-serif; font-size:16px; line-height:1.65; color:#d4d4d8; margin:0 0 24px 0;">
+    Thanks for signing up for early access to Future AGI. We're letting people in as capacity frees up — you'll get an email the moment your spot opens.
+  </p>
+
+  <hr style="border:none; border-top:1px solid #27272a; margin:28px 0 22px 0;">
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+    <tr>
+      <td width="32" style="padding: 0 0 14px 0;">&nbsp;</td>
+      <td style="padding: 0 0 14px 0; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">· WHILE YOU WAIT</td>
+    </tr>
+    <tr>
+      <td width="32" valign="top" style="padding: 10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:#71717a; letter-spacing:0.08em; border-top:1px solid #27272a;">01</td>
+      <td valign="top" style="padding: 10px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.55; color:#d4d4d8; border-top:1px solid #27272a;">
+        Read the <a href="https://docs.futureagi.com" style="color:#fafafa; text-decoration:underline; text-underline-offset:3px; text-decoration-color:#52525b; font-weight:500;">docs</a> to see how Future AGI fits your stack
+      </td>
+    </tr>
+    <tr>
+      <td width="32" valign="top" style="padding: 10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:#71717a; letter-spacing:0.08em; border-top:1px solid #27272a;">02</td>
+      <td valign="top" style="padding: 10px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.55; color:#d4d4d8; border-top:1px solid #27272a;">
+        Star us on <a href="https://github.com/future-agi" style="color:#fafafa; text-decoration:underline; text-underline-offset:3px; text-decoration-color:#52525b; font-weight:500;">GitHub</a> for updates
+      </td>
+    </tr>
+    <tr>
+      <td width="32" valign="top" style="padding: 10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:#71717a; letter-spacing:0.08em; border-top:1px solid #27272a;">03</td>
+      <td valign="top" style="padding: 10px 0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.55; color:#d4d4d8; border-top:1px solid #27272a;">
+        Follow <a href="https://x.com/FutureAGI_" style="color:#fafafa; text-decoration:underline; text-underline-offset:3px; text-decoration-color:#52525b; font-weight:500;">@FutureAGI_</a> on X
+      </td>
+    </tr>
+  </table>
+{% endblock %}

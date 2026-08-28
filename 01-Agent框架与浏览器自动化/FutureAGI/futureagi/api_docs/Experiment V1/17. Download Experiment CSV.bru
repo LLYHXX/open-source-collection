@@ -1,0 +1,29 @@
+meta {
+  name: Download Experiment CSV
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/experiments/{{experimentId}}/download/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  ## Download Experiment Results as CSV (V1)
+
+  Downloads all experiment results as a CSV file.
+  Used by ExperimentBarDataRightSection.jsx.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+
+  ### Response
+  CSV file download with filename `{experiment_name}.csv`.
+  Includes base columns, experiment result columns, and evaluation columns.
+}

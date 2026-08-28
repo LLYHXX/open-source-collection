@@ -1,0 +1,73 @@
+meta {
+  name: Update Experiment
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/experiments/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "experiment_id": "{{experimentId}}",
+    "name": "Updated Exp Name",
+    "dataset_id": "d45c7229-b80a-4f77-bc97-94b720eea501",
+    "column_id": "103d6aa0-dc9c-4a55-a30a-79992036ba49",
+    "prompt_config": [
+      {
+        "name": "P1",
+        "version": "",
+        "model_type": "llm",
+        "messages": [
+          {
+            "role": "system",
+            "content": [{"type": "text", "text": ""}]
+          },
+          {
+            "role": "user",
+            "content": [{"type": "text", "text": "Write sentence about {{103d6aa0-dc9c-4a55-a30a-79992036ba49}}\n"}]
+          }
+        ],
+        "model": ["gpt-5-nano"],
+        "model_params": {
+          "gpt-5-nano": {
+            "temperature": 0.5,
+            "max_tokens": 4085,
+            "top_p": 1,
+            "presence_penalty": 1,
+            "frequency_penalty": 1,
+            "response_format": "json",
+            "providers": "openai",
+            "logo_url": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+          }
+        },
+        "configuration": {
+          "tool_choice": "auto",
+          "tools": []
+        },
+        "output_format": "string"
+      }
+    ],
+    "user_eval_template_ids": [],
+    "re_run": true
+  }
+}
+
+docs {
+  ## Update Experiment (V1)
+
+  Updates an existing experiment. If `re_run` is true, old ExperimentDatasetTable
+  records are soft-deleted and a new Temporal workflow is started.
+
+  ### Response
+  ```json
+  {"message": "Experiment updated successfully.", "status": 200}
+  ```
+}

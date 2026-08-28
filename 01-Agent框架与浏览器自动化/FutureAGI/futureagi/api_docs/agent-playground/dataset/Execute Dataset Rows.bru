@@ -1,0 +1,70 @@
+meta {
+  name: Execute Dataset Rows
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/agent-playground/graphs/:graph_id/dataset/execute/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+  //   "row_ids": null
+  }
+}
+
+vars:pre-request {
+  graph_id: 109ec4c4-37ba-4fdb-8c5a-d59a4e984b12
+}
+
+docs {
+  # Execute Dataset Rows
+
+  Trigger graph execution for dataset rows. Each row becomes an independent graph execution via Temporal. The active graph version is resolved automatically.
+
+  ## Path Parameters
+  - `graph_id`: Graph UUID
+
+  ## Request Body
+  - `row_ids` (optional): List of specific row UUIDs to execute. If omitted or null, all rows are executed.
+  - `task_queue` (optional, default: "tasks_l"): Temporal task queue to use.
+
+  ## Response (Success - 201)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "execution_ids": [
+        "execution-uuid-1",
+        "execution-uuid-2"
+      ]
+    }
+  }
+  ```
+
+  ## Response (Error - No Active Version)
+  ```json
+  {
+    "status": false,
+    "result": "Graph version must be active to execute."
+  }
+  ```
+
+  ## Notes
+  - The active graph version is automatically resolved (at most 1 active version per graph)
+  - Each row generates a separate graph execution (1 row = 1 execution)
+  - Cell values are mapped to unconnected input port keys by column name
+  - Executions run asynchronously via Temporal workflows
+  - Use the execution tree endpoint to check progress
+}

@@ -1,0 +1,29 @@
+meta {
+  name: get project version insights
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{host}}/tracer/project-version/get_run_insights/?project_version_id=8946ca2f-2474-41ff-aeab-86a77aef6b7f
+  body: none
+  auth: bearer
+}
+
+params:query {
+  project_version_id: 8946ca2f-2474-41ff-aeab-86a77aef6b7f
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_version_id": "fea271ba-9e1f-4dc2-ad2b-ccb298f0a901",
+    "visibility": {
+      "input": false,
+      "output": false
+    }
+  }
+}

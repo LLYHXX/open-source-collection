@@ -1,0 +1,52 @@
+meta {
+  name: Get System Personas
+  type: http
+  seq: 6
+}
+
+get {
+  url: http://localhost:8000/simulate/api/personas/system/
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  name: Get System Personas
+  description: Get only system-level (prebuilt) personas
+
+  Response Example (Returns full persona details):
+  {
+    "status": true,
+    "result": [
+      {
+        "id": "uuid-1",
+        "persona_type": "system",
+        "persona_type_display": "System",
+        "name": "Loyal Customer",
+        "description": "A loyal long-term customer",
+        "gender": "female",
+        "age_group": "40-50",
+        "occupation": "Business Owner",
+        "location": "",
+        "personality": "Positive",
+        "communication_style": "Friendly",
+        "multilingual": false,
+        "languages": [],
+        "accent": "",
+        "conversation_speed": "1.0",
+        "background_sound": false,
+        "finished_speaking_sensitivity": 5,
+        "interrupt_sensitivity": 5,
+        "keywords": ["loyal", "customer"],
+        "metadata": {},
+        "additional_instruction": "",
+        "is_default": true,
+        "created_at": "2025-10-01T10:00:00Z",
+        "updated_at": "2025-10-01T10:00:00Z"
+      }
+    ]
+  }
+}

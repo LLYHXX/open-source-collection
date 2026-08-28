@@ -1,0 +1,54 @@
+meta {
+  name: Fetch chat execution ids
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:8000/simulate/run-tests/6a83ea0e-9724-4278-8110-638828e37b20/chat-execute/?test_execution_id=1151ac3d-ea24-440f-93e2-e7743d5617f1
+  body: json
+  auth: bearer
+}
+
+params:query {
+  test_execution_id: 1151ac3d-ea24-440f-93e2-e7743d5617f1
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "selectAll": false,
+    "scenarioIds": [
+      "1afc5999-db02-4b95-a3eb-0bd4962242b2",
+      "f930a329-84a0-4a77-9702-8a220fbcea1f"
+    ]
+  }
+}
+
+docs {
+  name: Execute Test with Scenarios
+  description: Execute a test run with specific scenarios
+  request: {
+    "scenario_ids": [
+      "scenario-1",
+      "scenario-2",
+      "scenario-3"
+    ]
+  }
+  response: {
+    "message": "Test execution started successfully",
+    "execution_id": "exec-1f429671-d3bd-4c0f-9cca-36f6d47edfbc",
+    "run_test_id": "1f429671-d3bd-4c0f-9cca-36f6d47edfbc",
+    "status": "started",
+    "total_scenarios": 3,
+    "total_calls": 25,
+    "scenario_ids": [
+      "scenario-1",
+      "scenario-2",
+      "scenario-3"
+    ]
+  }
+}

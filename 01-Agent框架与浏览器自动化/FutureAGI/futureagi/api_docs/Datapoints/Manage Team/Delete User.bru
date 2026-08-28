@@ -1,0 +1,25 @@
+meta {
+  name: Delete User
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{host}}:{{port}}/accounts/team/users/{{member_id}}/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+   "memberId" : "c9e2efba-67e5-40d7-88f5-84c7a05ce41d"
+  }
+}
+
+vars:pre-request {
+  member_id: c9e2efba-67e5-40d7-88f5-84c7a05ce41d
+}

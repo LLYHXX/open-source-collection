@@ -1,0 +1,97 @@
+meta {
+  name: create experiment v2 - stt
+  type: http
+  seq: 4
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "name": "STT Experiment 4",
+    "dataset_id": "b6b7d0f0-9bf6-405f-8093-9f8c4d536337",
+    "column_id": "8b461df5-75d9-40a3-9a2d-f07252b7f39a",
+    "experiment_type": "stt",
+    "prompt_config": [
+      {
+        "name": "whisper-transcribe",
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "{{8b461df5-75d9-40a3-9a2d-f07252b7f39a}}"
+              }
+            ]
+          }
+        ],
+        "model": "whisper-1",
+        "model_params": {
+          "temperature": 0,
+          "providers": "openai",
+          "logoUrl": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+        },
+        "configuration": {
+          "toolChoice": "auto",
+          "tools": []
+        },
+        "output_format": "string",
+        "voice_input_column_id": "8b461df5-75d9-40a3-9a2d-f07252b7f39a"
+      },
+      {
+        "name": "whisper-transcribe",
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "{{8b461df5-75d9-40a3-9a2d-f07252b7f39a}}"
+              }
+            ]
+          }
+        ],
+        "model": "gpt-4o-transcribe",
+        "model_params": {
+          "temperature": 0,
+          "providers": "openai",
+          "logoUrl": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+        },
+        "configuration": {
+          "toolChoice": "auto",
+          "tools": []
+        },
+        "output_format": "string",
+        "voice_input_column_id": "8b461df5-75d9-40a3-9a2d-f07252b7f39a"
+      }
+    ],
+    "user_eval_metrics": []
+  }
+}

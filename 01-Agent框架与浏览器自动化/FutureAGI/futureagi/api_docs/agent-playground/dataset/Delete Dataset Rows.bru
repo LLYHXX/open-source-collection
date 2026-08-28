@@ -1,0 +1,73 @@
+meta {
+  name: Delete Dataset Rows
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{host}}/agent-playground/graphs/:graph_id/dataset/rows/delete/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "row_ids": [
+      "e6e8fca1-a448-4b68-810f-434541812533"
+    ]
+  }
+}
+
+vars:pre-request {
+  graph_id: b946e73c-f5bb-4a38-a796-a0805add877d
+}
+
+docs {
+  # Delete Dataset Rows
+
+  Bulk soft-delete rows and their cells by row IDs.
+
+  ## Path Parameters
+  - `graph_id`: Graph UUID
+
+  ## Request Body
+  - `row_ids` (required): List of row UUIDs to delete. Must contain at least 1 ID.
+
+  ## Response (Success)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "message": "Rows deleted successfully"
+    }
+  }
+  ```
+
+  ## Response (Error - Rows Not Found)
+  ```json
+  {
+    "status": false,
+    "result": {
+      "message": "Dataset rows not found.",
+      "missing_ids": ["row-uuid-1"]
+    }
+  }
+  ```
+  All specified row IDs must exist in the dataset. If any are missing, none are deleted.
+
+  ## Response (Error - Dataset Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Graph dataset not found."
+  }
+  ```
+}

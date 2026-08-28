@@ -1,0 +1,66 @@
+meta {
+  name: Create Graph
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/agent-playground/graphs/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "My Pipeline",
+    "description": "A graph for processing data"
+  }
+}
+
+docs {
+  # Create Graph
+
+  Create a new graph with an empty draft version (v1).
+
+  ## Request Body
+  - `name` (required): Display name for the graph
+  - `description` (optional): Description of the graph
+
+  ## Response
+  Returns the created graph with its initial draft version (without nodes/edges):
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "graph-uuid",
+      "name": "My Pipeline",
+      "description": "A graph for processing data",
+      "is_template": false,
+      "created_at": "2024-01-15T10:30:00Z",
+      "updated_at": "2024-01-15T10:30:00Z",
+      "created_by": {
+        "id": "user-uuid",
+        "name": "John Doe",
+        "email": "john@example.com"
+      },
+      "collaborators": [],
+      "current_version": {
+        "id": "version-uuid",
+        "version_number": 1,
+        "status": "draft",
+        "tags": [],
+        "commit_message": null,
+        "created_at": "2024-01-15T10:30:00Z"
+      }
+    }
+  }
+  ```
+
+  ## Notes
+  - A new graph always starts with an empty draft version (v1)
+  - Use the Update Graph Version endpoint to add nodes and edges
+}

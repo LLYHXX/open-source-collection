@@ -1,0 +1,23 @@
+meta {
+  name: idp-upload-update
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{host}}/saml2_auth/idp-uploads/3/
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  file: @file(/home/vivek/Downloads/Google IDP Metadata (1).xml)
+  identity_type: 2
+  name: Provider
+  is_enabled: true
+  relay_state: oodles-sso
+}

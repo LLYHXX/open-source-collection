@@ -1,0 +1,44 @@
+meta {
+  name: 10 - Missing Template Version ID (Error)
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "label_ids": ["{{prod_label_id}}"]
+  }
+}
+
+docs {
+  # Missing Template Version ID - Error Case
+
+  ## Test Scenario
+  Send request without template_version_id to test validation.
+
+  ## Expected Behavior
+  - Status: 400 Bad Request
+  - Error message about required version ID
+
+  ## Expected Response
+  ```json
+  {
+    "status": false,
+    "result": "Error assigning multiple labels: Template version id is required"
+  }
+  ```
+
+  ## Test Coverage
+  - Required field validation
+  - Missing parameter handling
+}

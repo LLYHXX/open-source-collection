@@ -1,0 +1,34 @@
+meta {
+  name: Add New Empty Rows
+  type: http
+  seq: 26
+}
+
+post {
+  url: {{host}}/model-hub/develops/f830c597-fdb8-4d50-9aa6-cdf0759096e3/add_rows/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "rows":[
+      {
+      "cells":[
+              {
+                  "column_name": "column1",
+                  "value": 0
+              },
+              {
+                  "column_name": "column2",
+                  "value": 45
+              }
+      ]
+      }
+  ]
+  }
+}

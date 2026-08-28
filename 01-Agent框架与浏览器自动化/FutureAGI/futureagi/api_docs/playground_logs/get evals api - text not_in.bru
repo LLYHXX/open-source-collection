@@ -1,0 +1,45 @@
+meta {
+  name: get evals api - text not_in
+  type: http
+  seq: 64
+}
+
+post {
+  url: {{host}}/model-hub/get-eval-logs
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "evalTemplateId": "13be4a24-ee4b-47b9-8111-623bb79dc316",
+    "currentPageIndex": 1,
+    "filters": [
+      {
+        "columnId": "column4",
+        "filterConfig": {
+          "filterType": "text",
+          "filterOp": "not_in",
+          "filterValue": "value1,value2,value3"
+        }
+      },
+      {
+        "column_id": "column6",
+        "filter_config": {
+          "filter_type": "datetime",
+          "filter_op": "between",
+          "filter_value": [
+            "2025-06-16T20:48:43.000Z",
+            "2025-07-17T18:29:59.000Z"
+          ]
+        }
+      }
+    ],
+    "sort": [],
+    "source": "logs"
+  }
+}

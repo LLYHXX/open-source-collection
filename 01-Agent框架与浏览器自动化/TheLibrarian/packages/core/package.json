@@ -1,0 +1,52 @@
+{
+  "name": "@librarian/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure storage + schemas + formatters for The Librarian.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./constants": {
+      "types": "./dist/constants.d.ts",
+      "import": "./dist/constants.js"
+    },
+    "./caller-identity": {
+      "types": "./dist/caller-identity.d.ts",
+      "import": "./dist/caller-identity.js"
+    },
+    "./schemas": {
+      "types": "./dist/schemas/index.d.ts",
+      "import": "./dist/schemas/index.js"
+    },
+    "./store-internal": {
+      "types": "./dist/store/index.d.ts",
+      "import": "./dist/store/index.js"
+    }
+  },
+  "scripts": {
+    "prepare": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "test:vitest": "vitest run",
+    "test": "pnpm run build && pnpm run test:vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "defuddle": "^0.19.2",
+    "diff": "^9.0.0",
+    "gray-matter": "^4.0.3",
+    "node-llama-cpp": "^3.19.1",
+    "simple-git": "^3.36.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "license": "Apache-2.0"
+}

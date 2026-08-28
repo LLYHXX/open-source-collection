@@ -1,0 +1,15 @@
+meta {
+  name: Get Insights List All
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/insight/list/all/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

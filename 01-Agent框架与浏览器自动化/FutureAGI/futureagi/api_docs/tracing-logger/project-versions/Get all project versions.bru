@@ -1,0 +1,42 @@
+meta {
+  name: Get all project versions
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/tracer/project-version/list_runs/?project_id=1e95d65b-ce6f-4d33-a9fc-e823be75f162
+  body: json
+  auth: bearer
+}
+
+params:query {
+  project_id: 1e95d65b-ce6f-4d33-a9fc-e823be75f162
+  ~search_name: eval_project_final_testing_version_2
+  ~page_number: 2
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    // "filters": [
+    // {
+    // "column_id": "avg_latency",
+    // "filter_config": {
+    // "filter_type": "number",
+    // "filter_op": "equals",
+    // "filter_value": 3504.625
+    // }
+    // }
+    // ],
+    "sort_params": [
+      {
+        "column_id": "7375b70c-ed77-49ba-826a-9bb346278136",
+        "direction": "desc"
+      }
+    ]
+  }
+}

@@ -1,0 +1,777 @@
+# Deep Eye Configuration File
+# Copy this file to config.yaml and update with your settings
+
+# AI Provider Settings
+ai_providers:
+  openai:
+    enabled: true
+    api_key: "sk-your-openai-api-key-here"
+    # Completion models: gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini, o1, o1-mini, o3-mini, o4-mini
+    model: "gpt-4o"
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 60
+    # base_url: "https://api.openai.com/v1"   # optional; Azure/OpenAI-compatible proxies
+    # organization: ""
+  
+  claude:
+    enabled: true
+    api_key: "sk-ant-your-claude-api-key-here"
+    # Messages API models: claude-sonnet-4-20250514, claude-3-7-sonnet-20250219,
+    # claude-3-5-sonnet-20241022, claude-3-5-haiku-20241022, claude-3-opus-20240229
+    model: "claude-sonnet-4-20250514"
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 60
+    # base_url: ""  # optional Anthropic-compatible proxy
+  
+  grok:
+    enabled: true
+    api_key: "xai-your-grok-api-key-here"
+    base_url: "https://api.x.ai/v1"
+    model: "grok-beta"
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 30
+  
+  ollama:
+    enabled: false
+    base_url: "http://localhost:11434"
+    model: "llama2"
+    temperature: 0.7
+    timeout: 60
+  
+  gemini:
+    enabled: false
+    api_key: "your-gemini-api-key-here"
+    model: "gemini-1.5-flash"
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 30
+
+  openrouter:
+    enabled: false
+    api_key: "sk-or-v1-your-openrouter-api-key-here"
+    base_url: "https://openrouter.ai/api/v1"
+    model: "openai/gpt-4o"
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 30
+    site_url: "https://github.com/zakirkun/deep-eye"
+    site_name: "Deep Eye"
+
+  orcarouter:
+    enabled: false
+    api_key: "sk-orca-your-orcarouter-api-key-here"
+    base_url: "https://api.orcarouter.ai/v1"
+    model: "openai/gpt-4o"
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 30
+
+  mistral:
+    enabled: false
+    api_key: "mistral-your-api-key-here"
+    model: ""
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 60
+
+  groq:
+    enabled: false
+    api_key: "your-groq-api-key-here"
+    base_url: "https://api.groq.com/openai/v1"
+    model: "mixtral-8x7b-32768"
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 30
+
+  lmstudio:
+    enabled: false
+    base_url: "http://127.0.0.1:1234"
+    model: "local-model"
+    temperature: 0.7
+    timeout: 60
+
+  litellm:
+    enabled: false
+    model: "gpt-4o"
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 60
+  
+  nvidia_nim:
+    enabled: false
+    api_key: "your-nvidia-nim-api-key-here"
+    base_url: "https://integrate.api.nvidia.com/v1"
+    model: "nvidia/nemotron-3-ultra-550b-a55b"
+    temperature: 0.7
+    max_tokens: 2000
+    timeout: 60
+
+# Scanner Settings
+scanner:
+  # Target configuration
+  target_url: ""  # Default target URL (can be overridden via CLI)
+  
+  # Crawling settings
+  default_threads: 5
+  default_depth: 2
+  max_urls: 1000
+  timeout: 10
+  scan_url_timeout: 60  # Maximum time to scan a single URL (seconds) - default: 60
+  user_agent: "Deep-Eye/1.0 (Security Scanner)"
+  follow_redirects: true
+  verify_ssl: true
+  max_retries: 3
+  
+  # Scan modes
+  enable_recon: false  # Enable reconnaissance phase
+  full_scan: false     # Enable all vulnerability tests
+  quick_scan: false    # Quick scan (basic tests only)
+  
+  # AI Provider selection
+  ai_provider: "openai"  # Options: openai, claude, grok, ollama, mistral, openrouter, orcarouter, nvidia_nim
+  
+  # Out-of-Band Application Security Testing (OAST) callback URL
+  # IMPORTANT: Set this to a server you control (e.g., Burp Collaborator, interact.sh)
+  # XSS and XXE payloads use this URL to detect out-of-band interactions.
+  # Leaving this empty uses a safe placeholder that won't leak data to third parties.
+  oast_callback_url: ""  # e.g., "https://your-id.oastify.com"
+
+  # Network settings
+  proxy: ""  # Proxy URL (e.g., http://127.0.0.1:8080)
+  custom_headers: {}  # Custom headers as key-value pairs
+  cookies: {}  # Cookies as key-value pairs
+  
+# Vulnerability Scanner Settings
+vulnerability_scanner:
+  enabled_checks:
+    - sql_injection
+    - xss
+    - command_injection
+    - ssrf
+    - xxe
+    - path_traversal
+    - csrf
+    - authentication_bypass
+    - information_disclosure
+    - security_misconfiguration
+    - lfi
+    - rfi
+    - open_redirect
+    - cors_misconfiguration
+    - insecure_deserialization
+    - broken_authentication
+    - sensitive_data_exposure
+    - xml_injection
+    - ldap_injection
+    - ssti
+    - crlf_injection
+    - host_header_injection
+    - jwt_vulnerabilities
+    - api_vulnerabilities
+    - graphql_vulnerabilities
+    # v1.1.0 advanced modules
+    - api_security
+    - business_logic
+    - authentication
+    - file_upload
+    # v1.2.0 advanced modules
+    - websocket
+    - anomaly_detector
+    # v1.5.0 new vulnerability classes
+    - nosql_injection
+    - http_smuggling
+    - race_condition
+    - log4shell
+    - oauth_testing
+    - mass_assignment
+    - prototype_pollution
+    - secret_scanning
+    - directory_bruteforce
+    - port_scanner
+    - saml_attacks
+    - subdomain_takeover
+    - cache_poisoning
+    - cors_csp
+    - jwt_deep
+    - graphql_deep
+    - idor
+    - stored_xss
+    - email_injection
+    - cache_deception
+    - h2_smuggle
+    - supply_chain_js
+    - waf_fingerprint
+    - ssrf_cloud
+    - open_redirect_deep
+    - hpp_pollution
+    - http_method_override
+    - host_header_deep
+    - crlf_header_inject_deep
+    - ssti_engines
+    - api_bola_deep
+    - websocket_deep
+    - sse_injection
+    - cloud_misconfig
+    - php_webshell
+    - frida_mobile
+    - android_static
+    - ios_plist
+    - mobile_ssl_pinning
+    - mobile_ai_chain
+    # Note: osint_gathering has been moved to reconnaissance phase
+  
+  # Payload generation
+  payload_generation:
+    use_ai: true
+    context_aware: true
+    cve_database: true
+    custom_wordlists: true
+    use_payload_obfuscation: false  # Enable obfuscation for WAF bypass
+  
+  # Testing depth
+  testing:
+    thorough_mode: false
+    time_based_detection_delay: 5
+    blind_injection_attempts: 3
+
+# WebSocket Testing
+websocket:
+  enabled: true
+  test_origin_validation: true
+  test_authentication: true
+  test_injection_attacks: true
+  test_dos_attacks: true
+  test_rate_limiting: true
+  test_tls_verification: true
+  connection_timeout: 10
+  max_message_size: 65536  # 64KB
+
+# Machine Learning Anomaly Detection
+ml_detection:
+  enabled: true
+  baseline_samples: 100  # Number of samples for baseline training
+  anomaly_threshold: 0.6
+  features:
+    - response_time
+    - status_code
+    - response_size
+    - error_patterns
+    - parameter_behavior
+  save_model: true
+  model_path: "data/ml_models/anomaly_detector.pkl"
+
+# Enhanced OSINT Reconnaissance
+osint:
+  enabled: true
+  google_dorking: true
+  email_harvesting: true
+  metadata_extraction: true
+  social_media_check: true
+  breach_database_check: true
+  certificate_transparency: true
+  github_search: true
+  pastebin_search: true
+  max_search_results: 50
+  timeout: 30
+  hibp_api_key: ""  # optional HaveIBeenPwned API key
+
+# Payload Obfuscation
+payload_obfuscation:
+  enabled: false  # Enable for WAF bypass testing
+  techniques:
+    - base64_encoding
+    - url_encoding
+    - unicode_encoding
+    - hex_encoding
+    - case_manipulation
+    - comment_insertion
+    - concatenation
+    - null_byte_injection
+    - double_encoding
+    - character_substitution
+  waf_bypass_mode: false
+
+# API Security Testing
+api_security:
+  enabled: true
+  test_owasp_api_top10: true
+  test_graphql: true
+  check_rate_limiting: true
+  check_authentication: true
+  check_excessive_data_exposure: true
+
+# Business Logic Testing
+business_logic:
+  enabled: true
+  test_price_manipulation: true
+  test_workflow_bypass: true
+  test_race_conditions: true
+  test_quantity_limits: true
+  test_coupon_abuse: true
+
+# Authentication Testing
+authentication:
+  enabled: true
+  test_weak_passwords: true
+  test_brute_force_protection: true
+  test_session_management: true
+  test_jwt_security: true
+  test_oauth_security: true
+  test_mfa_bypass: true
+
+# File Upload Testing
+file_upload:
+  enabled: true
+  test_unrestricted_upload: true
+  test_path_traversal: true
+  test_file_type_bypass: true
+  test_malicious_content: true
+  max_file_size_test: 10485760  # 10MB
+
+# Collaborative Scanning
+collaboration:
+  enabled: false
+  session_storage: "data/sessions"
+  export_format: "json"
+  auto_distribute_work: true
+
+
+# Reconnaissance Settings
+reconnaissance:
+  enabled_modules:
+    - subdomain_enumeration
+    - dns_records
+    - whois_lookup
+    - technology_detection
+    - ssl_certificate_info
+    - port_scanning
+    - directory_bruteforce
+    - email_harvesting
+    - osint_gathering  # OSINT is now part of reconnaissance
+  
+  subdomain_sources:
+    - crt.sh
+    - hackertarget
+    - threatcrowd
+    - virustotal
+  
+  port_scan:
+    common_ports: [80, 443, 8080, 8443, 3000, 3306, 5432, 6379, 27017]
+    scan_timeout: 2
+
+# Report Settings
+reporting:
+  # Output configuration
+  enabled: true  # Generate reports automatically
+  output_directory: "reports"  # Directory to save reports
+  output_filename: ""  # Custom filename stem (auto-generated if empty); extensions appended per format
+  default_format: "html"  # Single-format fallback. Options: html, pdf, json, sarif, junit, csv, xlsx
+  formats: []  # Multi-format list. If non-empty, takes precedence over default_format. Example: [html, junit, csv, xlsx]
+  xlsx_interactive_install: true  # Prompt to install openpyxl when missing (xlsx only)
+  include_sections:
+    - executive_summary
+    - vulnerability_details
+    - remediation_guide
+    - technical_details
+    - reconnaissance_data
+    - appendix
+  severity_colors:
+    critical: "#8B0000"
+    high: "#FF4500"
+    medium: "#FFA500"
+    low: "#FFD700"
+    info: "#87CEEB"
+  branding:
+    company_name: "Deep Eye Security"
+    logo_path: "templates/logo.png"
+    footer: "Confidential Security Assessment Report"
+  dedupe: true  # fingerprint-collapse duplicate findings
+
+# OpenAPI / Swagger ingest (seed crawl queue)
+openapi:
+  enabled: false
+  source: ""  # path or URL to openapi.json / swagger.yaml
+
+# Auth multi-role session store
+auth_session:
+  enabled: false
+  default_role: ""
+  store_path: "data/auth_sessions.json"
+  roles: {}  # role_name: {cookies: {}, headers: {}}
+
+# AI attack planner
+ai_planner:
+  enabled: false
+  use_ai: true
+  budget_seconds: 600
+  max_urls: 50
+  threads: 5
+
+# Per-finding AI evidence summary
+evidence_summary:
+  enabled: false
+  min_severity: high
+  max_findings: 15
+
+# FP replay after AI triage
+fp_replay:
+  enabled: false
+
+# Feature-module knobs
+idor:
+  max_swaps: 5
+jwt_deep:
+  weak_secrets: ["secret", "password", "123456", "changeme"]
+stored_xss:
+  marker: "deepeye_sxss_"
+
+# Compliance Framework Mapping (Group B)
+compliance:
+  enabled: false  # Enable to tag vulnerabilities with PCI-DSS / SOC 2 / ISO 27001 controls
+  frameworks: [pci_dss, soc2, iso_27001]  # Subset to include
+
+# RAG over CVE Database (Group F)
+rag:
+  enabled: false  # Auto-link findings to similar CVEs and ground AI payload generation
+  index_path: "data/cve_rag_index.pkl"  # Pickle index location
+  auto_rebuild: true  # Rebuild index when CVE DB updated
+  top_k: 5  # Max hits per query
+  min_score: 0.15  # Cosine similarity threshold
+
+# AI Auto-Triage / FP Reduction (Group C)
+ai_triage:
+  enabled: false  # Use AI to score confidence and flag false positives
+  drop_false_positives: false  # If true, drop FPs with confidence >= drop_threshold
+  drop_threshold: 0.8  # Minimum AI confidence to drop a finding
+  min_severity: "high"  # Triage only high/critical to save tokens
+
+# Bug Bounty Report Writer (Group C)
+bug_bounty:
+  enabled: false  # Generate Markdown bug bounty reports per critical/high finding
+  format: "hackerone"  # hackerone | bugcrowd | generic
+  min_severity: "high"  # Only generate for findings at or above this severity
+  output_directory: "reports/bounty"
+  one_file_per_vuln: true
+
+# CAPTCHA Detection (Group D)
+captcha:
+  enabled: false  # Detect reCAPTCHA / hCaptcha / Turnstile / generic
+  skip_protected: true  # Skip vuln scan on CAPTCHA-protected pages
+  vendors: [recaptcha, hcaptcha, turnstile, generic]
+
+# Login Macro Replay (Group D)
+login_replay:
+  enabled: false  # Authenticate via JSON macro before scan
+  macro_path: "config/login_macro.json"
+  abort_on_fail: true  # Abort scan if login fails
+  recheck_interval_seconds: 600  # Re-auth interval
+
+# YAML Template Engine (Group G)
+templates:
+  enabled: false  # Run Nuclei-style YAML templates against discovered URLs
+  template_directories:
+    - "templates"
+  tag_filters: []  # Empty = all tags. Example: [cors, exposure]
+  severity_filter: []  # Empty = all. Example: [high, critical]
+
+# Cloudflare / Akamai Challenge Solver (Group H)
+challenge_solver:
+  enabled: false  # Detect challenge pages and solve via Playwright
+  vendors: [cloudflare, akamai]
+  playwright_headless: true
+  cookie_ttl_seconds: 1800  # Re-solve if older
+  timeout_seconds: 30
+
+# Intercepting Proxy (Group H)
+intercepting_proxy:
+  enabled: false  # Route scanner traffic through local mitmweb instance
+  required: false  # If true, abort scan when mitmweb missing
+  bind_host: "127.0.0.1"
+  proxy_port: 8080  # Proxy listener
+  mitmweb_port: 8081  # Web UI port
+
+# TLS Evasion (Group H — opt-in via curl_cffi when installed)
+tls_evasion:
+  enabled: false
+  impersonate: "chrome120"
+
+# Logging Settings
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_to_file: true
+  log_file: "logs/deep_eye.log"
+  max_file_size: 10485760  # 10MB
+  backup_count: 5
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Database Settings (for storing scan results)
+database:
+  enabled: true
+  type: "sqlite"
+  path: "data/deep_eye.db"
+  auto_cleanup_days: 30
+
+# Rate Limiting
+rate_limiting:
+  enabled: true
+  requests_per_second: 10
+  burst_size: 20
+  delay_on_error: 2
+
+# Proxy Settings
+proxy:
+  enabled: false
+  http: ""
+  https: ""
+  
+# Advanced Settings
+advanced:
+  # Browser automation for smart testing (requires: pip install playwright && playwright install chromium)
+  enable_javascript_rendering: false  # Enable browser-based vulnerability testing
+  screenshot_enabled: false  # Capture screenshots as base64 (requires browser automation)
+
+  # Browser testing architecture (v1.4.0+):
+  # - Browser Use AI (requires: pip install browser-use langchain-openai + OpenAI API key)
+  #   Used for: XSS and hidden element discovery (intelligent, context-aware)
+  # - Playwright (requires: pip install playwright && playwright install chromium)
+  #   Used for: SQLi, DOM XSS, clickjacking (deterministic, fast)
+  #
+  # Note: Browser Use AI is experimental and requires more research
+  # Set enable_browser_use_ai to false to use only Playwright (recommended for stability)
+  enable_browser_use_ai: false  # Disable Browser Use AI, use Playwright for all tests (default: false)
+
+  # Browser automation timeouts (to prevent hanging/stuck scanning)
+  browser_timeout: 120  # Maximum time for browser tests per URL (seconds) - default: 120 (2 minutes, reduced from 5)
+  browser_page_timeout: 10  # Page load timeout (seconds) - default: 10 (reduced from 15)
+  browser_navigation_timeout: 10  # Navigation timeout (seconds) - default: 10 (reduced from 15)
+
+  # Stealth / Anti-detection
+  ua_rotation: false  # Rotate User-Agent from a pool of real browser UAs
+  jitter_min: 0.0  # Minimum random delay between requests (seconds)
+  jitter_max: 0.0  # Maximum random delay between requests (seconds, 0 = disabled)
+
+  # Proxy rotation (round-robin through list)
+  proxy_pool: []  # e.g. ["http://proxy1:8080", "socks5://proxy2:1080"]
+
+  # URL filtering (reduces scan time and focuses on relevant targets)
+  exclude_extensions: [".jpg", ".jpeg", ".png", ".gif", ".css", ".js", ".woff", ".woff2", ".ttf", ".svg", ".ico"]
+  exclude_patterns: []
+  max_response_size: 5242880  # 5MB
+  # Custom DNS: OS-level only (requests cannot override per-request)
+  custom_dns_servers: []
+
+# Scope Management
+scope:
+  enabled: false
+  allowed_hosts:
+    - "*.example.com"
+    - "target.com"
+  excluded_paths:
+    - "/logout"
+    - "/admin/.*"
+  allowed_ports: [80, 443, 8080, 8443]
+
+# OAST Callback Server (for blind vulnerability detection)
+oast:
+  enabled: false
+  host: "0.0.0.0"
+  port: 9999
+
+# Passive-only mode (no active payloads, read-only scanning)
+passive_mode: false
+
+# Experimental Features (v1.4.0+)
+experimental:
+  # Subdomain scanning
+  enable_subdomain_scanning: false  # Discover and scan all subdomains
+  aggressive_subdomain_enum: true   # Use aggressive subdomain enumeration
+  max_subdomains_to_scan: 50        # Limit number of subdomains to scan
+  
+  # CVE Intelligence
+  # When true: ScannerEngine loads CVEMatcher, seeds DB if empty, enriches each finding
+  # with related_cves + cve_references. Payload gen also uses DB when
+  # vulnerability_scanner.payload_generation.cve_database is true.
+  enable_cve_matching: false
+  cve_database_path: "data/cve_intelligence.db"
+  auto_update_cve_db: false         # Auto-update CVE database (requires internet)
+  cve_lookback_days: 365            # Days to look back for CVEs
+  # Live CVE reference lookup (public NVD + GitHub APIs; original Deep Eye code)
+  # Complements local SQLite match with NVD links, Exploit-DB search URLs, GitHub POCs.
+  # Not an integration of third-party tools (those may forbid redistribution).
+  cve_live_lookup: false
+  nvd_api_key: ""                   # optional NIST NVD API key (higher rate limit)
+  github_token: ""                  # optional GitHub token for POC search
+  cve_live_max_results: 3
+  cve_live_keyword_search: true
+  cve_live_github_search: true
+  cve_live_fetch_detail: true
+  cve_live_always_keyword: false    # also query NVD when local DB already matched
+
+# Mobile / Frida dynamic + static analysis
+# Enable mobile.enabled and add frida_mobile / android_static / ios_plist /
+# mobile_ssl_pinning / mobile_ai_chain to vulnerability_scanner.enabled_checks
+mobile:
+  enabled: false
+  platform: android          # android | ios
+  package: ""                # com.example.app or iOS bundle id
+  artifact: ""               # path to APK / IPA / Info.plist
+  use_ai: true               # AI payload advice + attack chain (needs AI provider)
+  script_output_dir: "reports/frida_scripts"
+  try_attach: false          # live Frida attach (needs frida-tools + device)
+  spawn: false
+  device: ""
+
+# Plugin System (v1.3.0)
+plugin_manager:
+  enabled: false  # Enable custom plugin system
+  plugin_directory: "plugins"  # Directory for custom vulnerability scanner plugins
+  auto_load: true  # Automatically load all plugins on startup
+
+# Notification System (v1.3.0)
+notifications:
+  enabled: false  # Master switch for all notifications
+  notify_on_critical: true  # Send immediate alerts for critical vulnerabilities
+  
+  # Email Notifications
+  email:
+    enabled: false
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    username: "your-email@gmail.com"
+    password: "your-app-password"  # Use app-specific password
+    from_address: "deep-eye@yourcompany.com"
+    to_addresses:
+      - "security-team@yourcompany.com"
+      - "admin@yourcompany.com"
+  
+  # Slack Notifications
+  slack:
+    enabled: false
+    webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+    channel: "#security-alerts"  # Optional: override webhook channel
+    username: "Deep Eye Scanner"  # Optional: custom bot name
+    icon_emoji: ":shield:"  # Optional: custom emoji
+  
+  # Discord Notifications
+  discord:
+    enabled: false
+    webhook_url: "https://discord.com/api/webhooks/YOUR/WEBHOOK/URL"
+    username: "Deep Eye Scanner"  # Optional: custom bot name
+    avatar_url: ""  # Optional: custom avatar URL
+
+# Secrets Scanner (v1.4.0+)
+secrets_scanner:
+  enabled: true  # Scan for leaked credentials and secrets
+
+  # Detection settings
+  scan_response_body: true  # Scan response body for secrets
+  scan_response_headers: true  # Scan response headers
+  scan_javascript_files: true  # Deep scan JavaScript files
+  check_git_exposure: true  # Check for exposed .git files
+
+  # Entropy detection for unknown secrets
+  enable_entropy_detection: true  # Detect high-entropy strings (potential keys)
+  min_entropy: 4.5  # Minimum entropy threshold (0-8, higher = more random)
+  min_length: 20  # Minimum length for entropy detection
+
+  # Pattern categories to scan for
+  enabled_patterns:
+    # Cloud provider keys
+    - aws_access_key
+    - aws_secret_key
+    - gcp_api_key
+    - gcp_service_account
+    - azure_client_secret
+    - azure_storage_key
+
+    # Version control
+    - github_token
+    - github_app_token
+    - gitlab_token
+    - bitbucket_token
+
+    # Communication platforms
+    - slack_token
+    - slack_webhook
+    - discord_webhook
+    - telegram_token
+
+    # Payment processors
+    - stripe_api_key
+    - stripe_restricted_key
+    - paypal_token
+    - square_token
+
+    # Messaging services
+    - twilio_api_key
+    - sendgrid_api_key
+    - mailgun_api_key
+    - mailchimp_api_key
+
+    # Database credentials
+    - database_connection_string
+    - mongodb_uri
+    - redis_uri
+    - postgres_connection
+    - mysql_connection
+
+    # Authentication & Encryption
+    - jwt_token
+    - oauth_token
+    - api_key_generic
+    - private_key_pem
+    - private_key_rsa
+    - password_in_url
+    - basic_auth_header
+
+    # Other services
+    - npm_token
+    - docker_hub_token
+    - heroku_api_key
+    - cloudflare_api_key
+    - datadog_api_key
+
+  # Severity mapping for different secret types
+  severity_mapping:
+    # Critical severity
+    aws_secret_key: critical
+    gcp_service_account: critical
+    azure_storage_key: critical
+    database_connection_string: critical
+    private_key_pem: critical
+    private_key_rsa: critical
+
+    # High severity
+    github_token: high
+    gitlab_token: high
+    stripe_api_key: high
+    jwt_token: high
+    oauth_token: high
+    api_key_generic: high
+
+    # Medium severity
+    slack_webhook: medium
+    discord_webhook: medium
+    sendgrid_api_key: medium
+    mailgun_api_key: medium
+
+    # Default for unlisted types
+    default: high
+
+  # Whitelist - suppress false positives for known-safe values
+  whitelist:
+    # Exact email addresses to ignore (case-insensitive)
+    emails:
+      - "contact@example.com"
+      - "support@example.com"
+      - "info@example.com"
+      - "admin@example.com"
+      - "noreply@example.com"
+
+    # Domain patterns - any email @domain will be ignored (case-insensitive)
+    domains:
+      - "example.com"
+      - "example.org"

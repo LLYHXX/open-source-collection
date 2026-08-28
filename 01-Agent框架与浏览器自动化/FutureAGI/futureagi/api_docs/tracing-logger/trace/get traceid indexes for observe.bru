@@ -1,0 +1,43 @@
+meta {
+  name: get traceid indexes for observe
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{host}}/tracer/trace/get_trace_id_by_index_observe/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    // "filters" : [
+    // {
+    // "column_id": "56",
+    // "filter_config":
+    // {
+    // "filter_type": "number",
+    // "filter_op": "equals",
+    // "filter_value": 100
+    // }
+    // },
+    // {
+    // "column_id": "node_type",
+    // "filter_config":
+    // {
+    // "filter_type": "text",
+    // "filter_op": "equals",
+    // "filter_value": "chain"
+    // }
+    // }
+    // ]
+
+    "trace_id": "22317997-4b5f-4f63-94c7-1a0c36b90dbb"
+
+  }
+}

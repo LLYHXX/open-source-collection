@@ -1,0 +1,32 @@
+meta {
+  name: Edit Dataset Behavior
+  type: http
+  seq: 15
+}
+
+put {
+  url: {{host}}/model-hub/develops/:dataset_id/edit_dataset_behavior/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_name": "New Dataset Name",
+    "column_order": ["column-id-1", "column-id-2", "column-id-3"],
+    "column_config": {
+      "column-id-1": {
+        "is_visible": true,
+        "is_frozen": false
+      },
+      "column-id-2": {
+        "is_visible": false,
+        "is_frozen": true
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+meta {
+  name: create annotation
+  type: http
+  seq: 10
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations/
+  body: json
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  { "name": "Testing Multiple Annotaters - 1", "dataset": "3ac3beb2-a38b-4964-8dd2-f13a7a4a4c74", "labels": [ "67e62b64-da34-4d6d-8a33-13339fc6603f", "267577f4-3e3f-4b9c-b077-eb4c34d3b3d9", "361454d5-b084-4e89-8fc1-eb4dcbab86d4" ], "assigned_users": [ "3ec8a554-b0fa-4adf-b3eb-0369070f99c7", "bba6efd8-fed4-46f5-9937-ab95873764ea", "c75f20c1-ef00-4853-8c42-19a6fc3c84c2" ], "static_fields": [ { "column_id": "53709116-efe9-40b5-bd4d-c1b2f098cac4", "type": "plain_text", "view": "default_collapsed" }, { "column_id": "653fd374-ac87-4c1f-a124-40fbb940b2f7", "type": "plain_text", "view": "default_collapsed" } ], "response_fields": [ { "column_id": "653fd374-ac87-4c1f-a124-40fbb940b2f7", "type": "plain_text", "view": "default_collapsed", "edit": "editable" }, { "column_id": "53709116-efe9-40b5-bd4d-c1b2f098cac4", "type": "plain_text", "view": "default_collapsed", "edit": "editable" } ], "responses": 1 }
+}

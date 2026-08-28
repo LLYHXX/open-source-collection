@@ -1,0 +1,43 @@
+node_modules/
+data/
+data-seed/
+data-*/
+*.gguf
+.DS_Store
+.env
+dist/
+.next/
+*.tsbuildinfo
+.e2e/
+apps/dashboard/playwright-report/
+apps/dashboard/test-results/
+
+# agents
+.agents/
+.claude/skills/
+.hermes/skills/
+skills-lock.json
+.serena
+
+# Python (integrations/hermes)
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Autonomous-build scratch notes — local-only, never committed (per build workflow)
+AUTONOMOUS-BUILD-NOTES-*.md
+
+# Impeccable live-mode session journals (local recovery state, not project source).
+# The config (.impeccable/live/config.json) IS committed; only sessions are local.
+.impeccable/live/sessions/
+.impeccable/critique/
+
+
+# orchestration scratch (never committed)
+ORCHESTRATE-NOTES-*.md
+
+# Claude Code agent worktrees — machine-local working copies. Never commit:
+# they carry their own .git, so a stray add records a gitlink (submodule
+# pointer) with no .gitmodules, which breaks submodule-aware checkouts like
+# Cloudflare Pages' build clone.
+/.claude/worktrees/

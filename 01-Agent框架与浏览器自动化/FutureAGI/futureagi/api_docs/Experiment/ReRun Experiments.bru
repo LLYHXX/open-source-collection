@@ -1,0 +1,21 @@
+meta {
+  name: ReRun Experiments
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}/model-hub/experiments/re-run/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "experiment_ids": ["815ab288-8b16-43a2-8b78-9f0eccf96609"]
+  }
+}

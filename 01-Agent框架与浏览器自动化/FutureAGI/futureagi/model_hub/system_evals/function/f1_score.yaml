@@ -1,0 +1,52 @@
+eval_id: 143
+name: f1_score
+description: Computes token-level F1 score between output and expected text. Treats both texts as bags of tokens and calculates
+  the harmonic mean of precision and recall. Widely used for QA and extraction tasks.
+criteria: Measures token overlap between generated and expected text using F1 (harmonic mean of precision and recall).
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config:
+    case_insensitive:
+      type: boolean
+      default: true
+  config_params_desc:
+    output: The generated/output text
+    expected: The expected/reference text
+    case_insensitive: Whether to lowercase before comparing (default true)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        from collections import Counter
+        out_str = str(kwargs.get("output", output or "")).strip()
+        exp_str = str(kwargs.get("expected", expected or "")).strip()
+        case_insensitive = kwargs.get("case_insensitive", True)
+        if case_insensitive:
+            out_str = out_str.lower()
+            exp_str = exp_str.lower()
+        out_tokens = out_str.split()
+        exp_tokens = exp_str.split()
+        if not out_tokens and not exp_tokens:
+            return {"score": 1.0, "reason": "F1: 1.0 (both empty)"}
+        if not out_tokens or not exp_tokens:
+            return {"score": 0.0, "reason": "F1: 0.0 (one side is empty)"}
+        out_counts = Counter(out_tokens)
+        exp_counts = Counter(exp_tokens)
+        overlap = sum((out_counts & exp_counts).values())
+        if overlap == 0:
+            return {"score": 0.0, "reason": "F1: 0.0 (no token overlap)"}
+        precision = overlap / len(out_tokens)
+        recall = overlap / len(exp_tokens)
+        f1 = 2 * precision * recall / (precision + recall)
+        return {"score": float(f1), "reason": f"F1: {f1:.4f} (P={precision:.3f}, R={recall:.3f})"}

@@ -1,0 +1,105 @@
+meta {
+  name: Save User Onboarding Data
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/accounts/onboarding/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "role": "Data Scientist",
+    "goals": [
+      "Evaluations",
+      "LLM Observability",
+      "Uptime monitoring"
+    ]
+  }
+}
+
+docs {
+  # Save User Onboarding Data
+
+  Save user's selected role and goals from the onboarding screens.
+
+  ## Request Body
+
+  ```json
+  {
+    "role": "string",       // Required - Can be predefined or custom role
+    "goals": ["string"]     // Required - Array of goals (can be empty)
+  }
+  ```
+
+  ## Predefined Roles
+  - Data Scientist
+  - ML Engineer
+  - Subject matter expert
+  - Product Manager
+  - Business Manager
+  - (Any custom text is also accepted)
+
+  ## Available Goals
+  - Uptime monitoring
+  - LLM Observability
+  - Evaluations
+  - Agent Simulation
+  - Prompt Management
+  - Data Annotation
+
+  ## Response
+
+  ```json
+  {
+    "success": true,
+    "data": {
+      "message": "Onboarding data saved successfully",
+      "data": {
+        "role": "Data Scientist",
+        "goals": ["Evaluations", "LLM Observability", "Uptime monitoring"]
+      }
+    }
+  }
+  ```
+
+  ## Validation Errors
+
+  ```json
+  {
+    "success": false,
+    "error": {
+      "role": ["Role is required"]
+    }
+  }
+  ```
+
+  ## Empty Goals Example
+
+  Empty goals array is allowed:
+
+  ```json
+  {
+    "role": "Data Scientist",
+    "goals": []
+  }
+  ```
+
+  ## Notes
+
+  - Requires authentication
+  - Role is required (cannot be empty)
+  - Goals array is required but can be empty
+  - Role is saved directly to user.role field
+  - Goals are saved as JSON array to user.goals field
+  - Duplicates in goals array are automatically removed
+  - Custom roles are supported - just enter any text
+  - Data is also tracked in Mixpanel for analytics
+}

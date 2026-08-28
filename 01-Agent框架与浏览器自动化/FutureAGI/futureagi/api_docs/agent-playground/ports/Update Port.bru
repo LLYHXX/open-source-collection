@@ -1,0 +1,74 @@
+meta {
+  name: Update Port
+  type: http
+  seq: 1
+}
+
+patch {
+  url: {{host}}/agent-playground/graphs/:graph_id/versions/:version_id/ports/:port_id/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  version_id: {{version_id}}
+  port_id: {{port_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "display_name": "llm_output_8"
+  }
+}
+
+vars:pre-request {
+  graph_id: 8da2b6d9-fded-468d-9cff-821cefa1cecf
+  version_id: 0b8b2ded-9988-453d-b4b6-e9dd59a06055
+  port_id: bda63703-6788-41c1-b103-2cd9a66f6674
+}
+
+docs {
+  # Update Port (Partial)
+
+  Update a port's display name in a draft version.
+
+  ## Path Parameters
+  - `graph_id` (required): UUID of the graph
+  - `version_id` (required): UUID of the draft version
+  - `port_id` (required): UUID of the port
+
+  ## Request Body
+  - `display_name` (required): New display name for the port
+
+  ## Response (200)
+  Returns the full port object:
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "<UUID>",
+      "key": "custom",
+      "display_name": "New Display Name",
+      "direction": "input",
+      "data_schema": {"type": "string"},
+      "required": true,
+      "default_value": null,
+      "metadata": {},
+      "ref_port_id": null
+    }
+  }
+  ```
+
+  ## Side Effects
+  - Dataset columns are synced (add-only) after port rename. A new column is created for the new display name. The old column is kept (never deleted) for use by other versions.
+
+  ## Errors
+  - `400`: Version is not DRAFT
+  - `400`: Duplicate display_name on the same node
+  - `404`: Port not found or doesn't belong to this version
+}

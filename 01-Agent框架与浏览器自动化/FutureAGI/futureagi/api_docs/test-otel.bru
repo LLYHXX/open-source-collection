@@ -1,0 +1,18 @@
+meta {
+  name: test-otel
+  type: http
+  seq: 4
+}
+
+post {
+  url: http://127.0.0.1:8000/api/handle_payload/
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "John",
+    "age": 30
+  }
+}

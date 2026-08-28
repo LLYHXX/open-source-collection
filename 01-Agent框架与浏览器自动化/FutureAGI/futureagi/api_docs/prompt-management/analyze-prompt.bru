@@ -1,0 +1,15 @@
+meta {
+  name: analyze-prompt
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{backend_url}}/model-hub/prompt-executions/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

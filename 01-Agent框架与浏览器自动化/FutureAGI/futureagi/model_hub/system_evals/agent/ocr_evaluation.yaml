@@ -1,0 +1,62 @@
+eval_id: 111
+name: ocr_evaluation
+description: Evaluates the quality of the given OCR output
+criteria: "You are evaluating the accuracy of OCR-extracted JSON content against the source PDF document.\n\n## Criteria\n\
+  \n1. Text accuracy: Every text value in the JSON must match the corresponding PDF text.\n   - High score: All text strings\
+  \ match the PDF exactly (after whitespace normalization).\n   - Low score: Multiple words are misread, transposed, or garbled.\n\
+  \n2. Structural fidelity: Tables, lists, and hierarchies in the PDF should be correctly structured in JSON.\n   - High score:\
+  \ Table rows and columns map correctly to JSON arrays/objects.\n   - Low score: Table data is merged, split incorrectly,\
+  \ or loses structure.\n\n3. Data type preservation: Dates, numbers, currencies, and special characters should be correctly\
+  \ formatted.\n   - High score: \"$1,234.56\" and \"January 15, 2024\" are correctly represented.\n   - Low score: Numbers\
+  \ are truncated, dates are in wrong format, or currencies are missing symbols.\n\n## Anti-bias Rules\n\n- Verification direction\
+  \ is JSON-to-PDF only: check that JSON claims are supported by PDF. DO NOT penalize JSON omissions.\n- Normalize dates (\"\
+  01/15/2024\" = \"January 15, 2024\"), currencies (\"$1,000\" = \"1000\"), and whitespace before comparing.\n- Handwritten\
+  \ text in PDFs may have legitimate ambiguity; evaluate based on the most reasonable reading.\n\n## Scoring\n\nScore 0.0\
+  \ if major transcription errors or misrepresented structure. Score 0.5 if mostly accurate with some errors. Score 1.0 if\
+  \ every JSON value precisely matches the PDF source.\n\n## Inputs\n\n<input_pdf>{{input_pdf}}</input_pdf>\n\n<json_content>{{json_content}}</json_content>"
+eval_tags:
+- PDF
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input_pdf
+  - json_content
+  output: score
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    input_pdf: The PDF document to verify against
+    json_content: The JSON content extracted from OCR to evaluate
+  param_modalities:
+    input_pdf:
+    - PDF
+    - KNOWLEDGE_BASE
+    json_content:
+    - TEXT
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating the accuracy of OCR-extracted JSON content against the source PDF document.\n\n## Criteria\n\
+    \n1. Text accuracy: Every text value in the JSON must match the corresponding PDF text.\n   - High score: All text strings\
+    \ match the PDF exactly (after whitespace normalization).\n   - Low score: Multiple words are misread, transposed, or\
+    \ garbled.\n\n2. Structural fidelity: Tables, lists, and hierarchies in the PDF should be correctly structured in JSON.\n\
+    \   - High score: Table rows and columns map correctly to JSON arrays/objects.\n   - Low score: Table data is merged,\
+    \ split incorrectly, or loses structure.\n\n3. Data type preservation: Dates, numbers, currencies, and special characters\
+    \ should be correctly formatted.\n   - High score: \"$1,234.56\" and \"January 15, 2024\" are correctly represented.\n\
+    \   - Low score: Numbers are truncated, dates are in wrong format, or currencies are missing symbols.\n\n## Anti-bias\
+    \ Rules\n\n- Verification direction is JSON-to-PDF only: check that JSON claims are supported by PDF. DO NOT penalize\
+    \ JSON omissions.\n- Normalize dates (\"01/15/2024\" = \"January 15, 2024\"), currencies (\"$1,000\" = \"1000\"), and\
+    \ whitespace before comparing.\n- Handwritten text in PDFs may have legitimate ambiguity; evaluate based on the most reasonable\
+    \ reading.\n\n## Scoring\n\nScore 0.0 if major transcription errors or misrepresented structure. Score 0.5 if mostly accurate\
+    \ with some errors. Score 1.0 if every JSON value precisely matches the PDF source.\n\n## Inputs\n\n<input_pdf>{{input_pdf}}</input_pdf>\n\
+    \n<json_content>{{json_content}}</json_content>"

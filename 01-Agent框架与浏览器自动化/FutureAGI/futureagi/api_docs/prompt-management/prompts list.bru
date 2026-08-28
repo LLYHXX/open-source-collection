@@ -1,0 +1,28 @@
+meta {
+  name: prompts list
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{host}}/model-hub/prompt-executions/?page=1&page_size=10&modality=chat
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page: 1
+  page_size: 10
+  modality: chat
+  ~sort_by: updated_at
+  ~sort_order: asc
+  ~ordering: name
+  ~search: Unti
+  ~send_all: true
+  ~name: new
+  ~pinned_ids: 389fa778-032d-47d0-83fa-8a661f7f26d3,9edc835f-0358-4598-a8d8-3aa4524ca2bf
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

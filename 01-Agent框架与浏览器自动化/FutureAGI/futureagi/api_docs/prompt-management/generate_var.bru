@@ -1,0 +1,23 @@
+meta {
+  name: generate_var
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{backend_url}}/model-hub/prompt-templates/generate-prompt/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "statement": "write a text using label",
+    "follow_up" : "make the email look more professional" //optional
+  }
+
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Get Evaluation Stats
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/experiments/{{experimentId}}/evaluations/{{evaluationId}}/stats/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  ## Get Evaluation-Specific Stats (V1)
+
+  Returns stats for a specific evaluation within an experiment.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+  - `evaluationId` — Evaluation (UserEvalMetric) UUID
+
+  ### Response
+  Metrics: success_rate, avg_response_time, token usage per column.
+}

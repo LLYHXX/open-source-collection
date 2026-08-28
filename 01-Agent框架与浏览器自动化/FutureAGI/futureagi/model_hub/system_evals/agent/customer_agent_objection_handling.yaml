@@ -1,0 +1,65 @@
+eval_id: 118
+name: customer_agent_objection_handling
+description: Monitors the agent's ability to handle customer objections effectively.
+criteria: "You are evaluating whether the agent effectively handles customer objections, hesitations, or refusals.\n\n## Criteria\n\
+  \n1. Acknowledgment: The agent should recognize and validate the customer's concern.\n   - Always: \"I understand your concern\
+  \ about the pricing. Let me explain the value.\"\n   - Never: Ignores the objection and continues the script.\n\n2. Appropriate\
+  \ response: Provides relevant information or alternatives addressing the objection.\n   - Always: Offers a tailored solution\
+  \ or explains benefits relevant to the concern.\n   - Never: Repeats the same pitch without addressing what worried the\
+  \ customer.\n\n3. Boundary respect: Respects a firm \"no\" without pressuring further.\n   - Always: \"I understand. If\
+  \ you change your mind, we're here to help.\"\n   - Never: Continues pushing after clear refusal, guilt-trips, or manipulates.\n\
+  \n## Anti-bias Rules\n\n- If no objections are raised, select 'always' as there are no failures to evaluate.\n- One follow-up\
+  \ after an initial objection is good practice, NOT aggressive pushing.\n- A customer who is indecisive (not objecting) requires\
+  \ patience, not objection handling.\n\n## Scoring\n\nSelect 'never' if objections are ignored, dismissed, or handled aggressively.\
+  \ Select 'occasionally' if some are handled well but others are not. Select 'frequently' if generally good with minor lapses.\
+  \ Select 'always' if consistently acknowledged, addressed, and respected.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"
+eval_tags:
+- Agents
+- Conversation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- never
+- occasionally
+- frequently
+- always
+output_type_normalized: deterministic
+config:
+  required_keys:
+  - conversation
+  output: choices
+  eval_type_id: AgentEvaluator
+  param_modalities:
+    conversation:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  config_params_desc:
+    conversation: The conversation to be evaluated
+  rule_prompt: "You are evaluating whether the agent effectively handles customer objections, hesitations, or refusals.\n\n\
+    ## Criteria\n\n1. Acknowledgment: The agent should recognize and validate the customer's concern.\n   - Always: \"I understand\
+    \ your concern about the pricing. Let me explain the value.\"\n   - Never: Ignores the objection and continues the script.\n\
+    \n2. Appropriate response: Provides relevant information or alternatives addressing the objection.\n   - Always: Offers\
+    \ a tailored solution or explains benefits relevant to the concern.\n   - Never: Repeats the same pitch without addressing\
+    \ what worried the customer.\n\n3. Boundary respect: Respects a firm \"no\" without pressuring further.\n   - Always:\
+    \ \"I understand. If you change your mind, we're here to help.\"\n   - Never: Continues pushing after clear refusal, guilt-trips,\
+    \ or manipulates.\n\n## Anti-bias Rules\n\n- If no objections are raised, select 'always' as there are no failures to\
+    \ evaluate.\n- One follow-up after an initial objection is good practice, NOT aggressive pushing.\n- A customer who is\
+    \ indecisive (not objecting) requires patience, not objection handling.\n\n## Scoring\n\nSelect 'never' if objections\
+    \ are ignored, dismissed, or handled aggressively. Select 'occasionally' if some are handled well but others are not.\
+    \ Select 'frequently' if generally good with minor lapses. Select 'always' if consistently acknowledged, addressed, and\
+    \ respected.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"
+choice_scores:
+  never: 0.0
+  occasionally: 0.33
+  frequently: 0.66
+  always: 1.0

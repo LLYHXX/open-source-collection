@@ -1,0 +1,15 @@
+meta {
+  name: get dataset summary
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/dataset/summary/3619bb43-2a06-488f-9069-3ee84daded42/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

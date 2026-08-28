@@ -1,0 +1,279 @@
+meta {
+  name: Update Node
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{host}}/agent-playground/graphs/:graph_id/versions/:version_id/nodes/:node_id/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  version_id: {{version_id}}
+  node_id: {{node_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "type": "subgraph",
+    "name": "Summary Pipeline",
+    "ref_graph_version_id": "a6324969-459f-48cd-8e50-fbe30c6ac957",
+    "input_mappings": [
+      {"key": "context", "value": "llm_node_a1.llm_output"},
+      {"key": "question", "value": null}
+    ],
+    "position": {
+      "x": 190,
+      "y": 209
+    }
+  }
+}
+
+vars:pre-request {
+  node_id: a6334969-459f-48cd-8e50-fbe30c6ac957
+  version_id: 8b267ef1-e37e-43ed-89c5-c77d4b4c6535
+  graph_id: 05fed664-761a-4355-ae8e-fa8616cf8861
+}
+
+docs {
+  # Update Node (Partial)
+
+  Partially update a node in a draft version. All fields are optional.
+
+  ## Path Parameters
+  - `graph_id` (required): UUID of the graph
+  - `version_id` (required): UUID of the draft version
+  - `node_id` (required): UUID of the node
+
+  ---
+
+  ## Request Body (all optional)
+
+  | Field | Type | Notes |
+  |-------|------|-------|
+  | `name` | string | Updated display name |
+  | `position` | object | Updated `{"x": number, "y": number}` |
+  | `prompt_template` | object | Updated prompt data (see below) |
+  | `input_mappings` | array | **Subgraph nodes only**. List of mappings with `{"key": "port_name", "value": "NodeName.port_display_name"}` or `{"key": "port_name", "value": null}`. Uses REPLACE strategy: deletes all existing input ports/edges, creates new ones from mapping. See examples below. |
+
+  ### `prompt_template` sub-fields (PromptTemplateDataSerializer)
+
+  | Field | Type | Required | Notes |
+  |-------|------|----------|-------|
+  | `messages` | array | no | `[{"id": "msg-0", "role": "system"\|"user"\|"assistant", "content": [{"type": "text", "text": "..."}]}]` |
+  | `response_format` | string | no | Response format - see detailed examples below |
+  | `response_schema` | object | no | Custom JSON schema (only used with `"json_schema"` format) |
+  | `model` | string | no | Model identifier, e.g. `"gpt-4o"` |
+  | `temperature` | number | no | 0.0–2.0 |
+  | `max_tokens` | integer | no | Max output tokens |
+  | `top_p` | number | no | Nucleus sampling parameter |
+  | `frequency_penalty` | number | no | Frequency penalty |
+  | `presence_penalty` | number | no | Presence penalty |
+  | `output_format` | string | no | Output format hint |
+  | `tools` | array | no | Tool definitions for function calling |
+  | `tool_choice` | string/object | no | Tool selection strategy |
+  | `model_detail` | object | no | Additional model configuration |
+  | `variable_names` | object | no | Map of variable name → metadata array |
+  | `metadata` | object | no | Arbitrary key-value metadata |
+  | `save_prompt_version` | boolean | no | `false` (default) auto-saves as draft; `true` commits the version |
+
+  ---
+
+  ## Response Format Options
+
+  The `response_format` field controls how the LLM structures its output. Four options are available:
+
+  ### 1. Plain Text Response (`"string"`)
+
+  Default format. Returns unstructured text.
+
+  ```json
+  {
+    "prompt_template": {
+      "messages": [
+        {
+          "id": "msg-0",
+          "role": "user",
+          "content": [{"type": "text", "text": "What is the capital of France?"}]
+        }
+      ],
+      "response_format": "string"
+    }
+  }
+  ```
+
+  **Output**: Plain string (e.g., `"The capital of France is Paris."`)
+
+  ### 2. JSON Response (`"json"`)
+
+  Forces LLM to return valid JSON. Parser extracts the JSON object.
+
+  ```json
+  {
+    "prompt_template": {
+      "messages": [
+        {
+          "id": "msg-0",
+          "role": "user",
+          "content": [{"type": "text", "text": "Return a JSON object with city and country for Paris"}]
+        }
+      ],
+      "response_format": "json"
+    }
+  }
+  ```
+
+  **Output**: Parsed JSON object (e.g., `{"city": "Paris", "country": "France"}`)
+
+  **Important**: When using `"json"` format, you **must** include the word "json" or "JSON" in your prompt messages for OpenAI models.
+
+  ### 3. Custom JSON Schema (`"json_schema"`)
+
+  Forces LLM to return JSON matching a specific schema (structured outputs).
+
+  ```json
+  {
+    "prompt_template": {
+      "messages": [
+        {
+          "id": "msg-0",
+          "role": "user",
+          "content": [{"type": "text", "text": "Extract user information"}]
+        }
+      ],
+      "response_format": "json_schema",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "User's full name"
+          },
+          "age": {
+            "type": "integer",
+            "description": "User's age"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "User's email address"
+          }
+        },
+        "required": ["name", "email"],
+        "additionalProperties": false
+      }
+    }
+  }
+  ```
+
+  **Output**: Validated JSON object matching schema (e.g., `{"name": "John Doe", "age": 30, "email": "john@example.com"}`)
+
+  **Schema Requirements**:
+  - Must be a valid JSON Schema (Draft 7)
+  - Use `required` array to enforce mandatory fields
+  - Set `additionalProperties: false` to prevent extra fields
+  - Supported types: `string`, `integer`, `number`, `boolean`, `object`, `array`
+
+  **Model Support**:
+  - ✅ OpenAI GPT-4o, GPT-4o-mini, GPT-4-turbo (2024-08-06+)
+  - ✅ Anthropic Claude 3.5 Sonnet (with tool calling workaround)
+  - ⚠️ Not all models support structured outputs
+
+  ### 4. Saved Schema Reference (UUID string)
+
+  Reference a pre-saved UserResponseSchema by its UUID. This allows reusing schemas across multiple nodes.
+
+  ```json
+  {
+    "prompt_template": {
+      "messages": [
+        {
+          "id": "msg-0",
+          "role": "user",
+          "content": [{"type": "text", "text": "Extract user information"}]
+        }
+      ],
+      "response_format": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    }
+  }
+  ```
+
+  **Output**: Validated JSON object matching the schema stored in the referenced UserResponseSchema
+
+  **Benefits**:
+  - Reuse schemas across multiple nodes and prompts
+  - Centralized schema management
+  - Automatic validation against saved schema
+
+  **Note**: The UUID must reference an existing UserResponseSchema in the database. If the schema is not found, the response will fall back to string format.
+
+  ---
+
+  ## Port Reconciliation
+
+  When `prompt_template.messages` is sent, the backend reconciles ports:
+  - **New `{{variables}}`** → creates input ports
+  - **Removed `{{variables}}`** → soft-deletes input ports + cascade-deletes edges
+  - **Unchanged** → keeps existing ports
+
+  ---
+
+  ## Updating `input_mappings` (Subgraph Nodes Only)
+
+  When you include `input_mappings` in a PATCH request for a subgraph node, the backend uses a **REPLACE strategy**:
+
+  1. **Deletes** all existing input ports (soft-delete)
+  2. **Deletes** all edges connected to those ports (cascade)
+  3. **Creates** new input ports from mapping keys
+  4. **Creates** new edges from mapping values
+
+  ### Example: Update with new mappings
+
+  ```json
+  PATCH /graphs/{graph_id}/versions/{version_id}/nodes/{node_id}/
+  {
+    "input_mappings": [
+      {"key": "context", "value": "NewSource.data"}
+    ]
+  }
+  ```
+
+  **Result**:
+  - All old input ports deleted
+  - All old edges to those ports deleted
+  - New input port `context` created
+  - Edge created: `NewSource.data` → `context` port
+
+  ### Example: Clear all inputs
+
+  ```json
+  {
+    "input_mappings": []
+  }
+  ```
+
+  **Result**: All input ports deleted (valid for output-only subgraphs)
+
+  ### Important Notes
+
+  - If you omit `input_mappings` key entirely, existing ports are **unchanged** (no REPLACE)
+  - Empty array `[]` **deletes all** input ports
+  - Validation: `input_mappings` only allowed for subgraph nodes (atomic nodes return 400)
+
+  ---
+
+  ## Response (200)
+
+  Returns the full updated node object.
+
+  ## Errors
+  - `400`: Version is not DRAFT
+  - `404`: Graph, version, or node not found
+}

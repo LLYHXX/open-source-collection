@@ -1,0 +1,23 @@
+meta {
+  name: delete workspace
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{host}}/accounts/workspaces/{{workspace_id}}/
+  body: none
+  auth: bearer
+}
+
+params:query {
+  workspace_id: "{{workspace_id}}"
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}

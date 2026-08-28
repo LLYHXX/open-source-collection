@@ -1,0 +1,185 @@
+[
+  {
+    "id": "fix_s1_create_straight",
+    "scenario": "S1",
+    "category": "straight",
+    "submission": {
+      "text": "The analytics warehouse runs on PostgreSQL 16, migrated from Redshift in May 2026."
+    },
+    "corpus": [
+      {
+        "id": "mem_elaine",
+        "title": "Elaine Schmidt",
+        "body": "Elaine Schmidt is a backend engineer on the platform team.",
+        "tags": ["person"]
+      },
+      {
+        "id": "mem_standup",
+        "title": "Standup cadence",
+        "body": "The team holds standup at 10:00 CET on weekdays.",
+        "tags": ["process"]
+      }
+    ],
+    "expect": { "action": "create", "decision": "apply" },
+    "notes": "A novel topic unrelated to anything in the corpus → file a fresh memory."
+  },
+  {
+    "id": "fix_s1_create_boundary",
+    "scenario": "S1",
+    "category": "boundary",
+    "submission": {
+      "text": "Acme Corp launched a new payments product line, AcmePay, in June 2026."
+    },
+    "corpus": [
+      {
+        "id": "mem_elaine_job",
+        "title": "Elaine Schmidt — employer",
+        "body": "Elaine Schmidt works at Acme Corp as a backend engineer.",
+        "tags": ["person", "employment"]
+      }
+    ],
+    "expect": { "action": "create", "decision": "apply" },
+    "notes": "Mentions Acme, which the corpus knows only as Elaine's employer. The fact is about the company, not Elaine — a fresh company/topic memory, not an augment of Elaine."
+  },
+  {
+    "id": "fix_s1_noop_boundary",
+    "scenario": "S1",
+    "category": "boundary",
+    "submission": { "text": "Elaine is employed at Acme Corp." },
+    "corpus": [
+      {
+        "id": "mem_elaine_job",
+        "title": "Elaine Schmidt — employer",
+        "body": "Elaine Schmidt works at Acme Corp as a backend engineer.",
+        "tags": ["person", "employment"]
+      }
+    ],
+    "expect": { "action": "noop", "decision": "skip" },
+    "notes": "The submission restates a fact already recorded — nothing new to file."
+  },
+  {
+    "id": "fix_s2_augment_straight",
+    "scenario": "S2",
+    "category": "straight",
+    "submission": {
+      "text": "Elaine Schmidt mentored Sophie Becker through her first on-call rotation."
+    },
+    "corpus": [
+      {
+        "id": "mem_elaine",
+        "title": "Elaine Schmidt",
+        "body": "Elaine Schmidt is a backend engineer on the platform team.",
+        "tags": ["person"]
+      }
+    ],
+    "expect": { "action": "augment", "decision": "apply", "target_id": "mem_elaine" },
+    "notes": "A multi-entity fact about a known entity (Elaine) and a new one (Sophie). File onto the primary known entity; Sophie can be backlinked."
+  },
+  {
+    "id": "fix_s4_supersede_straight",
+    "scenario": "S4",
+    "category": "straight",
+    "submission": {
+      "text": "Elaine Schmidt left Acme Corp and is now a design lead at Globex, as of June 2026."
+    },
+    "corpus": [
+      {
+        "id": "mem_elaine_job",
+        "title": "Elaine Schmidt — employer",
+        "body": "Elaine Schmidt works at Acme Corp as a backend engineer.",
+        "tags": ["person", "employment"]
+      }
+    ],
+    "expect": { "action": "supersede", "decision": "apply", "target_id": "mem_elaine_job" },
+    "notes": "A clear, dated contradiction of the recorded employer → supersede, not a blind augment that would leave both facts active."
+  },
+  {
+    "id": "fix_s4_supersede_boundary",
+    "scenario": "S4",
+    "category": "boundary",
+    "submission": { "text": "Elaine has moved to the Munich office." },
+    "corpus": [
+      {
+        "id": "mem_elaine_location",
+        "title": "Elaine Schmidt — office",
+        "body": "Elaine Schmidt works out of the Berlin office.",
+        "tags": ["person", "location"]
+      }
+    ],
+    "expect": { "action": "supersede", "decision": "propose", "target_id": "mem_elaine_location" },
+    "notes": "A location change clearly replaces the prior office (supersede, not a blind augment that would leave both offices recorded), but with no effective date the timing is uncertain — a proposal rather than a silent auto-apply."
+  },
+  {
+    "id": "fix_s12_ambiguous_boundary",
+    "scenario": "S12",
+    "category": "boundary",
+    "submission": {
+      "text": "Elaine got married last weekend and is taking her partner's surname."
+    },
+    "corpus": [
+      {
+        "id": "mem_elaine_schmidt",
+        "title": "Elaine Schmidt",
+        "body": "Elaine Schmidt is a backend engineer on the platform team.",
+        "tags": ["person"]
+      },
+      {
+        "id": "mem_elaine_kowalski",
+        "title": "Elaine Kowalski",
+        "body": "Elaine Kowalski is a product designer in the Warsaw office.",
+        "tags": ["person"]
+      }
+    ],
+    "expect": {
+      "action": "augment",
+      "decision": "propose",
+      "target_id": "mem_elaine_schmidt",
+      "grade_target": false
+    },
+    "notes": "Two distinct 'Elaine's and no disambiguator. An uncertain merge must not silently pick one — a low-confidence augment routes to a human proposal (D13) instead of clobbering the wrong Elaine. The named target is an arbitrary tiebreak, so it is not graded."
+  },
+  {
+    "id": "fix_s18_no_clobber_straight",
+    "scenario": "S18",
+    "category": "straight",
+    "submission": { "text": "Project Atlas now supports single sign-on via SAML." },
+    "corpus": [
+      {
+        "id": "mem_atlas",
+        "title": "Project Atlas — overview",
+        "body": "Project Atlas is the customer-facing portal.\n\nArchitecture: a Next.js front end backed by the core API.\nOwners: the platform team.\nStatus: in production since March 2026.",
+        "tags": ["project"]
+      }
+    ],
+    "expect": {
+      "action": "augment",
+      "decision": "apply",
+      "target_id": "mem_atlas",
+      "preserves_corpus": true
+    },
+    "notes": "Augmenting a hand-authored doc: the SSO fact is appended, but every existing line of the overview must survive intact (minimal-edit / no-clobber)."
+  },
+  {
+    "id": "fix_s18_supersede_preserve_boundary",
+    "scenario": "S18",
+    "category": "boundary",
+    "submission": {
+      "text": "Project Atlas was re-platformed off Next.js onto SvelteKit in June 2026; everything else about it is unchanged."
+    },
+    "corpus": [
+      {
+        "id": "mem_atlas_stack",
+        "title": "Project Atlas — overview",
+        "body": "Project Atlas is the customer-facing portal.\n\nArchitecture: a Next.js front end backed by the core API.\nOwners: the platform team.\nStatus: in production since March 2026.",
+        "tags": ["project"]
+      }
+    ],
+    "expect": {
+      "action": "supersede",
+      "decision": "propose",
+      "target_id": "mem_atlas_stack",
+      "preserves_corpus": true
+    },
+    "notes": "One architecture line changed, so the doc is replaced (supersede) — but the full rewrite MUST keep every other hand-authored line (owners, status, the portal description). This is the only non-vacuous no_clobber path: a supersede that drops a line is a clobber even though the action is 'right'. Propose, since a rewrite of hand-authored prose warrants review."
+  }
+]

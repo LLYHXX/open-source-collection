@@ -1,0 +1,32 @@
+meta {
+  name: 07 - Error - Unauthenticated Request
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{host}}/usage/workspace-eval-summary/?workspace_id={{workspace_id}}&month=1&year=2024
+  body: none
+  auth: none
+}
+
+params:query {
+  workspace_id: {{workspace_id}}
+  month: 1
+  year: 2024
+}
+
+docs {
+  ## Workspace Evaluation Summary - Unauthenticated Request
+
+  ### Test Scenario
+  - Valid parameters but no authentication token
+  - Tests authentication requirement
+
+  ### Expected Response
+  - Status: 401 Unauthorized or 403 Forbidden
+
+  ### Notes
+  - This endpoint requires authentication via bearer token
+  - Tests the IsAuthenticated permission class
+}

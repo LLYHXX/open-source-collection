@@ -1,0 +1,21 @@
+meta {
+  name: Get dataset properties
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/dataset/properties/?page=1&model_id=6e6b87c3-ff6a-4fda-b79c-0609b0422f1e
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page: 1
+  model_id: 6e6b87c3-ff6a-4fda-b79c-0609b0422f1e
+  ~search_query: train
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

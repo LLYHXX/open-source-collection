@@ -1,0 +1,29 @@
+meta {
+  name: Add New Data Rows
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{host}}/model-hub/develops/311123ae-1b5b-47fd-83a7-5dee5a72fae0/add_rows/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "data": [
+      {
+        "test": "46",
+        "abcd": "FALSE"
+      },
+      {
+        "test": "this is a new prompt"
+      }
+    ]
+  }
+}

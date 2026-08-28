@@ -1,0 +1,41 @@
+meta {
+  name: apply eval group
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/model-hub/eval-groups/apply-eval-group/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~authorization: Bearer {{access_token}}
+  ~content-type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "eval_group_id": "d01f697a-2b3e-463d-b80a-5e370bf10ef3",
+    "filters": {
+      "project_id": "ed175dc4-4c98-43b3-b8b3-48f33ab78ecf",
+      "kb_id": "52cd107d-82fb-4fdc-b068-1d5058cc7986",
+      "model": "turing_large"
+    },
+    "page_id": "EVAL_TASK",
+    "mapping": {
+      "input": "raw.input",
+      "output": "raw.output",
+      "number": "raw.input"
+    }
+  }
+}
+
+settings {
+  encodeUrl: false
+}

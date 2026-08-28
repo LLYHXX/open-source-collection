@@ -1,0 +1,29 @@
+eval_id: 198
+name: latency_check
+description: Validates that response latency is within acceptable bounds. Pass if latency <= max_latency_ms.
+eval_tags:
+- Output Validation
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys: [text]
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  function_params_schema: {max_latency_ms: {type: number, default: null, required: true, minimum: 0}}
+  config_params_desc: {text: "Latency value in milliseconds", max_latency_ms: "Maximum acceptable latency in ms"}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        try:
+            latency = float(str(kwargs.get("text", output or "")).strip())
+        except (ValueError, TypeError):
+            return {"score": 0.0, "reason": "Cannot parse latency value"}
+        mx = kwargs.get("max_latency_ms")
+        if mx is None:
+            return {"score": 0.0, "reason": "max_latency_ms is required"}
+        mx = float(mx)
+        if latency <= mx:
+            return {"score": 1.0, "reason": f"Latency {latency:.1f}ms <= {mx:.1f}ms"}
+        return {"score": 0.0, "reason": f"Latency {latency:.1f}ms > {mx:.1f}ms"}

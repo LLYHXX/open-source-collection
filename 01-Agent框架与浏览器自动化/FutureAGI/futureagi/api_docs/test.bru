@@ -1,0 +1,29 @@
+meta {
+  name: test
+  type: http
+  seq: 11
+}
+
+get {
+  url: http://localhost:8000/saml2_auth/login/
+  body: none
+  auth: bearer
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+  Content-Type: application/json
+  Cookie: {{xsrf_cookie}}
+  Location: http://localhost:8000
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  file: @file(/home/vivek/Downloads/SAML Metadata.xml)
+  identity_type: OKTA
+  is_enabled: True
+  name: localhost:8000
+}

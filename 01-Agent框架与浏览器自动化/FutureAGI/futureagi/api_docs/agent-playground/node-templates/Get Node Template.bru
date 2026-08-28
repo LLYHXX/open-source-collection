@@ -1,0 +1,151 @@
+meta {
+  name: Get Node Template
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/agent-playground/node-templates/:id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  id: {{node_template_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  node_template_id: e9d7c212-4f51-49e0-8e0f-fc9b81a631c8
+}
+
+docs {
+  # Get Node Template Detail
+
+  Get full node template detail including port definitions and config schema.
+
+  ## Path Parameters
+  - `id`: Node Template UUID (e.g., `d523c598-1b0b-48f4-91ce-feab764e3ad4`)
+
+  ## Response
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "d523c598-1b0b-48f4-91ce-feab764e3ad4",
+      "name": "llm_prompt",
+      "display_name": "LLM Prompt",
+      "description": "Run a prompt against an LLM. The prompt and all LLM config live in the node config. Input ports are dynamic — users add ports for each variable referenced in the prompt messages (e.g. {{context}}, {{question}}).",
+      "icon": null,
+      "categories": ["llm", "ai", "prompt"],
+      "input_definition": [],
+      "output_definition": [
+        {
+          "key": "response",
+          "data_schema": {"type": "string", "description": "LLM response text"}
+        }
+      ],
+      "input_mode": "dynamic",
+      "output_mode": "strict",
+      "config_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "required": ["model", "messages"],
+        "additionalProperties": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "description": "LLM model identifier"
+          },
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Prompt messages with optional {{variable}} placeholders",
+            "items": {
+              "type": "object",
+              "required": ["role", "content"],
+              "additionalProperties": false,
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "enum": ["system", "user", "assistant"]
+                },
+                "content": {"type": "string"}
+              }
+            }
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Sampling temperature (0-1)"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum tokens in response"
+          },
+          "top_p": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Nucleus sampling parameter (0-1)"
+          },
+          "frequency_penalty": {
+            "type": "number",
+            "minimum": -2,
+            "maximum": 2,
+            "description": "Frequency penalty (-2 to 2)"
+          },
+          "presence_penalty": {
+            "type": "number",
+            "minimum": -2,
+            "maximum": 2,
+            "description": "Presence penalty (-2 to 2)"
+          }
+        }
+      }
+    }
+  }
+  ```
+
+  ## Port Definitions
+  - `input_definition`: Default input ports for nodes using this template
+  - `output_definition`: Default output ports for nodes using this template
+  - Each port has `key`, `data_schema`, and `required` fields
+
+  ## Port Modes
+  Port modes control which port keys are allowed on nodes using this template. Validation is enforced on publish (status="active").
+  - `strict`: Only template-defined port keys are allowed. No custom ports, no arbitrary keys.
+  - `extensible`: All template-defined port keys MUST be present, plus additional ports with `key="custom"` are allowed.
+  - `dynamic`: All port keys must be `"custom"`. The user defines every port from scratch.
+
+  ## Config Schema
+  JSON Schema defining the configuration options for nodes using this template.
+  When creating/updating nodes, the `config` object must validate against this schema.
+
+  ## Usage
+  When creating an atomic node with the LLM Prompt template:
+  1. Get the template detail to understand config requirements
+  2. Create the node with `node_template_id` set to this template's ID
+  3. Set `config` with required `model` and `messages` fields
+  4. Create **input ports** with `key="custom"` for each `{{variable}}` in your messages (dynamic input mode — all keys must be "custom"). Use `display_name` to label each port (e.g., "question").
+  5. Create **output port** with key "response" (strict output mode)
+
+  ## Example Node Config
+  ```json
+  {
+    "model": "gpt-4",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Answer this: {{question}}"}
+    ],
+    "temperature": 0.7
+  }
+  ```
+  This config requires an input port with `key="custom"` and `display_name="question"` to receive the variable value.
+}

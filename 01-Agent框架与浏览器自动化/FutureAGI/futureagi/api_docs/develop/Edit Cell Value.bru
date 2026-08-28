@@ -1,0 +1,23 @@
+meta {
+  name: Edit Cell Value
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{host}}/model-hub/develops/d4996d4f-d78a-47d6-8b44-760ed6cd8f43/update_cell_value/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "row_id" : "3c72bb7a-e0b9-4ffc-afe1-52a6a8792d48",
+    "column_id" : "084b8c06-31a1-45ef-9230-3685f34044b2",
+    "new_value" : "{\"key\" : \"value\"}"
+  }
+}

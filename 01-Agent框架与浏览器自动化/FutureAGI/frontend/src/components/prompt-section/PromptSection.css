@@ -1,0 +1,88 @@
+.prompt-section-quill.quill-editor-container {
+  background-color: var(--bg-input);
+}
+
+.prompt-section-quill.quill-editor-container .ql-container {
+  border: none;
+  border-radius: 0;
+  font-family: "Inter", sans-serif;
+}
+
+.prompt-section-quill.quill-editor-container .ql-toolbar {
+  display: none;
+}
+
+.prompt-section-quill.quill-editor-container .ql-editor {
+  min-height: 120px;
+  font-size: 14px;
+  padding: 16px;
+}
+
+.prompt-section-quill.quill-editor-container .ql-editor.ql-blank::before {
+  font-style: normal;
+  color: var(--text-placeholder-alpha);
+}
+
+.variable-dropdown {
+  position: absolute; /* Updated to absolute for dynamic positioning */
+  background-color: var(--bg-paper);
+  box-shadow: 0 2px 10px var(--shadow-dropdown);
+  border-radius: 4px;
+  min-width: 150px;
+  z-index: 1000; /* Ensure it's above other elements */
+  display: none; /* Initially hidden */
+}
+
+.dropdown-item {
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.dropdown-item:hover {
+  background-color: var(--bg-input);
+}
+
+.mentions {
+  width: 100%;
+  min-height: 200px;
+  /* padding: 10px; */
+  font-size: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  background-color: var(--bg-paper);
+  outline: none;
+  position: relative;
+  resize: vertical; /* Allow resizing vertically */
+}
+
+.mentions__suggestions__list {
+  position: absolute; /* Change from fixed to absolute for better positioning */
+  top: 100%; /* Place the suggestion box just below the input */
+  left: 0;
+  width: 100%;
+  max-height: 150px; /* Fixed height */
+  overflow-y: auto; /* Scrollable */
+  background-color: var(--bg-paper);
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  box-shadow: 0px 4px 6px var(--shadow-dropdown);
+  z-index: 1000 !important; /* Ensure it appears above other content */
+}
+
+.mentions__suggestions__item {
+  padding: 8px;
+  cursor: pointer;
+  transition: background 0.2s ease-in-out;
+}
+
+.mentions__suggestions__item--focused {
+  background-color: var(--surface-highlight);
+}
+.generate-prompt-btn .btn-wrap {
+  margin: 10px 0 0 10px;
+}
+
+.demo .ql-snow {
+  border: 0;
+}

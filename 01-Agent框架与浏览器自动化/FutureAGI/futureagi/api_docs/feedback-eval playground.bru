@@ -1,0 +1,24 @@
+meta {
+  name: feedback-eval playground
+  type: http
+  seq: 27
+}
+
+post {
+  url: {{host}}/model-hub/eval-playground/feedback/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "log_id": "63d01a5d-00be-4e0c-9efd-b485760f997c",
+    "action_type": "recalculate",
+    "value": "passed",
+    "explanation": "TEST EXPLANATION"
+  }
+}

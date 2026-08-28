@@ -1,0 +1,560 @@
+"""
+Tests for Gateway Configuration additions.
+
+TDD: Tests for ChannelRouteConfig, MultiChannelGatewayConfig,
+and existing GatewayConfig/SessionConfig.
+"""
+
+from praisonaiagents.gateway import GatewayConfig, SessionConfig
+
+
+class TestSessionConfig:
+    """Tests for existing SessionConfig dataclass."""
+
+    def test_session_config_defaults(self):
+        """Test SessionConfig has correct defaults."""
+        config = SessionConfig()
+        assert config.timeout == 3600
+        assert config.max_messages == 1000
+        assert config.persist is True
+        assert config.persist_path is None
+        assert config.metadata == {}
+        assert config.mirror_runtime_state is False  # Issue #1943 - Default off
+
+    def test_session_config_custom(self):
+        """Test SessionConfig with custom values."""
+        config = SessionConfig(
+            timeout=7200,
+            max_messages=500,
+            persist=True,
+            persist_path="/tmp/sessions",
+            metadata={"env": "test"},
+            mirror_runtime_state=True,
+        )
+        assert config.timeout == 7200
+        assert config.max_messages == 500
+        assert config.persist is True
+        assert config.persist_path == "/tmp/sessions"
+        assert config.metadata == {"env": "test"}
+        assert config.mirror_runtime_state is True  # Issue #1943
+
+    def test_session_config_to_dict(self):
+        """Test SessionConfig serialization."""
+        config = SessionConfig(timeout=1800, persist=True, mirror_runtime_state=True)
+        d = config.to_dict()
+        assert d["timeout"] == 1800
+        assert d["persist"] is True
+        assert d["mirror_runtime_state"] is True  # Issue #1943
+        assert "max_messages" in d
+        assert "metadata" in d
+
+
+class TestGatewayConfig:
+    """Tests for existing GatewayConfig dataclass."""
+
+    def test_gateway_config_defaults(self):
+        """Test GatewayConfig has correct defaults."""
+        config = GatewayConfig()
+        assert config.host == "127.0.0.1"
+        assert config.port == 8765
+        assert config.cors_origins == []
+        assert config.auth_token is None
+        assert config.max_connections == 1000
+        assert config.max_sessions_per_agent == 0
+        assert config.heartbeat_interval == 30
+        assert config.reconnect_timeout == 60
+
+    def test_gateway_config_custom(self):
+        """Test GatewayConfig with custom values."""
+        config = GatewayConfig(
+            host="0.0.0.0",
+            port=9000,
+            auth_token="secret",
+            max_connections=500,
+        )
+        assert config.host == "0.0.0.0"
+        assert config.port == 9000
+        assert config.auth_token == "secret"
+        assert config.max_connections == 500
+
+    def test_gateway_config_to_dict_hides_token(self):
+        """Test that to_dict masks the auth token."""
+        config = GatewayConfig(auth_token="my-secret-token")
+        d = config.to_dict()
+        assert d["auth_token"] == "***"
+
+    def test_gateway_config_to_dict_no_token(self):
+        """Test that to_dict shows None when no token."""
+        config = GatewayConfig()
+        d = config.to_dict()
+        assert d["auth_token"] is None
+
+    def test_gateway_config_ws_url(self):
+        """Test WebSocket URL generation."""
+        config = GatewayConfig(host="localhost", port=8080)
+        assert config.ws_url == "ws://localhost:8080"
+
+    def test_gateway_config_http_url(self):
+        """Test HTTP URL generation."""
+        config = GatewayConfig(host="localhost", port=8080)
+        assert config.http_url == "http://localhost:8080"
+
+    def test_gateway_config_is_secure_false(self):
+        """Test is_secure when no SSL configured."""
+        config = GatewayConfig()
+        assert config.is_secure is False
+
+    def test_gateway_config_is_secure_true(self):
+        """Test is_secure when SSL is configured."""
+        config = GatewayConfig(ssl_cert="/path/cert.pem", ssl_key="/path/key.pem")
+        assert config.is_secure is True
+
+    def test_gateway_config_secure_urls(self):
+        """Test secure URL generation."""
+        config = GatewayConfig(
+            host="localhost",
+            port=443,
+            ssl_cert="/path/cert.pem",
+            ssl_key="/path/key.pem",
+        )
+        assert config.ws_url == "wss://localhost:443"
+        assert config.http_url == "https://localhost:443"
+
+    def test_gateway_config_session_config(self):
+        """Test nested SessionConfig."""
+        session_config = SessionConfig(timeout=600)
+        config = GatewayConfig(session_config=session_config)
+        assert config.session_config.timeout == 600
+
+
+class TestChannelRouteConfig:
+    """Tests for ChannelRouteConfig dataclass (added by Agent 3)."""
+
+    def test_import(self):
+        """Test ChannelRouteConfig can be imported."""
+        from praisonaiagents.gateway import ChannelRouteConfig
+        assert ChannelRouteConfig is not None
+
+    def test_creation_defaults(self):
+        """Test ChannelRouteConfig with defaults."""
+        from praisonaiagents.gateway import ChannelRouteConfig
+        config = ChannelRouteConfig(channel_type="telegram")
+        assert config.channel_type == "telegram"
+        assert config.token_env == ""
+        assert config.app_token_env is None
+        assert config.routes == {"default": "default"}
+        assert config.enabled is True
+        assert config.metadata == {}
+
+    def test_creation_custom(self):
+        """Test ChannelRouteConfig with custom values."""
+        from praisonaiagents.gateway import ChannelRouteConfig
+        config = ChannelRouteConfig(
+            channel_type="discord",
+            token_env="DISCORD_BOT_TOKEN",
+            routes={"dm": "personal", "group": "support", "default": "personal"},
+            enabled=True,
+            metadata={"guild_id": "123"},
+        )
+        assert config.channel_type == "discord"
+        assert config.token_env == "DISCORD_BOT_TOKEN"
+        assert config.routes["dm"] == "personal"
+        assert config.routes["group"] == "support"
+
+    def test_get_agent_id_direct(self):
+        """Test get_agent_id with direct match."""
+        from praisonaiagents.gateway import ChannelRouteConfig
+        config = ChannelRouteConfig(
+            channel_type="telegram",
+            routes={"dm": "personal", "group": "support", "default": "fallback"},
+        )
+        assert config.get_agent_id("dm") == "personal"
+        assert config.get_agent_id("group") == "support"
+
+    def test_get_agent_id_fallback(self):
+        """Test get_agent_id falls back to default."""
+        from praisonaiagents.gateway import ChannelRouteConfig
+        config = ChannelRouteConfig(
+            channel_type="telegram",
+            routes={"dm": "personal", "default": "fallback"},
+        )
+        assert config.get_agent_id("group") == "fallback"
+        assert config.get_agent_id("channel") == "fallback"
+
+    def test_get_agent_id_no_default(self):
+        """Test get_agent_id with no default route."""
+        from praisonaiagents.gateway import ChannelRouteConfig
+        config = ChannelRouteConfig(
+            channel_type="telegram",
+            routes={"dm": "personal"},
+        )
+        result = config.get_agent_id("group")
+        assert result == "default"
+
+    def test_get_agent_id_default_context(self):
+        """Test get_agent_id with default context arg."""
+        from praisonaiagents.gateway import ChannelRouteConfig
+        config = ChannelRouteConfig(
+            channel_type="telegram",
+            routes={"default": "main_agent"},
+        )
+        assert config.get_agent_id() == "main_agent"
+
+    def test_to_dict(self):
+        """Test ChannelRouteConfig serialization."""
+        from praisonaiagents.gateway import ChannelRouteConfig
+        config = ChannelRouteConfig(
+            channel_type="slack",
+            token_env="SLACK_TOKEN",
+            routes={"default": "support"},
+        )
+        d = config.to_dict()
+        assert d["channel_type"] == "slack"
+        assert d["token_env"] == "SLACK_TOKEN"
+        assert d["routes"] == {"default": "support"}
+        assert d["enabled"] is True
+
+    def test_disabled_channel(self):
+        """Test disabled channel config."""
+        from praisonaiagents.gateway import ChannelRouteConfig
+        config = ChannelRouteConfig(
+            channel_type="telegram",
+            enabled=False,
+        )
+        assert config.enabled is False
+
+
+class TestMultiChannelGatewayConfig:
+    """Tests for MultiChannelGatewayConfig dataclass (added by Agent 3)."""
+
+    def test_import(self):
+        """Test MultiChannelGatewayConfig can be imported."""
+        from praisonaiagents.gateway import MultiChannelGatewayConfig
+        assert MultiChannelGatewayConfig is not None
+
+    def test_creation_defaults(self):
+        """Test MultiChannelGatewayConfig with defaults."""
+        from praisonaiagents.gateway import MultiChannelGatewayConfig
+        config = MultiChannelGatewayConfig()
+        # Use qualname check to be robust against module reimport identity issues
+        assert type(config.gateway).__qualname__ == "GatewayConfig", (
+            f"Expected GatewayConfig, got {type(config.gateway).__qualname__}"
+        )
+        assert config.agents == {}
+        assert config.channels == {}
+
+    def test_creation_with_agents(self):
+        """Test MultiChannelGatewayConfig with agents."""
+        from praisonaiagents.gateway import MultiChannelGatewayConfig
+        config = MultiChannelGatewayConfig(
+            agents={
+                "personal": {"instructions": "Be helpful", "model": "gpt-4o-mini"},
+                "support": {"instructions": "Customer support", "model": "gpt-4o"},
+            }
+        )
+        assert "personal" in config.agents
+        assert config.agents["personal"]["model"] == "gpt-4o-mini"
+        assert "support" in config.agents
+
+    def test_creation_with_channels(self):
+        """Test MultiChannelGatewayConfig with channels."""
+        from praisonaiagents.gateway import MultiChannelGatewayConfig, ChannelRouteConfig
+        tg = ChannelRouteConfig(
+            channel_type="telegram",
+            token_env="TG_TOKEN",
+            routes={"dm": "personal", "default": "personal"},
+        )
+        config = MultiChannelGatewayConfig(channels={"telegram": tg})
+        assert "telegram" in config.channels
+        assert config.channels["telegram"].channel_type == "telegram"
+
+    def test_from_dict_full(self):
+        """Test from_dict with full YAML-like dictionary."""
+        from praisonaiagents.gateway import MultiChannelGatewayConfig
+        data = {
+            "gateway": {"host": "0.0.0.0", "port": 9000},
+            "agents": {
+                "personal": {"instructions": "Be helpful", "model": "gpt-4o-mini", "memory": True},
+                "support": {"instructions": "Customer support", "model": "gpt-4o"},
+            },
+            "channels": {
+                "telegram": {
+                    "token": "${TELEGRAM_BOT_TOKEN}",
+                    "routes": {"dm": "personal", "group": "support", "default": "personal"},
+                },
+                "discord": {
+                    "token": "${DISCORD_BOT_TOKEN}",
+                    "routes": {"default": "personal"},
+                },
+            },
+        }
+        config = MultiChannelGatewayConfig.from_dict(data)
+        assert config.gateway.port == 9000
+        assert "personal" in config.agents
+        assert "support" in config.agents
+        assert "telegram" in config.channels
+        assert "discord" in config.channels
+
+    def test_from_dict_session_persist_default_and_opt_out(self):
+        """``session_config`` persistence defaults to True; ``persist: false`` opts out (#3593)."""
+        from praisonaiagents.gateway import MultiChannelGatewayConfig
+
+        # Omitted persist defaults to durable-by-default.
+        default_config = MultiChannelGatewayConfig.from_dict(
+            {"gateway": {"session_config": {}}}
+        )
+        assert default_config.gateway.session_config.persist is True
+
+        # Explicit opt-out is preserved.
+        ephemeral_config = MultiChannelGatewayConfig.from_dict(
+            {"gateway": {"session_config": {"persist": False}}}
+        )
+        assert ephemeral_config.gateway.session_config.persist is False
+
+    def test_to_dict(self):
+        """Test MultiChannelGatewayConfig serialization."""
+        from praisonaiagents.gateway import MultiChannelGatewayConfig
+        config = MultiChannelGatewayConfig(
+            agents={"test": {"instructions": "Test agent"}},
+        )
+        d = config.to_dict()
+        assert "gateway" in d
+        assert "agents" in d
+        assert "channels" in d
+
+    def test_stdlib_only(self):
+        """Verify these classes use only stdlib - no external deps."""
+        import sys
+        from praisonaiagents.gateway.config import ChannelRouteConfig, MultiChannelGatewayConfig
+        module = sys.modules["praisonaiagents.gateway.config"]
+        source_file = module.__file__
+        with open(source_file, "r") as f:
+            content = f.read()
+        for dep in ["chromadb", "fastapi", "uvicorn", "pydantic", "litellm"]:
+            assert f"import {dep}" not in content, f"Found heavy dep '{dep}' in config.py"
+
+
+class TestChatCommandInfo:
+    """Tests for ChatCommandInfo dataclass (added by Agent 3)."""
+
+    def test_import(self):
+        """Test ChatCommandInfo can be imported."""
+        from praisonaiagents.bots import ChatCommandInfo
+        assert ChatCommandInfo is not None
+
+    def test_creation_minimal(self):
+        """Test ChatCommandInfo with minimal fields."""
+        from praisonaiagents.bots import ChatCommandInfo
+        cmd = ChatCommandInfo(name="status")
+        assert cmd.name == "status"
+        assert cmd.description == ""
+        assert cmd.hidden is False
+
+    def test_creation_full(self):
+        """Test ChatCommandInfo with all fields."""
+        from praisonaiagents.bots import ChatCommandInfo
+        cmd = ChatCommandInfo(
+            name="help",
+            description="Show available commands",
+            usage="/help",
+            hidden=False,
+        )
+        assert cmd.name == "help"
+        assert cmd.description == "Show available commands"
+        assert cmd.usage == "/help"
+        assert cmd.hidden is False
+
+    def test_hidden_command(self):
+        """Test hidden ChatCommandInfo."""
+        from praisonaiagents.bots import ChatCommandInfo
+        cmd = ChatCommandInfo(name="debug", hidden=True)
+        assert cmd.hidden is True
+
+    def test_stdlib_only(self):
+        """Verify bots/protocols.py uses only stdlib."""
+        import sys
+        from praisonaiagents.bots.protocols import BotProtocol
+        module = sys.modules["praisonaiagents.bots.protocols"]
+        source_file = module.__file__
+        with open(source_file, "r") as f:
+            content = f.read()
+        for dep in ["chromadb", "fastapi", "uvicorn", "litellm"]:
+            assert f"import {dep}" not in content, f"Found heavy dep '{dep}' in protocols.py"
+
+
+class TestClassifyReload:
+    """Tests for the canonical reload-scope classifier (Issue #3440)."""
+
+    def test_hot_appliable_paths_are_hot(self):
+        from praisonaiagents.gateway import ReloadScope, classify_reload
+
+        assert classify_reload("gateway.logging.level") == ReloadScope.HOT
+        assert classify_reload("gateway.drain_timeout") == ReloadScope.HOT
+        assert classify_reload("gateway.reload_drain_timeout") == ReloadScope.HOT
+        # A leaf under a hot key is still hot.
+        assert classify_reload("gateway.logging.level.extra") == ReloadScope.HOT
+
+    def test_channel_scoped_change(self):
+        from praisonaiagents.gateway import ReloadScope, classify_reload
+
+        assert classify_reload("channels.telegram.enabled") == ReloadScope.CHANNEL
+        assert classify_reload("channels.discord.routing.default") == ReloadScope.CHANNEL
+
+    def test_bare_channels_section_is_full_restart(self):
+        from praisonaiagents.gateway import ReloadScope, classify_reload
+
+        assert classify_reload("channels") == ReloadScope.FULL
+
+    def test_channels_with_empty_name_is_full_restart(self):
+        # A malformed path with an empty channel name must not schedule a
+        # restart for channel "" — it falls back to the fail-safe full restart.
+        from praisonaiagents.gateway import ReloadScope, classify_reload
+
+        assert classify_reload("channels.") == ReloadScope.FULL
+        assert classify_reload("channels..enabled") == ReloadScope.FULL
+
+    def test_agent_affecting_changes(self):
+        from praisonaiagents.gateway import ReloadScope, classify_reload
+
+        assert classify_reload("agents") == ReloadScope.AGENTS
+        assert classify_reload("agents.support.instructions") == ReloadScope.AGENTS
+        assert classify_reload("provider") == ReloadScope.AGENTS
+        assert classify_reload("guardrails") == ReloadScope.AGENTS
+
+    def test_unknown_and_structural_are_full_restart(self):
+        from praisonaiagents.gateway import ReloadScope, classify_reload
+
+        assert classify_reload("gateway.some_unknown_knob") == ReloadScope.FULL
+        assert classify_reload("routing") == ReloadScope.FULL
+        assert classify_reload("routes") == ReloadScope.FULL
+        assert classify_reload("scheduler") == ReloadScope.FULL
+        assert classify_reload("totally_unknown") == ReloadScope.FULL
+
+    def test_scope_values_are_plain_strings(self):
+        from praisonaiagents.gateway import ReloadScope
+
+        assert ReloadScope.HOT == "hot"
+        assert ReloadScope.CHANNEL == "channel"
+        assert ReloadScope.AGENTS == "agents"
+        assert ReloadScope.FULL == "full"
+
+
+class TestConfigVersionMigration:
+    """Config version stamp + doctor-driven migration (Issue #3841)."""
+
+    def test_migrate_allowed_users_csv_and_stamp(self):
+        from praisonaiagents.gateway.config import (
+            GATEWAY_CONFIG_VERSION,
+            migrate_config_with_doctor,
+        )
+
+        raw = {"channels": {"telegram": {"token": "x", "allowed_users": "alice,bob"}}}
+        migrated, applied = migrate_config_with_doctor(raw)
+
+        assert migrated["channels"]["telegram"]["allowed_users"] == ["alice", "bob"]
+        assert migrated["channels"]["telegram"]["group_policy"] == "mention_only"
+        assert migrated["config_version"] == GATEWAY_CONFIG_VERSION
+        assert len(applied) == 2
+
+    def test_input_is_not_mutated(self):
+        from praisonaiagents.gateway.config import migrate_config_with_doctor
+
+        raw = {"channels": {"telegram": {"allowed_users": "alice,bob"}}}
+        migrate_config_with_doctor(raw)
+        assert raw["channels"]["telegram"]["allowed_users"] == "alice,bob"
+        assert "config_version" not in raw
+
+    def test_migration_is_idempotent(self):
+        from praisonaiagents.gateway.config import migrate_config_with_doctor
+
+        raw = {"channels": {"telegram": {"allowed_users": "alice,bob"}}}
+        migrated, _ = migrate_config_with_doctor(raw)
+        again, applied2 = migrate_config_with_doctor(migrated)
+        assert applied2 == []
+        assert again["channels"]["telegram"]["allowed_users"] == ["alice", "bob"]
+
+    def test_is_config_current(self):
+        from praisonaiagents.gateway.config import (
+            GATEWAY_CONFIG_VERSION,
+            is_config_current,
+        )
+
+        assert is_config_current({"config_version": GATEWAY_CONFIG_VERSION})
+        assert not is_config_current({})
+        assert not is_config_current({"config_version": 0})
+
+    def test_empty_allowed_users_becomes_empty_list(self):
+        from praisonaiagents.gateway.config import migrate_config_with_doctor
+
+        raw = {"channels": {"telegram": {"allowed_users": ""}}}
+        migrated, _ = migrate_config_with_doctor(raw)
+        assert migrated["channels"]["telegram"]["allowed_users"] == []
+
+    def test_no_channels_still_stamps_version(self):
+        from praisonaiagents.gateway.config import (
+            GATEWAY_CONFIG_VERSION,
+            migrate_config_with_doctor,
+        )
+
+        migrated, applied = migrate_config_with_doctor({"agents": {}})
+        assert migrated["config_version"] == GATEWAY_CONFIG_VERSION
+        assert applied == []
+
+    def test_rules_are_declarative_units(self):
+        from praisonaiagents.gateway.config import (
+            GATEWAY_CONFIG_RULES,
+            LegacyConfigRule,
+        )
+
+        assert GATEWAY_CONFIG_RULES
+        for rule in GATEWAY_CONFIG_RULES:
+            assert isinstance(rule, LegacyConfigRule)
+            assert callable(rule.detect)
+            assert callable(rule.fix)
+            assert isinstance(rule.reason, str) and rule.reason
+
+    def test_newer_version_is_rejected_not_downgraded(self):
+        import pytest
+        from praisonaiagents.gateway.config import (
+            GATEWAY_CONFIG_VERSION,
+            ConfigVersionError,
+            migrate_config_with_doctor,
+        )
+
+        raw = {"config_version": GATEWAY_CONFIG_VERSION + 1, "agents": {}}
+        with pytest.raises(ConfigVersionError):
+            migrate_config_with_doctor(raw)
+        # The input must not have been downgraded/mutated.
+        assert raw["config_version"] == GATEWAY_CONFIG_VERSION + 1
+
+    def test_boolean_config_version_is_rejected(self):
+        import pytest
+        from praisonaiagents.gateway.config import (
+            ConfigVersionError,
+            is_config_current,
+            migrate_config_with_doctor,
+        )
+
+        # True == 1 must NOT be treated as version 1.
+        with pytest.raises(ConfigVersionError):
+            is_config_current({"config_version": True})
+        with pytest.raises(ConfigVersionError):
+            migrate_config_with_doctor({"config_version": True, "agents": {}})
+
+    def test_non_integer_config_version_is_rejected(self):
+        import pytest
+        from praisonaiagents.gateway.config import (
+            ConfigVersionError,
+            migrate_config_with_doctor,
+        )
+
+        for bad in ("1", 1.0, [1]):
+            with pytest.raises(ConfigVersionError):
+                migrate_config_with_doctor({"config_version": bad, "agents": {}})
+
+    def test_config_version_error_exported(self):
+        from praisonaiagents.gateway import ConfigVersionError as Exported
+        from praisonaiagents.gateway.config import ConfigVersionError
+
+        assert Exported is ConfigVersionError
+        assert issubclass(ConfigVersionError, ValueError)

@@ -1,0 +1,17 @@
+# Frontend-only deployment for users running the backend elsewhere.
+# VITE_HOST_API is REQUIRED — the SPA needs to know where to reach backend.
+#
+# Quick start:
+#   VITE_HOST_API=https://api.example.com \
+#     docker compose -f docker-compose.frontend.yml up -d
+#
+# Open http://localhost:3000.
+
+services:
+  frontend:
+    image: futureagi/frontend:${FRONTEND_VERSION:-latest}
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    environment:
+      VITE_HOST_API: ${VITE_HOST_API:?must be set — e.g. https://api.example.com}
+    restart: unless-stopped

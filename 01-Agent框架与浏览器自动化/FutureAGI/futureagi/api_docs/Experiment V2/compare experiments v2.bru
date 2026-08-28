@@ -1,0 +1,40 @@
+meta {
+  name: compare experiments v2
+  type: http
+  seq: 19
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/compare-experiments/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "response_time": 5,
+    "completion_tokens": 5,
+    "total_tokens": 5,
+    "eval_name_here": 5
+  }
+}
+
+docs {
+  ## Compare Experiments V2 (Choose Winner)
+
+  Calculate comparison rankings with weighted metrics across experiment datasets.
+
+  ### Request Body
+  Weights (0-10 scale) for each metric:
+  - `response_time` — Weight for response time
+  - `completion_tokens` — Weight for completion tokens
+  - `total_tokens` — Weight for total tokens
+  - `{eval_name}` — Dynamic weight for each evaluation metric
+
+  ### Response
+  Normalized scores (0-10), rankings per ExperimentDatasetTable, overall winner.
+}

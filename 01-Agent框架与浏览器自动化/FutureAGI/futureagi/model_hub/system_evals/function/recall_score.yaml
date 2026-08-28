@@ -1,0 +1,53 @@
+eval_id: 104
+name: recall_score
+description: 'Recall: Out of all ground-truth relevant chunks, what fraction was retrieved.'
+criteria: Check if the generated recall score is correct. If the generated recall score is not correct then return Failed
+  else return Passed
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - hypothesis
+  - reference
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    hypothesis: Retrieved chunks (array/JSON string).
+    reference: Ground-truth relevant chunks (array/JSON string).
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        import ast
+        def _parse(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return val
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                try:
+                    return ast.literal_eval(val)
+                except (ValueError, SyntaxError):
+                    pass
+                return [val]
+            return list(val)
+        reference = _parse(kwargs.get("reference", expected))
+        hypothesis = _parse(kwargs.get("hypothesis", output))
+        if not reference:
+            return {"score": 0.0, "reason": "Recall requires at least one ground-truth item"}
+        ground_truth_set = set(str(x) for x in reference)
+        retrieved_set = set(str(x) for x in hypothesis)
+        true_positives = len(retrieved_set.intersection(ground_truth_set))
+        score = true_positives / len(ground_truth_set)
+        return {"score": float(score), "reason": f"Recall score: {score:.3f} ({true_positives}/{len(ground_truth_set)} relevant items retrieved)"}

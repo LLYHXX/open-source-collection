@@ -1,0 +1,31 @@
+meta {
+  name: Get graph data
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/tracer/project/get_graph_data/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_id": "ff75f534-91ff-49c0-b88f-d065f3dbcdc6",
+    "filters":[
+        {
+        "column_id":"created_at",
+        "filter_config":{
+          "filter_type": "datetime",
+          "filter_op": "between",
+          "filter_value": ["2025-01-11T00:00:00.000000Z", "2025-01-30T00:00:00.000000Z"]
+        }
+    }],
+    "interval": "week"
+  }
+}

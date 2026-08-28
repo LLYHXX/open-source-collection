@@ -1,0 +1,683 @@
+"""
+Tests for the PluginManager -> HookRunner bridge.
+
+Ensures installed/enabled plugins actually fire during runtime hook execution
+(fixes the disconnect where entry-point plugins were discovered but never run).
+"""
+
+import os
+import time
+
+from praisonaiagents.plugins.plugin import (
+    Plugin,
+    PluginInfo,
+    PluginHook,
+    PluginDecision,
+    GuardrailBlocked,
+)
+from praisonaiagents.plugins.manager import PluginManager, _adapt_plugin_hooks
+from praisonaiagents.hooks.registry import HookRegistry
+from praisonaiagents.hooks.runner import HookRunner
+from praisonaiagents.hooks.types import HookEvent, HookResult
+from praisonaiagents.hooks.events import (
+    AfterLLMInput,
+    AfterToolInput,
+    BeforeToolInput,
+    SessionStartInput,
+    SessionEndInput,
+    OnErrorInput,
+)
+
+
+class PIIPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="pii", hooks=[PluginHook.AFTER_LLM])
+
+    def after_llm(self, response, usage):
+        return response.replace("123-45-6789", "[REDACTED]")
+
+
+class ToolArgPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="toolargs", hooks=[PluginHook.BEFORE_TOOL])
+
+    def before_tool(self, tool_name, args):
+        args = dict(args)
+        args["injected"] = True
+        return args
+
+
+class RedactToolResultPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="redacttool", hooks=[PluginHook.AFTER_TOOL])
+
+    def after_tool(self, tool_name, result):
+        return str(result).replace("sk-SECRET123", "[REDACTED]")
+
+
+class BlockToolResultPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="blocktoolresult", hooks=[PluginHook.AFTER_TOOL])
+
+    def after_tool(self, tool_name, result):
+        if "sk-SECRET123" in str(result):
+            return PluginDecision.block("Secret detected in tool output")
+        return result
+
+
+class RaiseBlockToolResultPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="raiseblocktool", hooks=[PluginHook.AFTER_TOOL])
+
+    def after_tool(self, tool_name, result):
+        if "sk-SECRET123" in str(result):
+            raise GuardrailBlocked("Secret detected in tool output")
+        return result
+
+
+class NoopPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="noop")
+
+
+class ConfigPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="config", hooks=[PluginHook.ON_CONFIG])
+
+    def on_config(self, config):
+        config = dict(config)
+        config["patched"] = True
+        return config
+
+
+class AuthPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="auth", hooks=[PluginHook.ON_AUTH])
+
+    def on_auth(self, auth_type, credentials):
+        creds = dict(credentials)
+        creds["token"] = "resolved"
+        return creds
+
+
+class SessionPlugin(Plugin):
+    def __init__(self):
+        self.events = []
+
+    @property
+    def info(self):
+        return PluginInfo(
+            name="session",
+            hooks=[PluginHook.SESSION_START, PluginHook.SESSION_END],
+        )
+
+    def session_start(self, context):
+        self.events.append(("start", context.get("source")))
+
+    def session_end(self, context):
+        self.events.append(("end", context.get("reason")))
+
+
+class ErrorPlugin(Plugin):
+    def __init__(self):
+        self.errors = []
+
+    @property
+    def info(self):
+        return PluginInfo(name="error", hooks=[PluginHook.ON_ERROR])
+
+    def on_error(self, error_type, error_message, context):
+        self.errors.append((error_type, error_message))
+
+
+def _input(response="SSN is 123-45-6789"):
+    return AfterLLMInput(
+        session_id="s",
+        cwd=os.getcwd(),
+        event_name=HookEvent.AFTER_LLM,
+        timestamp=str(time.time()),
+        agent_name="a",
+        response=response,
+    )
+
+
+class TestBridge:
+    def test_wire_registers_hooks(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(PIIPlugin())
+        assert mgr.wire_into_hook_registry(reg) == 1
+        assert reg.has_hooks(HookEvent.AFTER_LLM)
+
+    def test_after_llm_plugin_fires_and_redacts(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(PIIPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = _input()
+        runner.execute_sync(HookEvent.AFTER_LLM, data)
+        assert data.response == "SSN is [REDACTED]"
+
+    def test_before_tool_plugin_mutates_args(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(ToolArgPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = BeforeToolInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.BEFORE_TOOL,
+            timestamp=str(time.time()), agent_name="a",
+            tool_name="bash", tool_input={"cmd": "ls"},
+        )
+        runner.execute_sync(HookEvent.BEFORE_TOOL, data)
+        assert data.tool_input.get("injected") is True
+
+    def test_after_tool_plugin_redacts_result(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(RedactToolResultPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = AfterToolInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.AFTER_TOOL,
+            timestamp=str(time.time()), agent_name="a",
+            tool_name="fetch", tool_output="token=sk-SECRET123 ok",
+        )
+        runner.execute_sync(HookEvent.AFTER_TOOL, data)
+        assert data.tool_output == "token=[REDACTED] ok"
+        assert "sk-SECRET123" not in data.tool_output
+
+    def test_after_tool_passthrough_leaves_result(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(BlockToolResultPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = AfterToolInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.AFTER_TOOL,
+            timestamp=str(time.time()), agent_name="a",
+            tool_name="fetch", tool_output="clean output",
+        )
+        runner.execute_sync(HookEvent.AFTER_TOOL, data)
+        assert data.tool_output == "clean output"
+
+    def test_after_tool_decision_blocks(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(BlockToolResultPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = AfterToolInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.AFTER_TOOL,
+            timestamp=str(time.time()), agent_name="a",
+            tool_name="fetch", tool_output="token=sk-SECRET123",
+        )
+        results = runner.execute_sync(HookEvent.AFTER_TOOL, data)
+        assert runner.is_blocked(results) is True
+
+    def test_after_tool_guardrail_blocked_raises(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(RaiseBlockToolResultPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = AfterToolInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.AFTER_TOOL,
+            timestamp=str(time.time()), agent_name="a",
+            tool_name="fetch", tool_output="token=sk-SECRET123",
+        )
+        results = runner.execute_sync(HookEvent.AFTER_TOOL, data)
+        assert runner.is_blocked(results) is True
+        assert runner.get_blocking_reason(results) == "Secret detected in tool output"
+
+    def test_agent_execute_tool_redacts_output(self):
+        """End-to-end: an AFTER_TOOL plugin scrubs the value the executor returns."""
+        from praisonaiagents import Agent, tool
+
+        @tool
+        def leak() -> str:
+            """Return a secret token."""
+            return "token=sk-SECRET123 ok"
+
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(RedactToolResultPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        agent = Agent(name="a", role="r", goal="g", tools=[leak], hooks=reg)
+        result = agent.execute_tool("leak", {})
+        print(f"[test_agent_execute_tool_redacts_output] result={result!r}")
+        assert "sk-SECRET123" not in str(result)
+        assert "[REDACTED]" in str(result)
+
+    def test_agent_execute_tool_blocks_output(self):
+        """End-to-end: an AFTER_TOOL block stops secret output reaching the model."""
+        from praisonaiagents import Agent, tool
+
+        @tool
+        def leak() -> str:
+            """Return a secret token."""
+            return "token=sk-SECRET123"
+
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(BlockToolResultPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        agent = Agent(name="a", role="r", goal="g", tools=[leak], hooks=reg)
+        result = agent.execute_tool("leak", {})
+        print(f"[test_agent_execute_tool_blocks_output] result={result!r}")
+        assert "sk-SECRET123" not in str(result)
+
+    def test_disabled_plugin_not_wired(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(PIIPlugin())
+        mgr.disable("pii")
+        assert mgr.wire_into_hook_registry(reg) == 0
+        assert not reg.has_hooks(HookEvent.AFTER_LLM)
+
+    def test_noop_plugin_registers_no_hooks(self):
+        assert list(_adapt_plugin_hooks(NoopPlugin())) == []
+
+    def test_double_wire_idempotent(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(PIIPlugin())
+        assert mgr.wire_into_hook_registry(reg) == 1
+        assert mgr.wire_into_hook_registry(reg) == 0
+
+    def test_disable_after_wire_removes_hooks(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(PIIPlugin())
+        assert mgr.wire_into_hook_registry(reg) == 1
+        assert reg.has_hooks(HookEvent.AFTER_LLM)
+
+        assert mgr.disable("pii") is True
+        assert not reg.has_hooks(HookEvent.AFTER_LLM)
+
+        # Disabled plugin no longer fires
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = _input()
+        runner.execute_sync(HookEvent.AFTER_LLM, data)
+        assert data.response == "SSN is 123-45-6789"
+
+    def test_reenable_after_disable_rewires(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(PIIPlugin())
+        mgr.wire_into_hook_registry(reg)
+        mgr.disable("pii")
+        assert not reg.has_hooks(HookEvent.AFTER_LLM)
+
+        mgr.enable("pii")
+        assert mgr.wire_into_hook_registry(reg) == 1
+        assert reg.has_hooks(HookEvent.AFTER_LLM)
+
+    def test_before_tool_none_tool_input_no_crash(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(ToolArgPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = BeforeToolInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.BEFORE_TOOL,
+            timestamp=str(time.time()), agent_name="a",
+            tool_name="bash", tool_input=None,
+        )
+        runner.execute_sync(HookEvent.BEFORE_TOOL, data)
+
+    def test_on_config_registers_and_patches(self):
+        events = dict(_adapt_plugin_hooks(ConfigPlugin()))
+        assert HookEvent.ON_CONFIG in events
+
+        class _Cfg:
+            def __init__(self):
+                self.config = {"a": 1}
+        data = _Cfg()
+        events[HookEvent.ON_CONFIG](data)
+        assert data.config.get("patched") is True
+
+    def test_on_auth_registers_and_resolves(self):
+        events = dict(_adapt_plugin_hooks(AuthPlugin()))
+        assert HookEvent.ON_AUTH in events
+
+        class _Auth:
+            def __init__(self):
+                self.auth_type = "oauth"
+                self.credentials = {}
+        data = _Auth()
+        events[HookEvent.ON_AUTH](data)
+        assert data.credentials.get("token") == "resolved"
+
+    def test_on_auth_injects_when_credentials_none(self):
+        # First-time auth: no credentials exist yet (credentials is None).
+        events = dict(_adapt_plugin_hooks(AuthPlugin()))
+
+        class _Auth:
+            def __init__(self):
+                self.auth_type = "oauth"
+                self.credentials = None
+        data = _Auth()
+        events[HookEvent.ON_AUTH](data)
+        assert isinstance(data.credentials, dict)
+        assert data.credentials.get("token") == "resolved"
+
+    def test_on_config_patches_when_config_none(self):
+        # Config starts as None and lives in extra; plugin edits still apply.
+        events = dict(_adapt_plugin_hooks(ConfigPlugin()))
+
+        class _Cfg:
+            def __init__(self):
+                self.config = None
+                self.extra = {"a": 1}
+        data = _Cfg()
+        events[HookEvent.ON_CONFIG](data)
+        assert isinstance(data.config, dict)
+        assert data.config.get("patched") is True
+
+    def test_session_start_end_fire(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        plugin = SessionPlugin()
+        mgr.register(plugin)
+        assert mgr.wire_into_hook_registry(reg) == 2
+        assert reg.has_hooks(HookEvent.SESSION_START)
+        assert reg.has_hooks(HookEvent.SESSION_END)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        start = SessionStartInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.SESSION_START,
+            timestamp=str(time.time()), source="startup",
+        )
+        end = SessionEndInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.SESSION_END,
+            timestamp=str(time.time()), reason="exit",
+        )
+        runner.execute_sync(HookEvent.SESSION_START, start)
+        runner.execute_sync(HookEvent.SESSION_END, end)
+        assert ("start", "startup") in plugin.events
+        assert ("end", "exit") in plugin.events
+
+    def test_on_error_fires(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        plugin = ErrorPlugin()
+        mgr.register(plugin)
+        assert mgr.wire_into_hook_registry(reg) == 1
+        assert reg.has_hooks(HookEvent.ON_ERROR)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = OnErrorInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.ON_ERROR,
+            timestamp=str(time.time()), error_type="ValueError",
+            error_message="boom",
+        )
+        runner.execute_sync(HookEvent.ON_ERROR, data)
+        assert ("ValueError", "boom") in plugin.errors
+
+    def test_single_entry_point_group(self):
+        import inspect
+        src = inspect.getsource(PluginManager.discover_entry_points)
+        assert "praisonai.plugins" in src
+        # the old duplicate group must be gone
+        assert "praisonaiagents.plugins" not in src
+
+
+class BlockToolDecisionPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="blocktool", hooks=[PluginHook.BEFORE_TOOL])
+
+    def before_tool(self, tool_name, args):
+        if tool_name == "delete_file":
+            return PluginDecision.block("File deletion not permitted")
+        return args
+
+
+class BlockToolHookResultPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="blocktoolhr", hooks=[PluginHook.BEFORE_TOOL])
+
+    def before_tool(self, tool_name, args):
+        if tool_name == "delete_file":
+            return HookResult.deny("Denied via HookResult")
+        return args
+
+
+class BlockToolRaisePlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="blocktoolraise", hooks=[PluginHook.BEFORE_TOOL])
+
+    def before_tool(self, tool_name, args):
+        if tool_name == "delete_file":
+            raise GuardrailBlocked("Raised block")
+        return args
+
+
+class BlockMessagePlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="blockmsg", hooks=[PluginHook.MESSAGE_RECEIVED])
+
+    def before_message(self, message):
+        if "spam" in message.get("content", ""):
+            return PluginDecision.deny("Spam blocked")
+        return message
+
+
+def _before_tool_input(tool_name="delete_file"):
+    return BeforeToolInput(
+        session_id="s", cwd=os.getcwd(), event_name=HookEvent.BEFORE_TOOL,
+        timestamp=str(time.time()), agent_name="a",
+        tool_name=tool_name, tool_input={"path": "/x"},
+    )
+
+
+class TestDecisionPropagation:
+    def test_before_tool_plugin_decision_blocks(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(BlockToolDecisionPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        results = runner.execute_sync(HookEvent.BEFORE_TOOL, _before_tool_input())
+        assert runner.is_blocked(results) is True
+        assert "deletion" in (runner.get_blocking_reason(results) or "")
+
+    def test_before_tool_hookresult_blocks(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(BlockToolHookResultPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        results = runner.execute_sync(HookEvent.BEFORE_TOOL, _before_tool_input())
+        assert runner.is_blocked(results) is True
+
+    def test_before_tool_guardrail_exception_blocks(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(BlockToolRaisePlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        results = runner.execute_sync(HookEvent.BEFORE_TOOL, _before_tool_input())
+        assert runner.is_blocked(results) is True
+
+    def test_before_tool_allows_other_tools(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(BlockToolDecisionPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        results = runner.execute_sync(
+            HookEvent.BEFORE_TOOL, _before_tool_input("read_file")
+        )
+        assert runner.is_blocked(results) is False
+
+    def test_before_message_decision_blocks(self):
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(BlockMessagePlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+
+        class _Msg:
+            def __init__(self, content):
+                self.content = content
+                self.session_id = "s"
+                self.cwd = os.getcwd()
+                self.event_name = HookEvent.MESSAGE_RECEIVED
+                self.timestamp = str(time.time())
+
+        blocked = runner.execute_sync(HookEvent.MESSAGE_RECEIVED, _Msg("buy spam now"))
+        assert runner.is_blocked(blocked) is True
+
+        ok = runner.execute_sync(HookEvent.MESSAGE_RECEIVED, _Msg("hello"))
+        assert runner.is_blocked(ok) is False
+
+    def test_rewrite_still_works_backward_compatible(self):
+        # A plugin returning a dict keeps rewrite semantics; not blocked.
+        reg = HookRegistry()
+        mgr = PluginManager()
+        mgr.register(ToolArgPlugin())
+        mgr.wire_into_hook_registry(reg)
+
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        data = _before_tool_input("bash")
+        results = runner.execute_sync(HookEvent.BEFORE_TOOL, data)
+        assert runner.is_blocked(results) is False
+        assert data.tool_input.get("injected") is True
+
+
+class BlockToolDefsPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(
+            name="blocktooldefs", hooks=[PluginHook.BEFORE_TOOL_DEFINITIONS]
+        )
+
+    def before_tool_definitions(self, definitions):
+        return PluginDecision.block("Dangerous tool surface not permitted")
+
+
+class BlockLLMPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(name="blockllm", hooks=[PluginHook.BEFORE_LLM])
+
+    def before_llm(self, messages, context):
+        return PluginDecision.deny("LLM request refused by policy")
+
+
+class RewriteToolDefsPlugin(Plugin):
+    @property
+    def info(self):
+        return PluginInfo(
+            name="rewritetooldefs", hooks=[PluginHook.BEFORE_TOOL_DEFINITIONS]
+        )
+
+    def before_tool_definitions(self, definitions):
+        defs = list(definitions)
+        defs.append({"type": "function", "function": {"name": "extra"}})
+        return defs
+
+
+def _runner_with(plugin):
+    reg = HookRegistry()
+    mgr = PluginManager()
+    mgr.register(plugin)
+    mgr.wire_into_hook_registry(reg)
+    return HookRunner(registry=reg, cwd=os.getcwd())
+
+
+def _make_agent_stub(runner):
+    """Concrete ChatMixin subclass carrying only the attributes the
+    ``_apply_before_tool_definitions_hook`` helper reads at runtime."""
+    from praisonaiagents.agent.chat_mixin import ChatMixin
+
+    class _AgentStub(ChatMixin):
+        def __init__(self):
+            self._hook_runner = runner
+            self.name = "a"
+            self._session_id = "s"
+            self.llm = "gpt-test"
+
+    return _AgentStub()
+
+
+class TestCallerEnforcement:
+    """Regression tests: the runtime callers actually HONOUR block decisions
+    on the BEFORE_LLM and BEFORE_TOOL_DEFINITIONS paths (previously fail-open).
+    """
+
+    def test_before_tool_definitions_block_drops_tools(self):
+        agent = _make_agent_stub(_runner_with(BlockToolDefsPlugin()))
+        tools = [{"type": "function", "function": {"name": "dangerous"}}]
+        out = agent._apply_before_tool_definitions_hook(tools)
+        assert out == []
+
+    def test_before_tool_definitions_rewrite_still_adopted(self):
+        agent = _make_agent_stub(_runner_with(RewriteToolDefsPlugin()))
+        tools = [{"type": "function", "function": {"name": "base"}}]
+        out = agent._apply_before_tool_definitions_hook(tools)
+        names = [t["function"]["name"] for t in out]
+        assert "extra" in names
+
+    def test_before_tool_definitions_no_hooks_passthrough(self):
+        reg = HookRegistry()
+        runner = HookRunner(registry=reg, cwd=os.getcwd())
+        agent = _make_agent_stub(runner)
+        tools = [{"type": "function", "function": {"name": "base"}}]
+        out = agent._apply_before_tool_definitions_hook(tools)
+        assert out == tools
+
+    def test_before_tool_definitions_enforces_via_public_api(self):
+        # The blocking hook input surfaces is_blocked through the runner,
+        # proving the caller has the signal it needs to fail closed.
+        from praisonaiagents.hooks.events import BeforeToolDefinitionsInput
+
+        runner = _runner_with(BlockToolDefsPlugin())
+        inp = BeforeToolDefinitionsInput(
+            session_id="s", cwd=os.getcwd(),
+            event_name=HookEvent.BEFORE_TOOL_DEFINITIONS,
+            timestamp=str(time.time()), agent_name="a",
+            tool_definitions=[{"type": "function", "function": {"name": "x"}}],
+        )
+        results = runner.execute_sync(HookEvent.BEFORE_TOOL_DEFINITIONS, inp)
+        assert runner.is_blocked(results) is True
+
+    def test_before_llm_block_signal_available(self):
+        from praisonaiagents.hooks.events import BeforeLLMInput
+
+        runner = _runner_with(BlockLLMPlugin())
+        inp = BeforeLLMInput(
+            session_id="s", cwd=os.getcwd(), event_name=HookEvent.BEFORE_LLM,
+            timestamp=str(time.time()), agent_name="a",
+            messages=[{"role": "user", "content": "hi"}], model="gpt-test",
+        )
+        results = runner.execute_sync(HookEvent.BEFORE_LLM, inp)
+        assert runner.is_blocked(results) is True

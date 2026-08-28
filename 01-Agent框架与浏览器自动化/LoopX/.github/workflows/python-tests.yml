@@ -1,0 +1,132 @@
+name: Python Tests
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/python-tests.yml"
+      - "loopx/**"
+      - "scripts/**"
+      - "tests/**"
+      - "examples/**"
+      - "package.json"
+      - "package-lock.json"
+      - "pyproject.toml"
+      - "tsconfig.control-plane.json"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/python-tests.yml"
+      - "loopx/**"
+      - "scripts/**"
+      - "tests/**"
+      - "examples/**"
+      - "package.json"
+      - "package-lock.json"
+      - "pyproject.toml"
+      - "tsconfig.control-plane.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up the TypeScript Effect runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.6"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -e ".[test]"
+
+      - name: Qualify the TypeScript Effect core
+        run: |
+          npm ci --ignore-scripts
+          npm run typecheck:control-plane
+          npm run test:control-plane
+
+      - name: Lint test suite
+        run: >-
+          python -m ruff check
+          tests
+          loopx/canary
+          loopx/control_plane
+          loopx/domain_packs
+          loopx/presentation
+
+      - name: Type-check kernel contracts
+        run: python -m mypy
+
+      - name: Qualify agent-facing CLI output
+        env:
+          LOOPX_CLI_OUTPUT_BASE_REF: origin/${{ github.event.pull_request.base.ref || 'main' }}
+        run: python examples/control_plane/cli-output-budget-regression-smoke.py
+
+      - name: Run fast tests
+        run: >-
+          python -m pytest -q -n 2
+          --cov=loopx
+          --cov-report=term
+          --cov-fail-under=19.6
+
+  windows-powershell:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up the TypeScript Effect runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.6"
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -e ".[test]"
+
+      - name: Run native Windows lifecycle tests
+        run: >-
+          python -m pytest -q
+          tests/test_command_invocation.py
+          tests/test_doctor_install_freshness.py
+          tests/test_file_lock.py
+          tests/test_file_lock_cross_process.py
+          tests/control_plane/test_coordination_file_provider.py
+          tests/control_plane/test_effect_runtime_integration.py
+          tests/control_plane/test_scheduler_heartbeat_commit_runtime.py
+          tests/test_self_update_runtime_activation.py
+          tests/test_windows_install.py
+
+      - name: Run native scheduler facade tests
+        run: >-
+          node --no-warnings --experimental-strip-types --test
+          tests/control_plane_ts/scheduler_heartbeat_commit.test.ts
+          tests/control_plane_ts/scheduler_heartbeat_commit_cli.test.ts

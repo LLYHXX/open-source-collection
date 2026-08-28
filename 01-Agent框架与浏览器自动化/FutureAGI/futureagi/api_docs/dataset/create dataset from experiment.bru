@@ -1,0 +1,21 @@
+meta {
+  name: create dataset from experiment
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{host}}/model-hub/develops/30cc688a-a095-4ac3-bf3a-1ededd5373ee/create-dataset/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "experimented-dtatset"
+  }
+}

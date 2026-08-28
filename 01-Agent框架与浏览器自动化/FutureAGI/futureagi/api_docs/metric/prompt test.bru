@@ -1,0 +1,21 @@
+meta {
+  name: prompt test
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/custom-metric/test/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "prompt" : "Evaluate whether the tone is positive or negative"
+  }
+}

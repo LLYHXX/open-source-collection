@@ -1,0 +1,19 @@
+meta {
+  name: Retrieve Run Prompt Column Config
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/model-hub/develops/retrieve_run_prompt_column_config/
+  body: none
+  auth: bearer
+}
+
+params:query {
+  column_id: 112ce452-871e-4d6d-a7d3-1d0e36d064ae
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

@@ -1,0 +1,38 @@
+meta {
+  name: 07 - Success - Query Different Months
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{host}}/usage/usage-summary/?month=2&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 2
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Usage Summary - Different Month Query
+
+  ### Test Scenario
+  - Query for a different month (February instead of January)
+  - Tests that API correctly filters by different time periods
+
+  ### Expected Response
+  - Status: 200 OK
+  - Response contains data only for February 2024
+
+  ### Notes
+  - You can test any month from 1-12
+  - Each month should return independent data
+  - Useful for testing month-by-month comparisons
+  - Try queries: month=1,2,3...12 with same year to see monthly trends
+}

@@ -1,0 +1,103 @@
+meta {
+  name: Get Dataset Detail
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/agent-playground/graphs/:graph_id/dataset/?page_number=1&page_size=10&version_id={{version_id}}
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page_number: 1
+  page_size: 10
+  version_id: {{version_id}}
+}
+
+params:path {
+  graph_id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  graph_id: 8da2b6d9-fded-468d-9cff-821cefa1cecf
+  version_id: 0b8b2ded-9988-453d-b4b6-e9dd59a06055
+}
+
+docs {
+  # Get Dataset Detail
+
+  Returns the full dataset linked to a graph, including columns, rows, and cell values.
+  Columns are filtered based on a graph version's exposed (unconnected) input ports.
+
+  ## Path Parameters
+  - `graph_id`: Graph UUID
+
+  ## Query Parameters
+  - `version_id` (optional): UUID of the graph version to filter columns by. When provided, only columns whose names match the exposed input ports of that version are returned (and cells are filtered accordingly). When omitted, the latest version (by version_number) is used.
+  - `page_number` (optional, default: 1): Page number for row pagination
+  - `page_size` (optional, default: 10): Number of rows per page
+
+  ## Response (Success)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "dataset_id": "dataset-uuid",
+      "dataset_name": "My Pipeline Dataset",
+      "columns": [
+        {
+          "id": "column-uuid",
+          "name": "prompt",
+          "data_type": "text"
+        }
+      ],
+      "rows": [
+        {
+          "id": "row-uuid",
+          "order": 1,
+          "cells": [
+            {
+              "id": "cell-uuid",
+              "column_id": "column-uuid",
+              "value": "Hello world"
+            }
+          ]
+        }
+      ],
+      "metadata": {
+        "page_number": 1,
+        "page_size": 10,
+        "total_count": 5
+      }
+    }
+  }
+  ```
+
+  ## Response (Error - Dataset Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Graph dataset not found."
+  }
+  ```
+
+  ## Response (Error - Version Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Version not found."
+  }
+  ```
+
+  ## Notes
+  - A dataset is auto-created when the graph is created
+  - Columns are synced (add-only) with unconnected input ports on every graph change (node/port/connection CRUD) and on version activation
+  - Columns are never deleted — the `version_id` parameter controls which columns are visible for a given version
+  - When switching versions in the UI, pass the target `version_id` to see only the columns relevant to that version
+}

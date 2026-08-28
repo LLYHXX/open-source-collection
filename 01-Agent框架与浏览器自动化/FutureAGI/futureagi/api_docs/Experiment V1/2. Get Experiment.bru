@@ -1,0 +1,40 @@
+meta {
+  name: Get Experiment
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/experiments/?experiment_id={{experimentId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+query {
+  experiment_id: {{experimentId}}
+}
+
+docs {
+  ## Get Single Experiment (V1)
+
+  Used by RunExperiment.jsx to fetch experiment details for edit form.
+  Returns experiment details including prompt_config with logo_url enrichment.
+
+  ### Response
+  ```json
+  {
+    "message": {
+      "name": "Exp1",
+      "dataset_id": "uuid",
+      "prompt_config": [...],
+      "user_eval_template_ids": ["uuid"],
+      "column_id": "uuid"
+    },
+    "status": 200
+  }
+  ```
+}

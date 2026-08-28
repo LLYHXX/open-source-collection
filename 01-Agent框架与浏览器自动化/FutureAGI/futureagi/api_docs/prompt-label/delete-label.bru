@@ -1,0 +1,11 @@
+meta {
+  name: delete-label
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{host}}/model-hub/prompt-labels/{{label_id}}/
+  body: none
+  auth: inherit
+}

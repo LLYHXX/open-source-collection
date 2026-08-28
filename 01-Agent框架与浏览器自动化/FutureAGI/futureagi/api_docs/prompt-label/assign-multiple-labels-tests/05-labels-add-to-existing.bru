@@ -1,0 +1,56 @@
+meta {
+  name: 05 - Labels Add to Existing (Not Replace)
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v2_id}}",
+    "label_ids": [
+      "{{prod_label_id}}",
+      "{{staging_label_id}}"
+    ]
+  }
+}
+
+docs {
+  # Labels Add to Existing - Success Case
+
+  ## Test Scenario
+  Verifies that assigning labels ADDS them to existing labels (doesn't replace).
+
+  ## Prerequisites
+  - `version_v2` already has Development and Custom Label 1
+  - `version_v1` has Production and Staging labels
+
+  ## Expected Behavior
+  - Status: 200 OK
+  - version_v2 now has 4 labels total:
+    - Development (existing)
+    - Custom Label 1 (existing)
+    - Production (new)
+    - Staging (new)
+
+  ## Expected Response
+  ```json
+  {
+    "status": true,
+    "result": "Labels assigned successfully"
+  }
+  ```
+
+  ## Test Coverage
+  - Additive behavior (not replacement)
+  - Existing labels preserved
+}

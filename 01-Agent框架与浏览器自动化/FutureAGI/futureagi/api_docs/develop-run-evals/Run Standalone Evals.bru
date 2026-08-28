@@ -1,0 +1,30 @@
+meta {
+  name: Run Standalone Evals
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{host}}/model-hub/standalone-eval/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "eval_type_ids": [""],
+    "inputs": [
+      {
+        "response": "The quick brown fox jumps over the lazy dog.",
+        "query": "What is the meaning of life?"
+      }
+    ],
+    "config": {
+      "model":"gpt-4o-mini"
+    }
+  }
+}

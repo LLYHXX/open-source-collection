@@ -1,0 +1,23 @@
+meta {
+  name: improve_prompt
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{host}}/model-hub/prompt-templates/improve-prompt/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "existing_prompt": "Write a text using the provided label.\n\nInput:\nLabel: {{label}}\n\nInstructions:\n1. Create a text (sentence, paragraph, or short passage) that incorporates the given label.\n2. Ensure the label is used meaningfully within the text.\n\nOutput:\nProvide your written text that includes the given label.",
+    "improvement_requirements" : "make it more elaborate and add more focus on labels description"
+  }
+
+}

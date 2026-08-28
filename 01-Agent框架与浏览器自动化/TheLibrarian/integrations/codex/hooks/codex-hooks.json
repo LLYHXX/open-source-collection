@@ -1,0 +1,38 @@
+{
+  "//": "The Librarian Codex auto-capture hooks (spec 2026-06-16-harness-auto-capture, Phase 2A). MERGED into ~/.codex/hooks.json by the installer CLI (packages/installer-cli/src/harnesses/codex.ts). The ${LIBRARIAN_CODEX_ROOT} placeholder is rewritten to the absolute install path of this integration; the 'the-librarian-codex' owner marker in each command string makes the merge idempotent (re-install strips owned entries first). Codex requires `codex_hooks = true` under [features] in ~/.codex/config.toml for these to fire. Hook delivery and native rollout JSONL parsing are confirmed against Codex 0.144.3; see scripts/lib/transcript.mjs for the canonical-record and duplicate-filtering rules.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "LIBRARIAN_CODEX_ROOT=\"${LIBRARIAN_CODEX_ROOT}\" node \"${LIBRARIAN_CODEX_ROOT}/scripts/on-stop.mjs\" # the-librarian-codex",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "LIBRARIAN_CODEX_ROOT=\"${LIBRARIAN_CODEX_ROOT}\" node \"${LIBRARIAN_CODEX_ROOT}/scripts/on-stop.mjs\" # the-librarian-codex",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "LIBRARIAN_CODEX_ROOT=\"${LIBRARIAN_CODEX_ROOT}\" node \"${LIBRARIAN_CODEX_ROOT}/scripts/on-stop.mjs\" # the-librarian-codex",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

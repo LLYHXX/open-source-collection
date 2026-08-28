@@ -1,0 +1,56 @@
+meta {
+  name: 01 - E2E - Complete Usage Tracking Workflow
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/usage/usage-summary/?month=1&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 1
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## End-to-End: Complete Usage Tracking Workflow
+
+  ### Test Scenario
+  This represents a complete user workflow for tracking usage:
+
+  1. **Query Organization Summary** (this request)
+     - Get overall organization usage for January 2024
+
+  2. **Query Workspace Breakdown**
+     - Next: Call `/usage/workspace-usage-summary/?month=1&year=2024`
+     - See usage broken down by each workspace
+
+  3. **Query Evaluation Details**
+     - Finally: Call `/usage/workspace-eval-summary/?workspace_id={id}&month=1&year=2024`
+     - See evaluation-level details for a specific workspace
+
+  ### Expected Response
+  - Status: 200 OK
+  - Organization-level aggregated usage data
+
+  ### Workflow Steps
+  Execute these requests in sequence to test the complete flow:
+  ```
+  1. GET /usage/usage-summary/?month=1&year=2024
+  2. GET /usage/workspace-usage-summary/?month=1&year=2024
+  3. GET /usage/workspace-eval-summary/?workspace_id={workspace_id}&month=1&year=2024
+  ```
+
+  ### Notes
+  - This tests the drill-down pattern: Org → Workspace → Evaluation
+  - Each level provides more granular detail
+  - All requests use the same time period for consistency
+  - Data should be consistent across all three levels
+}

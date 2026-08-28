@@ -1,0 +1,19 @@
+meta {
+  name: get dataset summary stats
+  type: http
+  seq: 26
+}
+
+get {
+  url: {{host}}/model-hub/dataset/ef072370-7500-4e93-9c17-2d026e803de5/eval-stats?column_ids=fda9bb59-1283-4e03-b3da-337d7ebdb4fd
+  body: none
+  auth: bearer
+}
+
+params:query {
+  column_ids: fda9bb59-1283-4e03-b3da-337d7ebdb4fd
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

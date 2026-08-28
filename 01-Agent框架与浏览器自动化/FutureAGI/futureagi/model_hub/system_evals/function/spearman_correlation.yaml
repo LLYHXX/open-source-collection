@@ -1,0 +1,48 @@
+eval_id: 181
+name: spearman_correlation
+description: Computes Spearman rank correlation coefficient. Measures monotonic relationship between two sets of values (-1 to 1, normalized to 0-1).
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [output, expected]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    output: Predicted values (JSON array or comma-separated)
+    expected: Actual values (same format)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _p(v):
+            if isinstance(v, list): return [float(x) for x in v]
+            if isinstance(v, str):
+                try:
+                    p = json.loads(v)
+                    if isinstance(p, list): return [float(x) for x in p]
+                except: pass
+                return [float(x.strip()) for x in v.split(",") if x.strip()]
+            return [float(v)]
+        x, y = _p(kwargs.get("output", output)), _p(kwargs.get("expected", expected))
+        n = len(x)
+        if n != len(y) or n < 2: return {"score": 0.0, "reason": "Need >= 2 paired values"}
+        def _rank(vals):
+            idx = sorted(range(n), key=lambda i: vals[i])
+            ranks = [0.0]*n
+            i = 0
+            while i < n:
+                j = i
+                while j < n-1 and vals[idx[j+1]] == vals[idx[i]]: j += 1
+                avg = (i+j)/2.0+1
+                for k in range(i,j+1): ranks[idx[k]] = avg
+                i = j+1
+            return ranks
+        rx, ry = _rank(x), _rank(y)
+        d2 = sum((a-b)**2 for a,b in zip(rx,ry))
+        rho = 1 - 6*d2/(n*(n**2-1))
+        return {"score": float((rho+1)/2), "reason": f"Spearman rho={rho:.4f}"}

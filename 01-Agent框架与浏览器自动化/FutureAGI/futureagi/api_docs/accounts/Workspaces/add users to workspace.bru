@@ -1,0 +1,38 @@
+meta {
+  name: add users to workspace
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{host}}/accounts/workspaces/ed160bc1-c783-4d56-963a-c129549e0c09/members/?workspace_id=ed160bc1-c783-4d56-963a-c129549e0c09
+  body: json
+  auth: bearer
+}
+
+params:query {
+  workspace_id: ed160bc1-c783-4d56-963a-c129549e0c09
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "users": [
+      {
+        "email": "user1@example.com",
+        "role": "WORKSPACE_MEMBER"
+      },
+      {
+        "email": "user2@example.com",
+        "role": "WORKSPACE_ADMIN"
+      }
+    ]
+  }
+}

@@ -1,0 +1,461 @@
+"""
+Unit tests for Bot protocols and components.
+"""
+
+from praisonaiagents.bots import (
+    BotConfig,
+    BotMessage,
+    BotUser,
+    BotChannel,
+    DisplayPolicy,
+    MessageType,
+    resolve_display_policy,
+    format_for_dialect,
+    escape_markdown_v2,
+    markdown_to_slack,
+    strip_markdown,
+)
+
+
+class TestBotConfig:
+    """Tests for BotConfig."""
+    
+    def test_default_config(self):
+        """Test default configuration values."""
+        config = BotConfig()
+        assert config.command_prefix == "/"
+        assert config.mention_required is True
+        assert config.typing_indicator is True
+        assert config.max_message_length == 4096
+    
+    def test_custom_config(self):
+        """Test custom configuration values."""
+        config = BotConfig(
+            token="test-token",
+            command_prefix="!",
+            mention_required=False,
+        )
+        assert config.token == "test-token"
+        assert config.command_prefix == "!"
+        assert config.mention_required is False
+    
+    def test_webhook_mode(self):
+        """Test webhook mode detection."""
+        config = BotConfig()
+        assert config.is_webhook_mode is False
+        
+        config = BotConfig(webhook_url="https://example.com/webhook")
+        assert config.is_webhook_mode is True
+    
+    def test_user_allowed(self):
+        """Test user allowlist."""
+        config = BotConfig()
+        assert config.is_user_allowed("any-user") is True
+        
+        config = BotConfig(allowed_users=["user-1", "user-2"])
+        assert config.is_user_allowed("user-1") is True
+        assert config.is_user_allowed("user-3") is False
+    
+    def test_channel_allowed(self):
+        """Test channel allowlist."""
+        config = BotConfig()
+        assert config.is_channel_allowed("any-channel") is True
+        
+        config = BotConfig(allowed_channels=["channel-1"])
+        assert config.is_channel_allowed("channel-1") is True
+        assert config.is_channel_allowed("channel-2") is False
+    
+    def test_to_dict_hides_token(self):
+        """Test that to_dict hides sensitive data."""
+        config = BotConfig(token="secret-token")
+        data = config.to_dict()
+        assert data["token"] == "***"
+
+
+class TestDisplayPolicy:
+    """Tests for DisplayPolicy and resolve_display_policy."""
+
+    def test_default_policy(self):
+        """Built-in defaults are conservative (everything off)."""
+        policy = DisplayPolicy()
+        assert policy.streaming == "off"
+        assert policy.tool_progress == "off"
+        assert policy.interim_assistant_messages is False
+        assert policy.footer == "off"
+
+    def test_round_trip_dict(self):
+        """to_dict / from_dict round-trips."""
+        policy = DisplayPolicy(streaming="draft", footer="compact")
+        assert DisplayPolicy.from_dict(policy.to_dict()) == policy
+
+    def test_from_dict_ignores_invalid_values(self):
+        """Invalid choices fall back to defaults; unknown keys ignored."""
+        policy = DisplayPolicy.from_dict(
+            {"streaming": "bogus", "footer": "compact", "junk": 1}
+        )
+        assert policy.streaming == "off"
+        assert policy.footer == "compact"
+
+    def test_from_dict_string_booleans(self):
+        """String booleans from YAML/JSON are parsed, not blindly truthy."""
+        assert (
+            DisplayPolicy.from_dict(
+                {"interim_assistant_messages": "false"}
+            ).interim_assistant_messages
+            is False
+        )
+        assert (
+            DisplayPolicy.from_dict(
+                {"interim_assistant_messages": "true"}
+            ).interim_assistant_messages
+            is True
+        )
+        # Non-boolean garbage falls back to the default (False).
+        assert (
+            DisplayPolicy.from_dict(
+                {"interim_assistant_messages": "maybe"}
+            ).interim_assistant_messages
+            is False
+        )
+        # Real booleans pass through unchanged.
+        assert (
+            DisplayPolicy.from_dict(
+                {"interim_assistant_messages": True}
+            ).interim_assistant_messages
+            is True
+        )
+
+    def test_platform_override_case_insensitive(self):
+        """Natural-cased platform keys still match the resolved platform."""
+        config = {"platforms": {"Telegram": {"streaming": "off"}}}
+        policy = resolve_display_policy("telegram", config)
+        assert policy.streaming == "off"  # override applied despite key casing
+
+    def test_tier_defaults_telegram(self):
+        """Edit-capable personal chats stream live by default."""
+        policy = resolve_display_policy("telegram", None)
+        assert policy.streaming == "draft"
+        assert policy.tool_progress == "off"
+
+    def test_tier_defaults_slack(self):
+        """Workspace chats post discrete tool progress by default."""
+        policy = resolve_display_policy("slack", {})
+        assert policy.streaming == "off"
+        assert policy.tool_progress == "inline"
+
+    def test_tier_defaults_email(self):
+        """Batch channels send a single final message."""
+        policy = resolve_display_policy("email", None)
+        assert policy.streaming == "off"
+        assert policy.interim_assistant_messages is False
+
+    def test_unknown_platform_uses_builtin(self):
+        """Unknown platforms fall back to the built-in default."""
+        assert resolve_display_policy("carrier-pigeon", None) == DisplayPolicy()
+
+    def test_global_override_beats_tier(self):
+        """display.<setting> overrides the platform-tier default."""
+        policy = resolve_display_policy("telegram", {"footer": "compact"})
+        assert policy.footer == "compact"
+        assert policy.streaming == "draft"  # tier default preserved
+
+    def test_platform_override_beats_global(self):
+        """Explicit platform override wins over the global default."""
+        config = {
+            "footer": "compact",
+            "platforms": {"telegram": {"streaming": "off", "footer": "off"}},
+        }
+        policy = resolve_display_policy("telegram", config)
+        assert policy.streaming == "off"
+        assert policy.footer == "off"
+
+    def test_full_config_dict_with_display_key(self):
+        """Resolver accepts a full config dict containing a display block."""
+        config = {"display": {"platforms": {"slack": {"footer": "compact"}}}}
+        policy = resolve_display_policy("slack", config)
+        assert policy.footer == "compact"
+        assert policy.tool_progress == "inline"  # tier default preserved
+
+    def test_precedence_full_stack(self):
+        """All four layers resolve in the documented order."""
+        config = {
+            "tool_progress": "off",  # global beats tier (slack tier = inline)
+            "platforms": {"slack": {"streaming": "progress"}},
+        }
+        policy = resolve_display_policy("slack", config)
+        assert policy.streaming == "progress"   # platform override
+        assert policy.tool_progress == "off"    # global override
+
+
+class TestBotUser:
+    """Tests for BotUser."""
+    
+    def test_user_creation(self):
+        """Test user creation."""
+        user = BotUser(
+            user_id="123",
+            username="testuser",
+            display_name="Test User",
+        )
+        assert user.user_id == "123"
+        assert user.username == "testuser"
+        assert user.display_name == "Test User"
+        assert user.is_bot is False
+    
+    def test_bot_user(self):
+        """Test bot user flag."""
+        user = BotUser(user_id="bot-1", is_bot=True)
+        assert user.is_bot is True
+    
+    def test_to_dict(self):
+        """Test user serialization."""
+        user = BotUser(user_id="123", username="test")
+        data = user.to_dict()
+        assert data["user_id"] == "123"
+        assert data["username"] == "test"
+    
+    def test_from_dict(self):
+        """Test user deserialization."""
+        data = {"user_id": "456", "username": "user", "is_bot": True}
+        user = BotUser.from_dict(data)
+        assert user.user_id == "456"
+        assert user.username == "user"
+        assert user.is_bot is True
+
+
+class TestBotChannel:
+    """Tests for BotChannel."""
+    
+    def test_channel_creation(self):
+        """Test channel creation."""
+        channel = BotChannel(
+            channel_id="ch-1",
+            name="general",
+            channel_type="channel",
+        )
+        assert channel.channel_id == "ch-1"
+        assert channel.name == "general"
+        assert channel.channel_type == "channel"
+    
+    def test_dm_channel(self):
+        """Test DM channel type."""
+        channel = BotChannel(channel_id="dm-1", channel_type="dm")
+        assert channel.channel_type == "dm"
+    
+    def test_to_dict(self):
+        """Test channel serialization."""
+        channel = BotChannel(channel_id="123", name="test")
+        data = channel.to_dict()
+        assert data["channel_id"] == "123"
+        assert data["name"] == "test"
+    
+    def test_from_dict(self):
+        """Test channel deserialization."""
+        data = {"channel_id": "789", "name": "chat", "channel_type": "group"}
+        channel = BotChannel.from_dict(data)
+        assert channel.channel_id == "789"
+        assert channel.name == "chat"
+        assert channel.channel_type == "group"
+
+
+class TestBotMessage:
+    """Tests for BotMessage."""
+    
+    def test_message_creation(self):
+        """Test message creation."""
+        msg = BotMessage(
+            content="Hello!",
+            sender=BotUser(user_id="user-1"),
+            channel=BotChannel(channel_id="ch-1"),
+        )
+        assert msg.content == "Hello!"
+        assert msg.message_id is not None
+        assert msg.message_type == MessageType.TEXT
+    
+    def test_text_property(self):
+        """Test text property."""
+        msg = BotMessage(content="Hello")
+        assert msg.text == "Hello"
+        
+        msg = BotMessage(content={"text": "World"})
+        assert msg.text == "World"
+    
+    def test_command_detection(self):
+        """Test command detection."""
+        msg = BotMessage(content="/help")
+        assert msg.is_command is True
+        assert msg.command == "help"
+        
+        msg = BotMessage(content="Hello")
+        assert msg.is_command is False
+        assert msg.command is None
+    
+    def test_command_args(self):
+        """Test command arguments extraction."""
+        msg = BotMessage(content="/search python tutorial")
+        assert msg.command == "search"
+        assert msg.command_args == ["python", "tutorial"]
+        
+        msg = BotMessage(content="/help")
+        assert msg.command_args == []
+    
+    def test_to_dict(self):
+        """Test message serialization."""
+        msg = BotMessage(
+            content="Test",
+            sender=BotUser(user_id="user-1"),
+            channel=BotChannel(channel_id="ch-1"),
+        )
+        data = msg.to_dict()
+        assert data["content"] == "Test"
+        assert data["sender"]["user_id"] == "user-1"
+        assert data["channel"]["channel_id"] == "ch-1"
+    
+    def test_from_dict(self):
+        """Test message deserialization."""
+        data = {
+            "content": "Hello",
+            "message_type": "text",
+            "sender": {"user_id": "u1"},
+            "channel": {"channel_id": "c1"},
+        }
+        msg = BotMessage.from_dict(data)
+        assert msg.content == "Hello"
+        assert msg.sender.user_id == "u1"
+        assert msg.channel.channel_id == "c1"
+
+
+class TestMessageType:
+    """Tests for MessageType enum."""
+    
+    def test_message_types(self):
+        """Test message type values."""
+        assert MessageType.TEXT.value == "text"
+        assert MessageType.IMAGE.value == "image"
+        assert MessageType.COMMAND.value == "command"
+        assert MessageType.REPLY.value == "reply"
+        assert MessageType.EDIT.value == "edit"
+
+
+class TestFormatForDialect:
+    """Tests for markdown dialect conversion (consumes markdown_dialect)."""
+
+    def test_telegram_markdown_v2_escapes_and_sets_mode(self):
+        """Telegram dialect escapes specials and requests MarkdownV2."""
+        text, mode = format_for_dialect(
+            "Deploy `svc_1` (see [runbook](url))",
+            "telegram_markdown_v2",
+        )
+        assert mode == "MarkdownV2"
+        # Bare _ [ ] ( ) ` . that would trigger a 400 are backslash-escaped.
+        assert r"svc\_1" in text
+        assert r"\`" in text
+        assert r"\[runbook\]" in text
+        assert r"\(url\)" in text
+
+    def test_escape_markdown_v2_all_specials(self):
+        """Every reserved MarkdownV2 char is escaped."""
+        for ch in r"_*[]()~`>#+-=|{}.!\\":
+            assert escape_markdown_v2(ch) == "\\" + ch
+
+    def test_slack_dialect_converts_markup(self):
+        """Slack dialect maps bold/link/heading to mrkdwn, no parse_mode."""
+        text, mode = format_for_dialect(
+            "# Title\n**bold** and [label](https://x.io)",
+            "slack",
+        )
+        assert mode is None
+        assert "*bold*" in text
+        assert "<https://x.io|label>" in text
+        assert "*Title*" in text
+        assert "#" not in text
+
+    def test_discord_dialect_passthrough(self):
+        """Discord speaks CommonMark: text passes through untouched."""
+        src = "**bold** and `code`"
+        text, mode = format_for_dialect(src, "discord_markdown")
+        assert text == src
+        assert mode is None
+
+    def test_unknown_dialect_plain_text_fallback(self):
+        """Unknown/plain dialect strips markup to safe plain text."""
+        text, mode = format_for_dialect(
+            "# Heading\n**bold** [label](https://x.io)",
+            "markdown",
+        )
+        assert mode is None
+        assert "**" not in text
+        assert "#" not in text
+        assert "Heading" in text
+        assert "label" in text
+        assert "https://x.io" not in text
+
+    def test_none_and_empty(self):
+        """None and empty inputs are handled safely."""
+        assert format_for_dialect(None, "telegram_markdown_v2") == ("", None)
+        assert format_for_dialect("", "slack") == ("", None)
+
+    def test_strip_markdown_unwraps_links(self):
+        """strip_markdown keeps the label, drops the url and emphasis."""
+        assert strip_markdown("see [docs](https://x.io) now") == "see docs now"
+        assert strip_markdown("**hi** _there_") == "hi there"
+
+    def test_markdown_to_slack_plain_passthrough(self):
+        """Plain text without markup is unchanged for Slack."""
+        assert markdown_to_slack("just plain text") == "just plain text"
+
+    def test_strip_markdown_preserves_literal_delimiters(self):
+        """Lone/literal *_` are NOT deleted (no svc_1 -> svc1 corruption)."""
+        # Identifiers, globs and arithmetic must survive the plain-text fallback.
+        assert strip_markdown("restart svc_1 now") == "restart svc_1 now"
+        assert strip_markdown("match *.py files") == "match *.py files"
+        assert strip_markdown("compute a*b + c") == "compute a*b + c"
+        assert strip_markdown("path a_b_c_d") == "path a_b_c_d"
+
+    def test_strip_markdown_unwraps_code_and_paired(self):
+        """Paired emphasis/code spans are unwrapped, contents kept."""
+        assert strip_markdown("run `deploy` twice") == "run deploy twice"
+        assert strip_markdown("**bold** text") == "bold text"
+
+
+class TestFormatMessageConsumesCapability:
+    """The BasePlatformAdapter default send seam consumes markdown_dialect."""
+
+    def _adapter(self, dialect):
+        from praisonaiagents.bots import (
+            BasePlatformAdapter,
+            PlatformCapabilities,
+            SendResult,
+        )
+
+        class _Adapter(BasePlatformAdapter):
+            capabilities = PlatformCapabilities(markdown_dialect=dialect)
+
+            async def connect(self, *, is_reconnect=False):
+                return True
+
+            async def disconnect(self):
+                return None
+
+            async def send(self, chat_id, content, *, reply_to=None, metadata=None):
+                return SendResult(ok=True, chat_id=chat_id)
+
+            async def get_chat_info(self, chat_id):
+                return {"id": chat_id}
+
+        return _Adapter()
+
+    def test_default_format_message_applies_slack_dialect(self):
+        """A Slack adapter's default format_message yields mrkdwn."""
+        out = self._adapter("slack").format_message("**bold**")
+        assert out == "*bold*"
+
+    def test_default_format_message_escapes_for_telegram(self):
+        """A Telegram adapter escapes specials so replies are never dropped."""
+        out = self._adapter("telegram_markdown_v2").format_message("svc_1.")
+        assert out == r"svc\_1\."
+
+    def test_default_format_message_markdown_is_backward_compatible(self):
+        """Default 'markdown' dialect keeps literals intact (no regression)."""
+        out = self._adapter("markdown").format_message("restart svc_1")
+        assert out == "restart svc_1"

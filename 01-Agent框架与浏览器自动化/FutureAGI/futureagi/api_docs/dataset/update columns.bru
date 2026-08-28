@@ -1,0 +1,47 @@
+meta {
+  name: update columns
+  type: http
+  seq: 6
+}
+
+post {
+  url: http://localhost:8000/model-hub/dataset/column-config/6ea5d672-7d86-404d-b730-0007251f7997/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "columns": [
+      {
+        "label": "Environment",
+        "value": "environment",
+        "enabled": true
+      },
+      {
+        "label": "Version",
+        "value": "version",
+        "enabled": true
+      },
+      {
+        "label": "Volumne",
+        "value": "volume",
+        "enabled": true
+      },
+      {
+        "label": "Start Date",
+        "value": "start_date",
+        "enabled": true
+      },
+      {
+        "label": "End Date",
+        "value": "end_date",
+        "enabled": true
+      }
+    ]
+  }
+}

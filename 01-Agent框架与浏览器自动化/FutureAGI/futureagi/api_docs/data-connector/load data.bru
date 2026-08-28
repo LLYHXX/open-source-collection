@@ -1,0 +1,20 @@
+meta {
+  name: load data
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/data-connector/load-data/
+  body: json
+  auth: bearer
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

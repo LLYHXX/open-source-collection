@@ -1,0 +1,58 @@
+meta {
+  name: List Experiments (Paginated)
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/experiments/data/?dataset_id={{datasetId}}&page=1&limit=10
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+query {
+  dataset_id: {{datasetId}}
+  page: 1
+  limit: 10
+  ~status: Completed
+  ~search:
+  ~ordering: -created_at
+}
+
+docs {
+  ## List Experiments - Paginated (V1)
+
+  Returns paginated list of experiments with counts.
+
+  ### Query Parameters
+  - `dataset_id` — Filter by dataset
+  - `page` — Page number
+  - `limit` — Page size
+  - `status` — Filter by status (optional)
+  - `search` — Search by name or status (optional)
+  - `ordering` — Sort field, default `-created_at` (optional)
+
+  ### Response
+  ```json
+  {
+    "count": 10,
+    "next": "url",
+    "previous": null,
+    "results": [
+      {
+        "id": "uuid",
+        "name": "Exp1",
+        "status": "Completed",
+        "eval_templates_count": 2,
+        "created_at": "2025-01-01T00:00:00Z",
+        "models_count": 3,
+        "dataset": "uuid"
+      }
+    ]
+  }
+  ```
+}

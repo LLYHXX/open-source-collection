@@ -1,0 +1,44 @@
+meta {
+  name: Get Node Detail
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/agent-playground/graphs/:graph_id/versions/:version_id/nodes/:node_id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  version_id: {{version_id}}
+  node_id: {{node_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  graph_id: 05fed664-761a-4355-ae8e-fa8616cf8861
+  version_id: 8b267ef1-e37e-43ed-89c5-c77d4b4c6535
+  node_id: f679c629-2f16-47e5-95a9-071a4b0f28f6
+}
+
+docs {
+  # Get Node Detail
+
+  Retrieve a single node with its ports and prompt template.
+
+  ## Path Parameters
+  - `graph_id` (required): UUID of the graph
+  - `version_id` (required): UUID of the version
+  - `node_id` (required): UUID of the node
+
+  ## Response (200)
+  Returns the full node object with ports, prompt_template, and node_connection fields.
+
+  ## Errors
+  - `404`: Graph, version, or node not found
+}

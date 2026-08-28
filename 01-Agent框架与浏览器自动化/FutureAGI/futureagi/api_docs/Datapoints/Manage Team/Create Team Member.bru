@@ -1,0 +1,15 @@
+meta {
+  name: Create Team Member
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}:{{port}}/accounts/team/users/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

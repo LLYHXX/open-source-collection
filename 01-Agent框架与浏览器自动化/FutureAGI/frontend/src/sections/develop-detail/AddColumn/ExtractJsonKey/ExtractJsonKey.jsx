@@ -1,0 +1,343 @@
+import { Box, Drawer, IconButton, Typography } from "@mui/material";
+import React, { useEffect, useMemo } from "react";
+import { useForm } from "react-hook-form";
+import Iconify from "src/components/iconify";
+import PropTypes from "prop-types";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useParams } from "react-router";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import axios, { endpoints } from "src/utils/axios";
+import { enqueueSnackbar } from "src/components/snackbar";
+import { ExtractJsonKeyValidationSchema } from "./validation";
+import PreviewAddColumn from "../PreviewAddColumn";
+import { LoadingButton } from "@mui/lab";
+import FormTextFieldV2 from "src/components/FormTextField/FormTextFieldV2";
+import { FormSearchSelectFieldControl } from "src/components/FromSearchSelectField";
+import { useExtractJsonKeyStore } from "../../states";
+import { useDevelopDetailContext } from "../../Context/DevelopDetailContext";
+import {
+  useDatasetColumnConfig,
+  useGetJsonColumnSchema,
+} from "src/api/develop/develop-detail";
+import DynamicColumnSkeleton from "../DynamicColumnSkeleton";
+import { ShowComponent } from "../../../../components/show";
+import { isJsonColumn } from "./columnFilterUtils";
+
+const getDefaultValue = () => {
+  return {
+    column_id: "",
+    json_key: "",
+    new_column_name: "",
+    concurrency: "",
+  };
+};
+
+export const ExtractJsonKeyChild = ({
+  initialData,
+  onFormSubmit,
+  onClose,
+  editId,
+}) => {
+  const { refreshGrid } = useDevelopDetailContext();
+
+  const { control, handleSubmit, reset } = useForm({
+    defaultValues: getDefaultValue(),
+    resolver: zodResolver(
+      ExtractJsonKeyValidationSchema(!!onFormSubmit, !!editId),
+    ),
+  });
+
+  const { dataset } = useParams();
+  const allColumns = useDatasetColumnConfig(dataset);
+  // refetchOnMount: "always" ensures the schema is fresh when the drawer opens,
+  // so a newly-created api_call column isn't hidden by a stale cache entry.
+  const { data: jsonSchemas = {} } = useGetJsonColumnSchema(dataset, {
+    refetchOnMount: "always",
+  });
+
+  const columnOptions = useMemo(
+    () =>
+      allColumns
+        ?.filter((column) => isJsonColumn(column, jsonSchemas))
+        ?.map((column) => ({
+          label: column.headerName,
+          value: column.field,
+        })),
+    [allColumns, jsonSchemas],
+  );
+
+  useEffect(() => {
+    if (initialData) {
+      reset(initialData);
+    } else if (!editId) {
+      // Reset to default values when opening for new column (no editId)
+      reset(getDefaultValue());
+    }
+  }, [initialData, reset, editId]);
+
+  const { mutate: addColumn, isPending: isSubmitting } = useMutation({
+    mutationFn: (data) =>
+      axios.post(endpoints.develop.addColumns.extractJsonKey(dataset), data),
+    onSuccess: () => {
+      enqueueSnackbar("Extract JSON column created successfully", {
+        variant: "success",
+      });
+      refreshGrid(null, true);
+      onClose();
+    },
+  });
+
+  // const onSubmit = (formValues) => addColumn(formValues);
+
+  const {
+    data: previewData,
+    isSuccess,
+    mutate: preview,
+    isPending: isPreviewPending,
+  } = useMutation({
+    mutationFn: (data) =>
+      axios.post(
+        endpoints.develop.addColumns.preview(dataset, "extract_json"),
+        data,
+      ),
+    onSuccess: () => {
+      enqueueSnackbar("Preview generated successfully", {
+        variant: "success",
+      });
+    },
+  });
+
+  const { mutate: updateColumn, isPending: isUpdating } = useMutation({
+    mutationFn: (data) =>
+      axios.post(
+        endpoints.develop.addColumns.updateDynamicColumn(editId),
+        data,
+      ),
+    onSuccess: () => {
+      enqueueSnackbar("API Call column updated successfully", {
+        variant: "success",
+      });
+      refreshGrid();
+      onClose();
+    },
+  });
+
+  const onSubmit = (formValues) => {
+    if (editId) {
+      updateColumn({
+        config: formValues,
+        operation_type: "extract_json",
+      });
+      return;
+    }
+    if (onFormSubmit) {
+      onFormSubmit({ ...formValues, type: "extract_json" });
+    } else {
+      addColumn(formValues);
+    }
+  };
+
+  const handlePreview = handleSubmit((formValues) => {
+    if (!onFormSubmit) {
+      preview(formValues);
+    }
+  });
+
+  return (
+    <Box sx={{ display: "flex", height: "100vh" }}>
+      {!onFormSubmit && (
+        <PreviewAddColumn open={isSuccess} previewData={previewData} />
+      )}
+      <Box
+        sx={{
+          padding: "20px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 2,
+          height: "100%",
+          width: "550px",
+        }}
+        component="form"
+        onSubmit={handleSubmit(onSubmit)}
+      >
+        <Box
+          sx={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            mb: 2,
+          }}
+        >
+          <Typography fontWeight={700} color="text.secondary">
+            {editId ? "Edit Extract JSON Key" : "Extract JSON Key"}
+          </Typography>
+          <IconButton
+            onClick={() => {
+              reset();
+              onClose();
+            }}
+            size="small"
+          >
+            <Iconify icon="mingcute:close-line" />
+          </IconButton>
+        </Box>
+        <Box
+          sx={{
+            gap: 2,
+            display: "flex",
+            flexDirection: "column",
+            flex: 1,
+            overflow: "auto",
+            pt: onFormSubmit ? 2 : 1,
+          }}
+        >
+          {!onFormSubmit && !editId && (
+            <FormTextFieldV2
+              label="Name"
+              size="small"
+              placeholder="Enter column name"
+              control={control}
+              fieldName="new_column_name"
+            />
+          )}
+          <FormSearchSelectFieldControl
+            fullWidth
+            label="Column"
+            size="small"
+            control={control}
+            fieldName="column_id"
+            options={columnOptions}
+            noOptions={"No suitable column"}
+          />
+          <FormTextFieldV2
+            label="JSON Key"
+            size="small"
+            control={control}
+            fieldName="json_key"
+            placeholder="Enter JSON Path of the key (to be extracted)"
+          />
+
+          <FormTextFieldV2
+            label="Concurrency"
+            size="small"
+            control={control}
+            placeholder="Enter concurrency"
+            fieldName="concurrency"
+            fieldType="number"
+          />
+        </Box>
+        <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+          {!onFormSubmit && (
+            <LoadingButton
+              loading={isPreviewPending}
+              variant="outlined"
+              fullWidth
+              size="small"
+              onClick={handlePreview}
+            >
+              Test
+            </LoadingButton>
+          )}
+          <LoadingButton
+            loading={isSubmitting || isUpdating}
+            type="submit"
+            variant="contained"
+            color="primary"
+            fullWidth
+            size="small"
+          >
+            {editId
+              ? "Update Column"
+              : onFormSubmit
+                ? "Save"
+                : "Create New Column"}
+          </LoadingButton>
+        </Box>
+      </Box>
+    </Box>
+  );
+};
+
+ExtractJsonKeyChild.propTypes = {
+  initialData: PropTypes.object,
+  onFormSubmit: PropTypes.func,
+  onClose: PropTypes.func,
+  editId: PropTypes.string,
+};
+
+const ExtractJsonKey = ({ initialData, onFormSubmit }) => {
+  // Using individual store
+  const { openExtractJsonKey, setOpenExtractJsonKey } =
+    useExtractJsonKeyStore();
+
+  const onClose = () => {
+    setOpenExtractJsonKey(false);
+  };
+
+  const editId = openExtractJsonKey?.editId;
+
+  const { data: columnConfig, isLoading: isLoadingColumnConfig } = useQuery({
+    queryKey: ["dynamic-column-config", editId],
+    queryFn: () =>
+      axios.get(endpoints.develop.addColumns.getColumnConfig(editId)),
+    enabled: Boolean(editId),
+    select: (data) => data?.data?.result?.metadata,
+  });
+
+  return (
+    <Drawer
+      anchor="right"
+      open={openExtractJsonKey}
+      onClose={onClose}
+      variant="persistent"
+      PaperProps={{
+        sx: {
+          height: "100vh",
+          position: "fixed",
+          zIndex: 2,
+          boxShadow: "-10px 0px 100px #00000035",
+          borderRadius: "10px",
+          backgroundColor: "background.paper",
+        },
+      }}
+      ModalProps={{
+        BackdropProps: {
+          style: { backgroundColor: "transparent" },
+        },
+      }}
+    >
+      {/* Mount the child only while the drawer is open. The drawer is
+          variant="persistent" so it stays in the DOM, which means without
+          this gate the child + its useGetJsonColumnSchema hook would mount
+          once on first open and never refetch — newly-created API call
+          columns would stay invisible until a full page refresh. Gating
+          on openExtractJsonKey forces a fresh mount each open, which makes
+          the existing `refetchOnMount: "always"` on the schema hook actually
+          do its job. */}
+      {openExtractJsonKey && (
+        <>
+          {isLoadingColumnConfig && (
+            <Box sx={{ minWidth: "510px", height: "100%" }}>
+              <DynamicColumnSkeleton />
+            </Box>
+          )}
+          <ShowComponent condition={!isLoadingColumnConfig}>
+            <ExtractJsonKeyChild
+              initialData={columnConfig ?? initialData}
+              onFormSubmit={onFormSubmit}
+              onClose={onClose}
+              editId={editId}
+            />
+          </ShowComponent>
+        </>
+      )}
+    </Drawer>
+  );
+};
+
+ExtractJsonKey.propTypes = {
+  initialData: PropTypes.object,
+  onFormSubmit: PropTypes.func,
+};
+
+export default ExtractJsonKey;

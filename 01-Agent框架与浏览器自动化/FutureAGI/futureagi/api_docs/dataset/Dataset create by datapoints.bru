@@ -1,0 +1,24 @@
+meta {
+  name: Dataset create by datapoints
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/datapoints/create/23e33a4c-36ea-4491-9e06-f4bd7964a639/Corpus-v2
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "selectAll" : false,
+    "selected_datasets" : ["420fb8d0-25c9-4af7-825b-f8791a42f628"],
+    "environment" : "Production",
+    "version" : "V19"
+  }
+}

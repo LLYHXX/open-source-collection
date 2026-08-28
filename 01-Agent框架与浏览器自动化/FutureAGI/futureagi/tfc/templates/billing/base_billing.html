@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en" style="color-scheme: dark;">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark light">
+<title>{% block title %}Future AGI{% endblock %}</title>
+<!--[if mso]>
+<xml><o:OfficeDocumentSettings xmlns:o="urn:schemas-microsoft-com:office:office"><o:AllowPNG/><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml>
+<![endif]-->
+<style>
+  :root { color-scheme: dark; supported-color-schemes: dark light; }
+  body { margin: 0 !important; padding: 0 !important; background-color: #0a0a0a !important; }
+  table { border-collapse: collapse; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+  img { border: 0; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; display: block; }
+  a { color: #fafafa; text-decoration: none; }
+  a.inline { color: #fafafa; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: #3f3f46; }
+
+  /* Starfield canvas — landing-page hero motif */
+  .canvas {
+    background-color: #0a0a0a;
+    background-image: url("https://futureagi.com/images/email/starfield.png");
+    background-repeat: repeat;
+    background-size: 600px 450px;
+    background-position: center top;
+  }
+
+  /* Card */
+  .card {
+    background-color: #0f0f10;
+    border: 1px solid #27272a;
+    border-radius: 14px;
+    box-shadow: 0 0 80px rgba(255, 255, 255, 0.03), inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+
+  /* Corner register marks (landing-page blueprint treatment) */
+  .corner { font-family: 'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size: 10px; color: #52525b; letter-spacing: 0.08em; }
+
+  /* Typography */
+  .hx {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-size: 26px;
+    line-height: 1.2;
+    font-weight: 600;
+    color: #fafafa;
+    letter-spacing: -0.015em;
+    margin: 0 0 16px 0;
+  }
+  .px {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+    color: #c7c7cc;
+    margin: 0 0 16px 0;
+  }
+  .muted { color: #a1a1aa; }
+  .subtle { color: #71717a; font-size: 13px; }
+  .mono { font-family: 'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; }
+
+  /* Eyebrow badge (monochrome) */
+  .eyebrow {
+    display: inline-block;
+    font-family: 'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #a1a1aa;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid #3f3f46;
+    padding: 5px 10px;
+    border-radius: 999px;
+    margin-bottom: 20px;
+  }
+  .eyebrow-dot {
+    display:inline-block; width:5px; height:5px; border-radius:50%;
+    background:#fafafa; margin-right:8px; vertical-align: middle;
+    box-shadow: 0 0 8px rgba(255,255,255,0.7);
+  }
+
+  /* Buttons (pills, monochrome) */
+  .btn, .btn-warn, .btn-danger {
+    display: inline-block;
+    font-family: 'Inter', -apple-system, sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 14px 28px;
+    border-radius: 999px;
+    text-decoration: none;
+    mso-padding-alt: 0;
+    mso-text-raise: 12px;
+  }
+  .btn { background-color: #fafafa; color: #0a0a0a !important; box-shadow: 0 0 30px rgba(255,255,255,0.08); }
+  .btn-warn { background-color: #fafafa; color: #0a0a0a !important; }
+  .btn-danger { background-color: #ef4444; color: #ffffff !important; }
+
+  /* Log panel — monochrome canvas, status conveyed via one colored signal dot.
+     No colored backgrounds, no colored left-rules, no colored body text.
+     Landing-page mission-log aesthetic. */
+  .log {
+    background-color: #0a0a0a;
+    border: 1px solid #27272a;
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin: 22px 0;
+    font-family: 'Inter', -apple-system, sans-serif;
+    color: #c7c7cc;
+  }
+  .log-hdr {
+    font-family: 'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #a1a1aa;
+    margin: 0 0 12px 0;
+  }
+  .log-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    margin-right: 10px;
+    vertical-align: middle;
+    background: #a1a1aa;
+  }
+  .log-dot.error   { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.55); }
+  .log-dot.warn    { background: #f59e0b; box-shadow: 0 0 8px rgba(245,158,11,0.45); }
+  .log-dot.ok      { background: #fafafa; box-shadow: 0 0 8px rgba(255,255,255,0.55); }
+  .log-dot.info    { background: #a1a1aa; }
+  .log-trailer { color: #71717a; font-weight: 500; margin-left: 6px; }
+  .log p { margin: 0; color: #c7c7cc; font-size: 14px; line-height: 1.6; }
+  .log p + p { margin-top: 10px; }
+
+  /* Key/value rows inside a log */
+  .log table td { font-family: 'Inter', sans-serif; font-size: 14px; padding: 6px 0; vertical-align: top; }
+  .log table td:first-child { color: #71717a; font-family: 'JetBrains Mono',monospace; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; padding-right: 20px; }
+  .log table td:last-child { color: #fafafa; font-weight: 500; text-align: right; }
+  .log table td:last-child .val-mono { font-family: 'JetBrains Mono',monospace; }
+  .log table tr + tr td { border-top: 1px solid #1a1a1d; }
+
+  /* Dashed-list inside a log (for "what changed" style items) */
+  .log ul.ticks { margin: 0; padding: 0; list-style: none; }
+  .log ul.ticks li { padding: 6px 0; color: #c7c7cc; font-size: 14px; line-height: 1.5; position: relative; padding-left: 18px; border-top: 1px solid #1a1a1d; }
+  .log ul.ticks li:first-child { border-top: 0; padding-top: 0; }
+  .log ul.ticks li:before { content: "·"; position: absolute; left: 4px; color: #52525b; font-family: 'JetBrains Mono',monospace; }
+
+  /* Credential chip */
+  .chip {
+    display: inline-block;
+    font-family: 'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;
+    font-size: 13px;
+    background: #000000;
+    border: 1px solid #3f3f46;
+    color: #fafafa;
+    padding: 8px 14px;
+    border-radius: 6px;
+    letter-spacing: 0.02em;
+  }
+
+  hr { border: none; border-top: 1px solid #27272a; margin: 28px 0; }
+
+  /* Footer */
+  .footer { font-family: 'Inter', sans-serif; font-size: 12px; color: #71717a; line-height: 1.6; }
+  .footer a { color: #a1a1aa; text-decoration: none; }
+  .footer a:hover { color: #fafafa; }
+
+  /* Mobile */
+  @media only screen and (max-width: 620px) {
+    .container { width: 100% !important; padding: 24px 16px !important; }
+    .card-inner { padding: 28px 22px !important; }
+    .hx { font-size: 22px !important; }
+    .btn, .btn-warn, .btn-danger { padding: 14px 24px !important; font-size: 14px !important; }
+  }
+
+  /* Email client dark mode override */
+  [data-ogsc] body { background-color: #0a0a0a !important; }
+  [data-ogsc] .card { background-color: #0f0f10 !important; }
+</style>
+</head>
+<body style="margin:0; padding:0; background-color:#0a0a0a; color:#fafafa; font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<!-- Preheader (hidden) -->
+<div style="display:none; overflow:hidden; line-height:1px; opacity:0; max-height:0; max-width:0;">{% block preheader %}{% endblock %}</div>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0a0a0a;" bgcolor="#0a0a0a">
+  <!-- HERO with starfield -->
+  <tr>
+    <td align="center" class="canvas" background="https://futureagi.com/images/email/starfield.png" bgcolor="#0a0a0a" style="background-color:#0a0a0a; background-image:url('https://futureagi.com/images/email/starfield.png'); background-repeat:repeat; background-size:600px 450px; padding: 0 16px;">
+      <!--[if mso | IE]>
+      <v:rect xmlns:v="urn:schemas-microsoft-com:vml" fill="true" stroke="false" style="width:600px; mso-width-percent:1000;">
+        <v:fill type="tile" src="https://futureagi.com/images/email/starfield.png" color="#0a0a0a"/>
+        <v:textbox inset="0,0,0,0"><![endif]-->
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" class="container" style="width:600px; max-width:600px;">
+        <!-- mission-control strip -->
+        <tr>
+          <td style="padding: 26px 0 0 0; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; color:#71717a; letter-spacing:0.14em; text-transform:uppercase;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td align="left" style="color:#71717a; font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:0.14em;">FUTURE•AGI / TRANSMISSION</td>
+                <td align="right" style="color:#71717a; font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:0.14em;">{% block txid %}◦ OUTBOUND{% endblock %}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        {% block hero_mascot %}
+        <tr>
+          <td style="padding: 44px 0 52px 0;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td align="left" valign="middle" style="vertical-align: middle;">
+                  <a href="https://futureagi.com" target="_blank" style="text-decoration:none;">
+                    <img src="https://futureagi.com/images/logos/futureagi-logo-email.png" alt="Future AGI" width="180" height="30" style="display:block; width:180px; height:30px; border:0;">
+                  </a>
+                </td>
+                <td align="right" valign="middle" style="vertical-align: middle;">
+                  <img src="https://futureagi.com/images/email/mascot-ship.png" alt="" width="84" height="84" style="display:block; width:84px; height:84px; border:0; opacity:0.9;">
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        {% endblock %}
+      </table>
+      <!--[if mso | IE]></v:textbox></v:rect><![endif]-->
+    </td>
+  </tr>
+
+  <!-- CARD -->
+  <tr>
+    <td align="center" style="background-color:#0a0a0a; padding: 0 16px;" bgcolor="#0a0a0a">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" class="container" style="width:600px; max-width:600px;">
+        <tr>
+          <td class="card" style="background-color:#0f0f10; border:1px solid #27272a; border-radius:14px;">
+            <div class="card-inner" style="padding: 44px 44px 40px 44px;">
+              {% block content %}{% endblock %}
+            </div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- FOOTER -->
+  <tr>
+    <td align="center" style="background-color:#0a0a0a; padding: 36px 16px 56px 16px;" bgcolor="#0a0a0a">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" class="container footer" style="width:600px; max-width:600px;">
+        <!-- Product links row -->
+        <tr>
+          <td align="center" style="padding-bottom: 14px; border-top:1px solid #27272a; padding-top: 26px;">
+            <a href="https://docs.futureagi.com/docs/evaluation" target="_blank" style="display:inline-block; margin: 0 10px; color:#c7c7cc; font-size:12px; text-decoration:none; font-weight:500;">Evaluation</a>
+            <span style="color:#3f3f46;">·</span>
+            <a href="https://docs.futureagi.com/docs/observe" target="_blank" style="display:inline-block; margin: 0 10px; color:#c7c7cc; font-size:12px; text-decoration:none; font-weight:500;">Observability</a>
+            <span style="color:#3f3f46;">·</span>
+            <a href="https://docs.futureagi.com/docs/simulation" target="_blank" style="display:inline-block; margin: 0 10px; color:#c7c7cc; font-size:12px; text-decoration:none; font-weight:500;">Simulation</a>
+            <span style="color:#3f3f46;">·</span>
+            <a href="https://docs.futureagi.com/docs/prism" target="_blank" style="display:inline-block; margin: 0 10px; color:#c7c7cc; font-size:12px; text-decoration:none; font-weight:500;">Control Center</a>
+          </td>
+        </tr>
+        <!-- Social + utility row -->
+        <tr>
+          <td align="center" style="padding: 6px 0 14px 0;">
+            <a href="https://x.com/FutureAGI_" target="_blank" style="display:inline-block; margin: 0 10px; color:#a1a1aa; font-size:12px; text-decoration:none;">X</a>
+            <span style="color:#3f3f46;">·</span>
+            <a href="https://www.linkedin.com/company/futureagi/" target="_blank" style="display:inline-block; margin: 0 10px; color:#a1a1aa; font-size:12px; text-decoration:none;">LinkedIn</a>
+            <span style="color:#3f3f46;">·</span>
+            <a href="https://github.com/future-agi" target="_blank" style="display:inline-block; margin: 0 10px; color:#a1a1aa; font-size:12px; text-decoration:none;">GitHub</a>
+            <span style="color:#3f3f46;">·</span>
+            <a href="https://docs.futureagi.com" target="_blank" style="display:inline-block; margin: 0 10px; color:#a1a1aa; font-size:12px; text-decoration:none;">Docs</a>
+            <span style="color:#3f3f46;">·</span>
+            <a href="{{ base_url|default:'https://app.futureagi.com' }}/dashboard" target="_blank" style="display:inline-block; margin: 0 10px; color:#a1a1aa; font-size:12px; text-decoration:none;">Dashboard</a>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding-top: 14px; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; color:#8a8a92; line-height:1.7; letter-spacing:0.08em;">
+            FUTURE AGI, INC. &nbsp;·&nbsp; 600 CALIFORNIA ST &nbsp;·&nbsp; SAN FRANCISCO, CA 94108
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding-top: 8px; font-family:'Inter',sans-serif; font-size:11px; color:#71717a; line-height:1.6;">
+            © Future AGI &nbsp;·&nbsp; You received this because you have an account on Future AGI.
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

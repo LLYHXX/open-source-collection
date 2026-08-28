@@ -1,0 +1,38 @@
+meta {
+  name: Get Experiment Stats
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/experiments/{{experimentId}}/stats/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  ## Get Experiment Statistics (V1)
+
+  Returns comprehensive statistics for an experiment.
+  Used by ExperimentSummaryView.jsx.
+
+  ### Response
+  ```json
+  {
+    "message": {
+      "metadata": {"isWinnerChosen": false},
+      "columnConfig": [...],
+      "tableData": [...],
+      "result": {}
+    },
+    "status": 200
+  }
+  ```
+
+  Metrics include: prompt tokens, completion tokens, total tokens,
+  response time, evaluation scores per column.
+}

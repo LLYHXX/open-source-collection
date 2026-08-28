@@ -1,0 +1,28 @@
+name: Main PR Source
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  require-dev-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require dev or docs branch
+        # Read through the environment rather than interpolating into the shell;
+        # a branch name is attacker-controlled on a fork PR. Same hardening as
+        # #128 applied on dev.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in
+            dev|docs/*)
+              echo "Source branch '$HEAD_REF' is allowed."
+              ;;
+            *)
+              echo "Pull requests into main must come from 'dev' or a 'docs/*' branch."
+              echo "Got: '$HEAD_REF'"
+              exit 1
+              ;;
+          esac

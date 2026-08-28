@@ -1,0 +1,23 @@
+meta {
+  name: Get_eval_feedback
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/model-hub/get-eval-feedback
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "eval_template_id": "b5dd1eb5-b296-4dac-9ed6-5d1039bc77af",
+    "current_page_index": 0,
+    "page_size": 10
+  }
+}

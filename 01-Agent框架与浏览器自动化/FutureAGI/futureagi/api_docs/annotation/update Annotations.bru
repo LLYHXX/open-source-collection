@@ -1,0 +1,25 @@
+meta {
+  name: update Annotations
+  type: http
+  seq: 13
+}
+
+get {
+  url: http://localhost:8000/model-hub/annotations/?dataset=cae3d486-c18f-4375-b22a-acfb41cdd0ba
+  body: none
+  auth: bearer
+}
+
+params:query {
+  dataset: cae3d486-c18f-4375-b22a-acfb41cdd0ba
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  Cookie: {{xsrf_cookie}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

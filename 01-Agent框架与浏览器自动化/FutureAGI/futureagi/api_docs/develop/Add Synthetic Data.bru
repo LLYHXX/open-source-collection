@@ -1,0 +1,49 @@
+meta {
+  name: Add Synthetic Data
+  type: http
+  seq: 31
+}
+
+post {
+  url: {{host}}/model-hub/develops/84375ffa-e3f6-4aa3-956f-00ffddf2c44d/add_synthetic_data/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "fill_existing_rows": true,
+    "num_rows": 10,
+    "dataset": {
+      "description": "This is a test description",
+      "objective": "Test Objective",
+      "patterns": "Test Patterns for Dataset"
+    },
+    "columns": [{
+      "name": "Column1",
+      "data_type": "text",
+      "description": "Sample Text for dataset",
+      "property": {
+        "values": "dynamic",
+        "min_length": "10 words",
+        "max_length": "50 words"
+        },
+      "skip": false,
+      "is_new": false
+      },
+      {
+      "name": "Column2",
+      "data_type": "text",
+      "description": "Test Values A B C or D",
+      "property": {
+        "values": ["A", "B", "C", "D"]
+      },
+      "skip": true,
+      "is_new": false
+     }]
+  }
+}

@@ -1,0 +1,317 @@
+name: Release Artifacts
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release-artifacts.yml"
+      - "examples/release-artifacts-smoke.py"
+      - "loopx/**"
+      - "package.json"
+      - "package-lock.json"
+      - "pyproject.toml"
+      - "README.md"
+      - "scripts/release_artifacts.py"
+      - "tsconfig.control-plane.json"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing GitHub Release tag containing this release tooling"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-artifacts-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'huangruiteng/loopx'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      release-tag: ${{ steps.identity.outputs.release-tag }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up the packaged TypeScript control-plane runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.6"
+
+      - name: Resolve and validate release identity
+        id: identity
+        env:
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          release_tag="${EVENT_RELEASE_TAG:-${INPUT_RELEASE_TAG:-}}"
+          if [[ -z "${release_tag}" ]]; then
+            release_tag="$(python scripts/release_artifacts.py expected-tag)"
+          fi
+          python scripts/release_artifacts.py validate-tag "${release_tag}"
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          echo "release-tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "RELEASE_TAG=${release_tag}" >> "${GITHUB_ENV}"
+          echo "SOURCE_DATE_EPOCH=${source_date_epoch}" >> "${GITHUB_ENV}"
+          echo "PYTHONHASHSEED=0" >> "${GITHUB_ENV}"
+
+      - name: Install release build tools
+        run: python -m pip install --disable-pip-version-check build==1.4.4 twine==6.2.0
+
+      - name: Build wheel and source distribution
+        run: python -m build --sdist --wheel --outdir dist/packages
+
+      - name: Normalize source distribution metadata
+        run: >-
+          python scripts/release_artifacts.py normalize-sdist
+          --dist-dir dist/packages
+          --source-date-epoch "${SOURCE_DATE_EPOCH}"
+
+      - name: Validate package metadata
+        run: python -m twine check dist/packages/*
+
+      - name: Generate and verify checksums
+        run: |
+          set -euo pipefail
+          python scripts/release_artifacts.py write-checksums \
+            --dist-dir dist/packages \
+            --output dist/SHA256SUMS
+          python scripts/release_artifacts.py verify-checksums \
+            --dist-dir dist/packages \
+            --checksum-file dist/SHA256SUMS
+
+      - name: Verify wheel in a clean environment
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/loopx-wheel"
+          "${RUNNER_TEMP}/loopx-wheel/bin/python" -m pip install \
+            --disable-pip-version-check \
+            --no-deps \
+            dist/packages/*.whl
+          test "$("${RUNNER_TEMP}/loopx-wheel/bin/loopx" --version)" = \
+            "loopx ${RELEASE_TAG#v}"
+          "${RUNNER_TEMP}/loopx-wheel/bin/python" - <<'PY'
+          from loopx.control_plane.effect_program import SettlementIdentity
+          from loopx.control_plane.effect_runtime import (
+              collect_effect_runtime_readiness,
+          )
+          from loopx.control_plane.turn_driver.turn_journal_runtime import (
+              interpret_turn_journal_projection,
+              write_turn_journal,
+          )
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+
+          turn_key = "sha256:" + "a" * 64
+          journal = {
+              "schema_version": "loopx_turn_journal_v0",
+              "goal_id": "fixture-goal",
+              "turn_key": turn_key,
+              "status": "committed",
+              "completed_phases": [
+                  "host_execute",
+                  "typed_result",
+                  "validation",
+                  "durable_writeback",
+                  "quota_spend",
+                  "scheduler_apply",
+                  "scheduler_ack",
+              ],
+              "plan": {
+                  "turn_envelope": {
+                      "goal_id": "fixture-goal",
+                      "agent_id": "fixture-agent",
+                  },
+                  "transaction": {
+                      "turn_key": turn_key,
+                      "settlement_plan": {
+                          "identity": {
+                              "goal_id": "fixture-goal",
+                              "agent_id": "fixture-agent",
+                          }
+                      },
+                  },
+              },
+          }
+          result = interpret_turn_journal_projection(
+              journal,
+              goal_id="fixture-goal",
+              agent_id="fixture-agent",
+              turn_key=turn_key,
+          )
+          assert result["decision"] == "replay_legal", result
+          assert result["effects"] == [], result
+          identity = SettlementIdentity(
+              goal_id="fixture-goal",
+              agent_id="fixture-agent",
+              todo_id="fixture-todo",
+              turn_instance_id="fixture-turn",
+          )
+          assert identity.effect_id == (
+              "fixture-goal:fixture-agent:fixture-todo:fixture-turn"
+          ), identity
+          readiness = collect_effect_runtime_readiness(deep=True)
+          assert readiness["status"] == "ready", readiness
+          assert readiness["semantic_probe"] == "passed", readiness
+          with TemporaryDirectory() as temporary_directory:
+              effect_id = identity.effect_id
+              writable_journal = {
+                  "schema_version": "loopx_turn_journal_v0",
+                  "goal_id": "fixture-goal",
+                  "turn_key": turn_key,
+                  "status": "in_progress",
+                  "completed_phases": ["host_execute"],
+                  "plan": {
+                      "transaction": {
+                          "settlement_plan": {
+                              "identity": {"effect_id": effect_id}
+                          }
+                      }
+                  },
+              }
+              committed = write_turn_journal(
+                  str(Path(temporary_directory) / "turn.json"),
+                  writable_journal,
+                  expected_effect_id=effect_id,
+              )
+              assert committed["appended"] is True, committed
+              assert committed["replayed"] is False, committed
+          PY
+          skills_dir="${RUNNER_TEMP}/loopx-wheel-skills"
+          "${RUNNER_TEMP}/loopx-wheel/bin/loopx" --format json \
+            workflow-skills --install --skills-dir "${skills_dir}" \
+            > "${RUNNER_TEMP}/loopx-workflow-skills-install.json"
+          "${RUNNER_TEMP}/loopx-wheel/bin/python" - \
+            "${RUNNER_TEMP}/loopx-workflow-skills-install.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert payload["ok"] is True, payload
+          assert payload["source"]["kind"] == "python_distribution", payload
+          assert payload["after"]["ready"] is True, payload
+          PY
+          "${RUNNER_TEMP}/loopx-wheel/bin/loopx" --format json \
+            workflow-skills --uninstall --skills-dir "${skills_dir}" \
+            > "${RUNNER_TEMP}/loopx-workflow-skills-uninstall.json"
+          "${RUNNER_TEMP}/loopx-wheel/bin/python" - \
+            "${RUNNER_TEMP}/loopx-workflow-skills-uninstall.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert payload["ok"] is True, payload
+          assert sorted(payload["result"]["removed"]) == [
+              "loopx",
+              "loopx-benchmark",
+              "loopx-doc-registry",
+              "loopx-pr-program",
+              "loopx-pr-review",
+              "loopx-project",
+              "loopx-self-repair",
+          ], payload
+          PY
+
+      - name: Exercise release contract smoke
+        run: python examples/release-artifacts-smoke.py
+
+      - name: Attest release packages and checksum manifest
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/packages/*
+            dist/SHA256SUMS
+
+      - name: Upload validated release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: loopx-${{ steps.identity.outputs.release-tag }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 30
+
+  upload-release:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.release-tag }}
+
+      - name: Download validated release bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: loopx-${{ needs.build.outputs.release-tag }}
+          path: dist
+
+      - name: Verify checksums before upload
+        run: >-
+          python scripts/release_artifacts.py verify-checksums
+          --dist-dir dist/packages
+          --checksum-file dist/SHA256SUMS
+
+      - name: Upload immutable GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
+          gh release upload "${RELEASE_TAG}" \
+            dist/packages/* \
+            dist/SHA256SUMS \
+            --repo "${GITHUB_REPOSITORY}"
+
+  publish-pypi:
+    if: >-
+      github.event_name != 'pull_request' &&
+      vars.PYPI_PUBLISH_ENABLED == 'true'
+    needs:
+      - build
+      - upload-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/loopx/
+    steps:
+      - name: Download validated release bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: loopx-${{ needs.build.outputs.release-tag }}
+          path: dist
+
+      - name: Publish distributions with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/packages

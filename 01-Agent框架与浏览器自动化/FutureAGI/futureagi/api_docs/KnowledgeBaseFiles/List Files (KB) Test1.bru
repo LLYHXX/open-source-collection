@@ -1,0 +1,19 @@
+meta {
+  name: List Files (KB) Test1
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{host}}/model-hub/knowledge-base/files/?kb_id=9e466f05-fd48-4cee-bb7d-78b8c895de01
+  body: none
+  auth: bearer
+}
+
+params:query {
+  kb_id: 9e466f05-fd48-4cee-bb7d-78b8c895de01
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

@@ -1,0 +1,9 @@
+.divider-handle.horizontal:hover {
+  width: 2px !important;
+  background-color: var(--primary-main) !important;
+}
+
+.divider-handle.vertical:hover {
+  height: 2px !important;
+  background-color: var(--primary-main) !important;
+}

@@ -1,0 +1,31 @@
+meta {
+  name: Update Knowledge Base
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{host}}/model-hub/kb/415afb4e-e965-45ae-a8f3-d99b68ee2168/
+  body: json
+  auth: bearer
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "Updated Knowledge Base Name",
+    "chunk_size": 1024
+  }
+}
+
+docs {
+  This request updates an existing knowledge base.
+  Replace {{knowledge_base_id}} with the actual ID of the knowledge base.
+}

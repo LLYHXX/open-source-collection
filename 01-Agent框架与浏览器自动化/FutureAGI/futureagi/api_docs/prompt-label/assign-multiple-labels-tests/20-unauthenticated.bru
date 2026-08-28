@@ -1,0 +1,40 @@
+meta {
+  name: 20 - Unauthenticated Request (Error)
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v1_id}}",
+    "label_ids": ["{{prod_label_id}}"]
+  }
+}
+
+docs {
+  # Unauthenticated Request - Error Case
+
+  ## Test Scenario
+  Send request without authentication token.
+
+  ## Expected Behavior
+  - Status: 401 Unauthorized
+  - Request should be rejected before processing
+
+  ## Expected Response
+  ```json
+  {
+    "detail": "Authentication credentials were not provided."
+  }
+  ```
+
+  ## Test Coverage
+  - Authentication requirement
+  - Unauthorized access prevention
+}

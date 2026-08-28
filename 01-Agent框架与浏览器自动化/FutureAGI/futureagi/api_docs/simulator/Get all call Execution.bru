@@ -1,0 +1,62 @@
+meta {
+  name: Get all call Execution
+  type: http
+  seq: 15
+}
+
+get {
+  url: http://localhost:8000/simulate/run-tests/1f429671-d3bd-4c0f-9cca-36f6d47edfbc/call-executions/?search=new
+  body: none
+  auth: bearer
+}
+
+params:query {
+  search: new
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Get Test Execution Status
+  description: Get the current status of a test execution
+  response: {
+    "run_test_id": "1f429671-d3bd-4c0f-9cca-36f6d47edfbc",
+    "execution_id": "exec-1f429671-d3bd-4c0f-9cca-36f6d47edfbc",
+    "status": "running",
+    "total_scenarios": 3,
+    "total_calls": 25,
+    "completed_calls": 18,
+    "failed_calls": 2,
+    "success_rate": 72.0,
+    "start_time": "2025-01-29T14:30:00Z",
+    "end_time": null,
+    "scenarios": [
+      {
+        "scenario_id": "scenario-1",
+        "scenario_name": "Customer Support Flow",
+        "status": "completed",
+        "total_calls": 10,
+        "completed_calls": 10,
+        "failed_calls": 0
+      },
+      {
+        "scenario_id": "scenario-2",
+        "scenario_name": "Sales Call Dataset",
+        "status": "running",
+        "total_calls": 8,
+        "completed_calls": 5,
+        "failed_calls": 1
+      },
+      {
+        "scenario_id": "scenario-3",
+        "scenario_name": "Technical Support Tickets",
+        "status": "running",
+        "total_calls": 7,
+        "completed_calls": 3,
+        "failed_calls": 1
+      }
+    ]
+  }
+}

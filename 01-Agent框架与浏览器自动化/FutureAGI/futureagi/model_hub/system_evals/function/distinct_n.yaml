@@ -1,0 +1,26 @@
+eval_id: 194
+name: distinct_n
+description: "Computes Distinct-N: ratio of unique n-grams to total n-grams. Measures vocabulary diversity in generated text. Higher = more diverse."
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [text]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  function_params_schema: {n: {type: integer, default: 1, minimum: 1, maximum: 5}}
+  config_params_desc: {text: Text to evaluate for diversity, n: "N-gram order (default 1)"}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        text = str(kwargs.get("text", output or "")).strip().lower()
+        n = int(kwargs.get("n", 1))
+        tokens = text.split()
+        if len(tokens) < n: return {"score": 0.0, "reason": f"Too short for {n}-grams"}
+        ngrams = [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+        score = len(set(ngrams))/len(ngrams) if ngrams else 0.0
+        return {"score": float(score), "reason": f"Distinct-{n}: {score:.4f} ({len(set(ngrams))}/{len(ngrams)})"}

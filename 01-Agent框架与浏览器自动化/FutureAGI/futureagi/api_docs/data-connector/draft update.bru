@@ -1,0 +1,52 @@
+meta {
+  name: draft update
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{host}}/data-connector/draft/:id/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  id: f2ccb3da-476c-4551-9a45-ba0448617cbc
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "knowledge_base_id": "415afb4e-e965-45ae-a8f3-d99b68ee2168",
+    "conn_mappings": {
+      "context" : "fullText"
+    // "conversation_id": "parent",
+    // "timestamp": "last_modified_timestamp",
+    // "prompt": [
+    // {
+    // "type": "text",
+    // "column_name": "name"
+    // },
+    // {
+    // "type": "text",
+    // "column_name": "sex"
+    // }
+    // ],
+    // "response": [
+    // {
+    // "type": "text",
+    // "column_name": "parent"
+    // }
+    // ]
+    },
+    "tags": "orgId,opportunityId,sybillConversationId"
+  }
+}

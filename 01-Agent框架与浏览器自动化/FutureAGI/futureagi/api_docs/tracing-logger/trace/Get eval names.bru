@@ -1,0 +1,20 @@
+meta {
+  name: Get eval names
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{host}}/tracer/trace/get_eval_names/?project_id=ff75f534-91ff-49c0-b88f-d065f3dbcdc6&name=Sum
+  body: none
+  auth: bearer
+}
+
+params:query {
+  project_id: ff75f534-91ff-49c0-b88f-d065f3dbcdc6
+  name: Sum
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

@@ -1,0 +1,25 @@
+meta {
+  name: get dataset options
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/dataset/options/:modelId/?metric_id=44ec3aa9-aa51-4602-9682-bc0b24933e82
+  body: none
+  auth: bearer
+}
+
+params:query {
+  metric_id: 44ec3aa9-aa51-4602-9682-bc0b24933e82
+  ~page: 1
+  ~search_query: train
+}
+
+params:path {
+  modelId: fcd98947-24af-462d-94d2-ca8947fab1c1
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

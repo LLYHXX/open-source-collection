@@ -1,0 +1,41 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}[{{ alert_type }}] {{ alert_name }}{% endblock %}
+{% block preheader %}{{ alert_type }} — {{ alert_name }}{% endblock %}
+{% block txid %}◦ MONITOR / {{ alert_type|upper }}{% endblock %}
+{% block content %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 8px 0;">
+    <tr>
+      <td align="left">
+        <span class="eyebrow" style="display:inline-block; font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; font-weight:500; letter-spacing:0.14em; text-transform:uppercase; color:#fca5a5; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); padding:5px 10px; border-radius:999px;">
+          <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:#ef4444; margin-right:8px; vertical-align:middle; box-shadow:0 0 8px rgba(239,68,68,0.7);"></span>{{ alert_type }} Alert
+        </span>
+      </td>
+      <td align="right">
+        <span style="font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace; font-size:10px; color:#71717a; letter-spacing:0.1em; text-transform:uppercase;">
+          {% if alert_fired_at %}{{ alert_fired_at }}{% else %}{% now "Y-m-d · H:i" %} UTC{% endif %}
+        </span>
+      </td>
+    </tr>
+  </table>
+
+  <h1 class="hx" style="font-family:'Inter',sans-serif; font-size:26px; line-height:1.22; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:16px 0 14px 0;">
+    {{ alert_name }}
+  </h1>
+
+  <div class="log" style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:10px; padding:20px 22px; margin:24px 0 20px 0; font-family:'Inter',sans-serif; color:#c7c7cc;">
+    <p class="log-hdr" style="margin:0 0 12px 0; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+      <span style="display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:10px; vertical-align:middle; background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,0.55);"></span>Alert<span style="color:#71717a; font-weight:500; margin-left:6px;">· Details</span>
+    </p>
+    <p style="margin:0; font-family:'Inter',sans-serif; font-size:14px; line-height:1.6; color:#c7c7cc;">
+      {{ alert_message }}
+    </p>
+  </div>
+
+  <p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:20px 0 16px 0;">
+    Open the monitor in your dashboard to inspect recent traces, adjust thresholds, or silence the alert.
+  </p>
+
+  <div style="margin: 8px 0 0 0;">
+    {% include "billing/_button.html" with url=base_url|add:"/dashboard/alerts" text="Open monitor" variant="primary" %}
+  </div>
+{% endblock %}

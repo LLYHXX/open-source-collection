@@ -1,0 +1,83 @@
+meta {
+  name: create experiment v2 - tts
+  type: http
+  seq: 3
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "TTS Experiment",
+    "dataset_id": "d88474b7-2d2d-48da-a988-0e0b2b26559d",
+    "column_id": "38f5c3ea-1652-4691-be9b-ddca7151f1f5",
+    "experiment_type": "tts",
+    "prompt_config": [
+      {
+        "name": "tts-alloy",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Convert the following text to speech: {{input}}"
+              }
+            ]
+          }
+        ],
+        "model": {
+          "name": "openai/tts-1-hd",
+          "config": {
+            "voice": "alloy"
+          },
+          "display_name": "OpenAI TTS HD - Alloy"
+        },
+        "model_params": {
+          "providers": "openai"
+        },
+        "configuration": {
+          "temperature": 0.5
+        },
+        "output_format": "audio"
+      },
+      {
+        "name": "tts-nova",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Convert the following text to speech: {{input}}"
+              }
+            ]
+          }
+        ],
+        "model": {
+          "name": "openai/tts-1-hd",
+          "config": {
+            "voice": "nova"
+          },
+          "display_name": "OpenAI TTS HD - Nova"
+        },
+        "model_params": {
+          "providers": "openai"
+        },
+        "configuration": {
+          "temperature": 0.5
+        },
+        "output_format": "audio"
+      }
+    ],
+    "user_eval_metrics": []
+  }
+}

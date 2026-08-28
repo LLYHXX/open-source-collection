@@ -1,0 +1,19 @@
+meta {
+  name: search prompt by name
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{host}}/model-hub/prompt-templates/:id
+  body: none
+  auth: bearer
+}
+
+params:path {
+  id: 6d131186-b5fd-4203-a9d9-96813d22983a
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

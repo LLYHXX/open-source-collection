@@ -1,0 +1,21 @@
+meta {
+  name: get annotation labels
+  type: http
+  seq: 6
+}
+
+get {
+  url: http://localhost:8000/model-hub/annotations-labels/?project_id=3274f1e5-803c-4dae-b26f-a37d36f6a068
+  body: none
+  auth: none
+}
+
+params:query {
+  project_id: 3274f1e5-803c-4dae-b26f-a37d36f6a068
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  Cookie: {{xsrf_cookie}}
+}

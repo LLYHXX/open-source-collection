@@ -1,0 +1,165 @@
+import { Box, Typography } from "@mui/material";
+import React from "react";
+import { FormSelectField } from "src/components/FormSelectField";
+import HelperText from "../../Common/HelperText";
+import SecretSelect from "src/sections/common/SecretSelect/SecretSelect";
+import { RetrievalFormItemWrapper } from "./RetrievalComponents";
+import EmbeddingConfigField from "./EmbeddingConfigField";
+import PropTypes from "prop-types";
+import HeadingAndSubHeading from "src/components/HeadingAndSubheading/HeadingAndSubheading";
+import { FormSearchSelectFieldControl } from "src/components/FromSearchSelectField";
+import FormTextFieldV2 from "src/components/FormTextField/FormTextFieldV2";
+
+const WeivateForm = ({ control, allColumns }) => {
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <HeadingAndSubHeading
+        heading={
+          <FormSearchSelectFieldControl
+            fullWidth
+            label="Column"
+            size="small"
+            control={control}
+            fieldName="columnId"
+            options={allColumns?.map((column) => ({
+              label: column.headerName,
+              value: column.field,
+            }))}
+          />
+        }
+        subHeading={
+          <Typography typography={"s2"} color={"text.primary"}>
+            Query to send to the vector database
+          </Typography>
+        }
+      />
+      <SecretSelect
+        label="Weaviate Api Key"
+        control={control}
+        fieldName="apiKey"
+        fullWidth
+        helperText={
+          <HelperText text="API Key for authenticating with Weaviate" />
+        }
+        size="small"
+      />
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: "column",
+          border: "2px solid",
+          borderColor: "background.neutral",
+          borderRadius: "8px",
+          "& > *:last-child": {
+            borderBottom: "none",
+          },
+        }}
+      >
+        <RetrievalFormItemWrapper>
+          <FormTextFieldV2
+            label="Weaviate Cluster Url"
+            size="small"
+            placeholder="Enter cluster url"
+            control={control}
+            fieldName="url"
+            fullWidth
+            helperText={<HelperText text="URL of the Weaviate cluster" />}
+          />
+        </RetrievalFormItemWrapper>
+        <RetrievalFormItemWrapper>
+          <FormTextFieldV2
+            label="Number of chunks to fetch"
+            size="small"
+            placeholder="Enter chunks"
+            control={control}
+            fieldName="topK"
+            type="number"
+            fieldType="number"
+            fullWidth
+            helperText={
+              <HelperText text="The number of top matching vectors to fetch" />
+            }
+          />
+        </RetrievalFormItemWrapper>
+        <RetrievalFormItemWrapper>
+          <FormTextFieldV2
+            label="Collection Name"
+            size="small"
+            placeholder="Enter collection name"
+            control={control}
+            fieldName="collectionName"
+            fullWidth
+            helperText={
+              <HelperText text="Name of the Weaviate collection to query" />
+            }
+          />
+        </RetrievalFormItemWrapper>
+        <RetrievalFormItemWrapper>
+          <EmbeddingConfigField control={control} />
+        </RetrievalFormItemWrapper>
+        <RetrievalFormItemWrapper>
+          <FormSelectField
+            label="Search Type"
+            size="small"
+            control={control}
+            fieldName="searchType"
+            fullWidth
+            options={[
+              { label: "Sematic Search", value: "semantic_search" },
+              { label: "Hybrid", value: "hybrid" },
+            ]}
+            helperText={<HelperText text="The type of search to perform" />}
+          />
+        </RetrievalFormItemWrapper>
+        <RetrievalFormItemWrapper>
+          <FormTextFieldV2
+            label="Key to extract"
+            size="small"
+            placeholder="Enter key"
+            control={control}
+            fieldName="key"
+            fullWidth
+            helperText={
+              <HelperText text="The key to extract from the Weaviate collection" />
+            }
+          />
+        </RetrievalFormItemWrapper>
+        <RetrievalFormItemWrapper>
+          <FormTextFieldV2
+            label="Vector Length"
+            size="small"
+            control={control}
+            placeholder="Enter vector length"
+            fieldName="vectorLength"
+            type="number"
+            fieldType="number"
+            fullWidth
+            helperText={<HelperText text="Length of Vector" />}
+          />
+        </RetrievalFormItemWrapper>
+        <RetrievalFormItemWrapper>
+          <FormTextFieldV2
+            label="Concurrency"
+            size="small"
+            placeholder="Enter concurrency"
+            type="number"
+            fieldType="number"
+            control={control}
+            fieldName="concurrency"
+            fullWidth
+            helperText={
+              <HelperText text="Number of rows to process concurrently. If not set, will use our own system configuration" />
+            }
+          />
+        </RetrievalFormItemWrapper>
+      </Box>
+    </Box>
+  );
+};
+
+WeivateForm.propTypes = {
+  control: PropTypes.object,
+  allColumns: PropTypes.array,
+};
+
+export default WeivateForm;

@@ -1,0 +1,46 @@
+meta {
+  name: SeparateRunEval
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{host}}/model-hub/run-eval
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  /*{
+    "template_id": "b5dd1eb5-b296-4dac-9ed6-5d1039bc77af",
+    "name": "nameseval",
+    "save_as_template": "False",
+    "config": {
+      "mapping": {
+        "text": "I am Aryan Gupta"
+      },
+      "config": {
+        "keywords": ["Aryan"],
+        "case_sensitive": "True"
+      },
+      "reason_column": "True"
+    },
+    "preview": "False"
+  }*/
+  {
+    "template_id": "fb0063c6-c25e-463e-91d3-55fe3bc553b4",
+    "name": "ppertest12",
+    "save_as_template": "True",
+    "config": {
+      "mapping": {
+        "input": "I am Aryan Gupta. I am the best."
+      },
+      "config": {"model": "gpt-4o-mini"},
+      "reason_column": "True"
+    }
+  }
+}

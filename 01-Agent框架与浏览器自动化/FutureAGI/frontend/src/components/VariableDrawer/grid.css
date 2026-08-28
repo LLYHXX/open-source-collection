@@ -1,0 +1,21 @@
+.prompt-variable-gird .ag-center-cols-viewport {
+    min-height: unset !important;
+}
+.prompt-variable-gird .ag-status-bar {
+    padding: 0px !important;
+    width: 100% !important;
+}
+
+.prompt-variable-gird .ag-status-bar-left {
+    width: 100% !important;
+    flex : 1 !important;
+}
+
+.prompt-variable-gird .ag-status-bar  .ag-react-container{
+    width: 100% !important;
+}
+
+.prompt-variable-gird .ag-text-field-input{
+    font-size: 14px !important;
+    padding-left: 16px !important;
+}

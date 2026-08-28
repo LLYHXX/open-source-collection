@@ -1,0 +1,22 @@
+meta {
+  name: Run evalutations
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/tracer/custom-eval-config/run_evaluation/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_version_id": "46d8352f-ce15-4877-b759-474b027a98f6",
+    "custom_eval_config_id": "69402373-7443-4a14-a8ad-242efe842905"
+  }
+}

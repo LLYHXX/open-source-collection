@@ -1,0 +1,92 @@
+meta {
+  name: Get All Test Executions
+  type: http
+  seq: 8
+}
+
+get {
+  url: http://localhost:8000/simulate/api/test-executions/
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Get All Test Executions
+  description: Get all test executions for the organization
+  response: {
+    "count": 3,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "id": "test-exec-1",
+        "run_test": {
+          "id": "run-test-1",
+          "name": "Customer Support Test"
+        },
+        "status": "completed",
+        "started_at": "2025-01-29T14:30:00Z",
+        "completed_at": "2025-01-29T14:45:00Z",
+        "total_scenarios": 3,
+        "total_calls": 3,
+        "completed_calls": 3,
+        "failed_calls": 0,
+        "success_rate": 100.0,
+        "duration_seconds": 900,
+        "scenario_ids": ["scenario-1", "scenario-2", "scenario-3"],
+        "execution_metadata": {
+          "user_id": "user-123",
+          "organization_id": "org-123"
+        },
+        "created_at": "2025-01-29T14:30:00Z"
+      },
+      {
+        "id": "test-exec-2",
+        "run_test": {
+          "id": "run-test-2",
+          "name": "Sales Call Test"
+        },
+        "status": "completed",
+        "started_at": "2025-01-28T16:45:00Z",
+        "completed_at": "2025-01-28T17:00:00Z",
+        "total_scenarios": 2,
+        "total_calls": 2,
+        "completed_calls": 2,
+        "failed_calls": 0,
+        "success_rate": 100.0,
+        "duration_seconds": 900,
+        "scenario_ids": ["scenario-4", "scenario-5"],
+        "execution_metadata": {
+          "user_id": "user-123",
+          "organization_id": "org-123"
+        },
+        "created_at": "2025-01-28T16:45:00Z"
+      },
+      {
+        "id": "test-exec-3",
+        "run_test": {
+          "id": "run-test-1",
+          "name": "Customer Support Test"
+        },
+        "status": "running",
+        "started_at": "2025-01-29T15:00:00Z",
+        "completed_at": null,
+        "total_scenarios": 2,
+        "total_calls": 2,
+        "completed_calls": 1,
+        "failed_calls": 0,
+        "success_rate": 50.0,
+        "duration_seconds": 300,
+        "scenario_ids": ["scenario-1", "scenario-2"],
+        "execution_metadata": {
+          "user_id": "user-123",
+          "organization_id": "org-123"
+        },
+        "created_at": "2025-01-29T15:00:00Z"
+      }
+    ]
+  }
+}

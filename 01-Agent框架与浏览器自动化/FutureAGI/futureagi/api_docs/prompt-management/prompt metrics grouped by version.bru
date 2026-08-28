@@ -1,0 +1,55 @@
+meta {
+  name: prompt metrics grouped by version
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{host}}/model-hub/prompt/metrics/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "filters": [
+      {
+        "column_id": "avg_latency",
+        "filter_config": {
+          "filter_op": "less_than",
+          "filter_type": "number",
+          "filter_value": 3491
+        }
+      },
+      {
+        "column_id": "avg_cost",
+        "filter_config": {
+          "filter_op": "less_than",
+          "filter_type": "number",
+          "filter_value": 0.000044
+        }
+      },
+      {
+        "column_id": "unique_traces",
+        "filter_config": {
+          "filter_op": "less_than",
+          "filter_type": "number",
+          "filter_value": 3
+        }
+      },
+      {
+        "columnId": "694a5717-8bc1-432f-9040-9a0a42e19653**maybe",
+        "filterConfig": {
+          "filter_op": "less_than",
+          "filter_value": 16,
+          "filterType": "number"
+        }
+      }
+    ],
+    "prompt_template_id": "6ec85a9c-5712-4d99-9fff-1ca4a55b621f"
+  }
+}

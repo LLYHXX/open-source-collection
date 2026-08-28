@@ -1,0 +1,15 @@
+meta {
+  name: prompt summary
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:8000/model-hub/dataset/d88474b7-2d2d-48da-a988-0e0b2b26559d/run-prompt-stats/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

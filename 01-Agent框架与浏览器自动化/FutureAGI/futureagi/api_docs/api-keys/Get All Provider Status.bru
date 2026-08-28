@@ -1,0 +1,15 @@
+meta {
+  name: Get All Provider Status
+  type: http
+  seq: 4
+}
+
+get {
+  url: http://localhost:8000/model-hub/develops/provider-status/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

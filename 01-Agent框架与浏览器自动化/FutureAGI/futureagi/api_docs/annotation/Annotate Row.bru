@@ -1,0 +1,21 @@
+meta {
+  name: Annotate Row
+  type: http
+  seq: 6
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations/99b72368-de7f-40ac-9fcf-dba093fb249c/annotate_row/
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+  Content-Type: application/json
+  Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  {"row_number":"3"}
+}

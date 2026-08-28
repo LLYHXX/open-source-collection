@@ -1,0 +1,23 @@
+meta {
+  name: annotations create
+  type: http
+  seq: 5
+}
+
+get {
+  url: http://localhost:8000/model-hub/annotations/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "name": "sentiment",
+      "type": "numeric",
+      "settings": {"min":1,"max":10,"step_size":2,"display_type":"slider"}
+  }
+}

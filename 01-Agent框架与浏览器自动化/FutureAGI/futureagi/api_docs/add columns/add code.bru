@@ -1,0 +1,22 @@
+meta {
+  name: add code
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8000/model-hub/datasets/508a4a94-b9dd-4677-a677-003f0cdad258/execute-code/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "code": "def main(**kwargs):\n    price = (kwargs.get('empid', 0))\n    return price",
+    "new_column_name": "Price with 20% Markup"
+  }
+}

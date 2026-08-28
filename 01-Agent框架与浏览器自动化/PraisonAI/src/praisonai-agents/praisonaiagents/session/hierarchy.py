@@ -1,0 +1,741 @@
+"""
+Session Hierarchy for PraisonAI Agents.
+
+Extends the session system with parent-child relationships,
+forking, and revert capabilities.
+"""
+
+import copy
+import json
+import logging
+from praisonaiagents._logging import get_logger
+import os
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from .store import SessionData, SessionMessage, DefaultSessionStore, FileLock
+
+logger = get_logger(__name__)
+
+@dataclass
+class SessionSnapshot:
+    """A snapshot of session state at a point in time."""
+    
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    session_id: str = ""
+    message_index: int = 0  # Index of last message in snapshot
+    created_at: float = field(default_factory=time.time)
+    label: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "message_index": self.message_index,
+            "created_at": self.created_at,
+            "label": self.label,
+            "metadata": self.metadata,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SessionSnapshot":
+        return cls(
+            id=data.get("id", str(uuid.uuid4())),
+            session_id=data.get("session_id", ""),
+            message_index=data.get("message_index", 0),
+            created_at=data.get("created_at", time.time()),
+            label=data.get("label"),
+            metadata=data.get("metadata", {}),
+        )
+
+@dataclass
+class ExtendedSessionData(SessionData):
+    """Extended session data with hierarchy support."""
+    
+    parent_id: Optional[str] = None
+    forked_from_message_id: Optional[str] = None
+    children_ids: List[str] = field(default_factory=list)
+    snapshots: List[SessionSnapshot] = field(default_factory=list)
+    is_shared: bool = False
+    title: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        d.update({
+            "parent_id": self.parent_id,
+            "forked_from_message_id": self.forked_from_message_id,
+            "children_ids": self.children_ids,
+            "snapshots": [s.to_dict() for s in self.snapshots],
+            "is_shared": self.is_shared,
+            "title": self.title,
+        })
+        return d
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ExtendedSessionData":
+        messages = [
+            SessionMessage.from_dict(m) 
+            for m in data.get("messages", [])
+        ]
+        archived = [
+            SessionMessage.from_dict(m)
+            for m in (data.get("archived_messages") or [])
+        ]
+        snapshots = [
+            SessionSnapshot.from_dict(s)
+            for s in data.get("snapshots", [])
+        ]
+        return cls(
+            session_id=data.get("session_id", ""),
+            messages=messages,
+            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            updated_at=data.get("updated_at", datetime.now(timezone.utc).isoformat()),
+            agent_name=data.get("agent_name"),
+            user_id=data.get("user_id"),
+            metadata=data.get("metadata", {}),
+            archived_messages=archived,
+            parent_id=data.get("parent_id"),
+            forked_from_message_id=data.get("forked_from_message_id"),
+            children_ids=data.get("children_ids", []),
+            snapshots=snapshots,
+            is_shared=data.get("is_shared", False),
+            title=data.get("title"),
+        )
+    
+    @classmethod
+    def from_session_data(cls, session: SessionData) -> "ExtendedSessionData":
+        """Convert a basic SessionData to ExtendedSessionData."""
+        return cls(
+            session_id=session.session_id,
+            messages=session.messages,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+            agent_name=session.agent_name,
+            user_id=session.user_id,
+            metadata=session.metadata,
+        )
+
+class HierarchicalSessionStore(DefaultSessionStore):
+    """
+    Session store with hierarchy, forking, and revert support.
+    
+    Extends DefaultSessionStore with:
+    - Parent-child session relationships
+    - Session forking from any message
+    - Snapshot creation and revert
+    - Session sharing
+    
+    Usage:
+        store = HierarchicalSessionStore()
+        
+        # Create parent session
+        parent_id = store.create_session(title="Main conversation")
+        
+        # Fork from a message
+        child_id = store.fork_session(parent_id, from_message_index=5)
+        
+        # Create snapshot
+        snapshot_id = store.create_snapshot(parent_id, label="Before refactor")
+        
+        # Revert to snapshot
+        store.revert_to_snapshot(parent_id, snapshot_id)
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._extended_cache: Dict[str, ExtendedSessionData] = {}
+        self._cache_mtimes: Dict[str, float] = {}  # Track file modification times
+
+
+    def _load_session_from_disk(self, session_id: str, filepath: str) -> ExtendedSessionData:
+        """Load extended session JSON from disk (caller must hold FileLock).
+
+        Mirrors the base :meth:`DefaultSessionStore._load_session_from_disk`
+        contract so the write-abort protection is honoured here too:
+
+        * File does not exist → fresh empty session.
+        * Malformed JSON → quarantine the corrupt file aside and surface the
+          event before starting fresh, so its raw bytes are not silently
+          overwritten by the next write (Issue #3715).
+        * Transient ``OSError`` on an existing file → re-raise so the write
+          paths (``_modify_session_locked``) abort instead of overwriting real
+          history with an empty session. Previously this override swallowed
+          ``IOError`` (an alias of ``OSError``) and returned an empty session,
+          silently bypassing the base-class read-error safeguard.
+        """
+        if not os.path.exists(filepath):
+            return ExtendedSessionData(session_id=session_id)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return ExtendedSessionData.from_dict(data)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # Invalid UTF-8 (``UnicodeDecodeError``) is handled alongside
+            # malformed JSON so a corrupt binary file is quarantined here too
+            # rather than propagating and matching the base-store contract.
+            quarantine_path = self._quarantine_corrupt(filepath)
+            logger.error(
+                "Session file %s contains invalid JSON; quarantined to %s and "
+                "starting fresh: %s",
+                filepath,
+                quarantine_path or "<quarantine failed>",
+                e,
+            )
+            self._fire_corruption_hook(session_id, str(e), quarantine_path)
+            return ExtendedSessionData(session_id=session_id)
+        except OSError as e:
+            logger.error(
+                f"Transient read error loading session {filepath}; "
+                f"refusing to overwrite existing data: {e}"
+            )
+            raise
+
+    def _modify_session_locked(
+        self,
+        session_id: str,
+        mutator,
+        *,
+        error_label: str = "modify session",
+    ) -> bool:
+        """Locked read-modify-write preserving extended session fields."""
+        result = super()._modify_session_locked(
+            session_id, mutator, error_label=error_label
+        )
+        if result:
+            with self._lock:
+                cached = self._cache.get(session_id)
+                if isinstance(cached, ExtendedSessionData):
+                    self._extended_cache[session_id] = cached
+        return result
+
+    def _is_cache_valid(self, session_id: str) -> bool:
+        """Check if cached session is still valid based on file mtime."""
+        if session_id not in self._extended_cache:
+            return False
+        
+        filepath = self._get_session_path(session_id)
+        if not os.path.exists(filepath):
+            return False
+        
+        try:
+            current_mtime = os.path.getmtime(filepath)
+            cached_mtime = self._cache_mtimes.get(session_id, 0)
+            return current_mtime <= cached_mtime
+        except (OSError, IOError):
+            return False
+    
+    def _read_session_fresh(self, session_id: str) -> ExtendedSessionData:
+        """Reload from disk and keep _cache and _extended_cache in sync."""
+        session = super()._read_session_fresh(session_id)
+        if not isinstance(session, ExtendedSessionData):
+            session = ExtendedSessionData.from_session_data(session)
+            with self._lock:
+                self._cache[session_id] = session
+        
+        # Update cache with fresh file mtime
+        filepath = self._get_session_path(session_id)
+        try:
+            mtime = os.path.getmtime(filepath) if os.path.exists(filepath) else time.time()
+        except (OSError, IOError):
+            mtime = time.time()
+        
+        with self._lock:
+            self._extended_cache[session_id] = session
+            self._cache_mtimes[session_id] = mtime
+        
+        return session
+    
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+        tool_call_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Add a message to a session, preserving extended fields.
+        
+        Overrides parent to preserve extended session data. Accepts the
+        optional ``tool_calls`` / ``tool_call_id`` fields (Issue #3089) so a
+        tool-using session resumed from a hierarchical store replays the same
+        transcript the model saw before.
+        """
+
+        message = SessionMessage(
+            role=role,
+            content=content,
+            timestamp=time.time(),
+            metadata=metadata or {},
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+        )
+
+        def _apply(session: SessionData) -> None:
+            session.messages.append(message)
+            if len(session.messages) > self.max_messages:
+                session.messages = session.messages[-self.max_messages :]
+
+        return self._modify_session_locked(
+            session_id, _apply, error_label="add message to session"
+        )
+    
+    def _load_extended_session(self, session_id: str, force_reload: bool = False) -> ExtendedSessionData:
+        """Load extended session with smart caching based on file modification time."""
+        # Force reload bypasses cache validation
+        if force_reload or not self._is_cache_valid(session_id):
+            return self._read_session_fresh(session_id)
+        
+        # Cache is valid, return cached version
+        with self._lock:
+            return self._extended_cache[session_id]
+    
+    def _save_extended_session(self, session: ExtendedSessionData) -> bool:
+        """Save extended session to disk."""
+        filepath = self._get_session_path(session.session_id)
+        session.updated_at = datetime.now(timezone.utc).isoformat()
+        
+        # Trim messages if over limit
+        if len(session.messages) > self.max_messages:
+            session.messages = session.messages[-self.max_messages:]
+        
+        with FileLock(filepath, self.lock_timeout):
+            try:
+                import tempfile
+                dir_path = os.path.dirname(filepath)
+                os.makedirs(dir_path, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=dir_path,
+                    delete=False,
+                    suffix=".tmp"
+                ) as f:
+                    json.dump(session.to_dict(), f, indent=2, ensure_ascii=False)
+                    temp_path = f.name
+                
+                os.replace(temp_path, filepath)
+                
+                # Update cache with current file mtime after successful write
+                try:
+                    mtime = os.path.getmtime(filepath)
+                except (OSError, IOError):
+                    mtime = time.time()
+                
+                with self._lock:
+                    self._extended_cache[session.session_id] = session
+                    self._cache_mtimes[session.session_id] = mtime
+                
+                return True
+            except (IOError, OSError) as e:
+                logger.error(f"Failed to save session {session.session_id}: {e}")
+                try:
+                    if 'temp_path' in locals():
+                        os.remove(temp_path)
+                except (IOError, OSError):
+                    pass
+                return False
+    
+    def create_session(
+        self,
+        session_id: Optional[str] = None,
+        title: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Create a new session.
+        
+        Args:
+            session_id: Optional custom session ID
+            title: Optional session title
+            parent_id: Optional parent session ID
+            agent_name: Optional agent name
+            metadata: Optional metadata
+            
+        Returns:
+            The session ID
+        """
+        sid = session_id or str(uuid.uuid4())
+        
+        session = ExtendedSessionData(
+            session_id=sid,
+            title=title,
+            parent_id=parent_id,
+            agent_name=agent_name,
+            metadata=metadata or {},
+        )
+        
+        # Update parent's children list without clobbering concurrent message writes
+        if parent_id:
+            def _apply(parent_session: SessionData) -> None:
+                assert isinstance(parent_session, ExtendedSessionData)
+                if sid not in parent_session.children_ids:
+                    parent_session.children_ids.append(sid)
+            self._modify_session_locked(parent_id, _apply, error_label="update parent children")
+        
+        self._save_extended_session(session)
+        return sid
+    
+    def fork_session(
+        self,
+        session_id: str,
+        from_message_index: Optional[int] = None,
+        title: Optional[str] = None,
+    ) -> str:
+        """
+        Fork a session from a specific message.
+        
+        Args:
+            session_id: The session to fork from
+            from_message_index: Message index to fork from (None = all messages)
+            title: Optional title for the forked session
+            
+        Returns:
+            The new forked session ID
+        """
+        # Force reload to get latest messages from disk
+        parent = self._load_extended_session(session_id, force_reload=True)
+        
+        # Determine which messages to copy
+        if from_message_index is None:
+            messages_to_copy = copy.deepcopy(parent.messages)
+            fork_msg_id = None
+        else:
+            messages_to_copy = copy.deepcopy(parent.messages[:from_message_index + 1])
+            fork_msg_id = str(from_message_index)
+        
+        # Create new session
+        new_id = str(uuid.uuid4())
+        forked_title = title or f"Fork of {parent.title or session_id}"
+        
+        forked = ExtendedSessionData(
+            session_id=new_id,
+            messages=messages_to_copy,
+            parent_id=session_id,
+            forked_from_message_id=fork_msg_id,
+            title=forked_title,
+            agent_name=parent.agent_name,
+            metadata=copy.deepcopy(parent.metadata),
+        )
+        
+        self._save_extended_session(forked)
+
+        def _register_fork(parent: SessionData) -> None:
+            if new_id not in parent.children_ids:
+                parent.children_ids.append(new_id)
+
+        self._modify_session_locked(
+            session_id, _register_fork, error_label="register forked session"
+        )
+        
+        return new_id
+    
+    def get_children(self, session_id: str) -> List[str]:
+        """Get all child session IDs."""
+        session = self._load_extended_session(session_id)
+        return session.children_ids.copy()
+    
+    def get_parent(self, session_id: str) -> Optional[str]:
+        """Get parent session ID."""
+        session = self._load_extended_session(session_id)
+        return session.parent_id
+    
+    def get_session_tree(self, session_id: str) -> Dict[str, Any]:
+        """
+        Get the full session tree starting from a session.
+        
+        Returns a nested dictionary representing the tree structure.
+        """
+        session = self._load_extended_session(session_id)
+        
+        tree = {
+            "session_id": session.session_id,
+            "title": session.title,
+            "message_count": len(session.messages),
+            "children": []
+        }
+        
+        for child_id in session.children_ids:
+            tree["children"].append(self.get_session_tree(child_id))
+        
+        return tree
+    
+    def create_snapshot(
+        self,
+        session_id: str,
+        label: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Create a snapshot of the current session state.
+        
+        Args:
+            session_id: The session to snapshot
+            label: Optional label for the snapshot
+            metadata: Optional metadata
+            
+        Returns:
+            The snapshot ID
+        """
+        snapshot = SessionSnapshot(
+            session_id=session_id,
+            message_index=-1,  # Set from fresh session inside locked write
+            label=label,
+            metadata=metadata or {},
+        )
+
+        def _record_snapshot(session: SessionData) -> None:
+            snapshot.message_index = (
+                len(session.messages) - 1 if session.messages else -1
+            )
+            session.snapshots.append(snapshot)
+
+        self._modify_session_locked(
+            session_id, _record_snapshot, error_label="create snapshot"
+        )
+        
+        return snapshot.id
+    
+    def get_snapshots(self, session_id: str) -> List[SessionSnapshot]:
+        """Get all snapshots for a session."""
+        session = self._load_extended_session(session_id)
+        return session.snapshots.copy()
+    
+    def revert_to_snapshot(self, session_id: str, snapshot_id: str) -> bool:
+        """
+        Revert a session to a snapshot.
+        
+        Args:
+            session_id: The session to revert
+            snapshot_id: The snapshot to revert to
+            
+        Returns:
+            True if successful
+        """
+        def _apply(session: SessionData) -> None:
+            assert isinstance(session, ExtendedSessionData)
+            
+            # Find the snapshot
+            snapshot = None
+            for s in session.snapshots:
+                if s.id == snapshot_id:
+                    snapshot = s
+                    break
+            
+            if snapshot is None:
+                logger.warning(f"Snapshot {snapshot_id} not found")
+                raise ValueError(f"Snapshot {snapshot_id} not found")
+            
+            # Revert messages
+            if snapshot.message_index >= 0:
+                session.messages = session.messages[:snapshot.message_index + 1]
+            else:
+                session.messages = []
+                
+        try:
+            return self._modify_session_locked(session_id, _apply, error_label="revert to snapshot")
+        except ValueError:
+            return False
+    
+    def revert_to_message(self, session_id: str, message_index: int) -> bool:
+        """
+        Revert a session to a specific message index.
+        
+        Args:
+            session_id: The session to revert
+            message_index: The message index to revert to
+            
+        Returns:
+            True if successful
+        """
+        def _apply(session: SessionData) -> None:
+            assert isinstance(session, ExtendedSessionData)
+            
+            if message_index < 0 or message_index >= len(session.messages):
+                logger.warning(f"Invalid message index {message_index}")
+                raise ValueError(f"Invalid message index {message_index}")
+            
+            session.messages = session.messages[:message_index + 1]
+            
+        try:
+            return self._modify_session_locked(session_id, _apply, error_label="revert to message")
+        except ValueError:
+            return False
+    
+    def share_session(self, session_id: str) -> bool:
+        """Mark a session as shared."""
+        def _apply(session: SessionData) -> None:
+            assert isinstance(session, ExtendedSessionData)
+            session.is_shared = True
+        return self._modify_session_locked(session_id, _apply, error_label="share session")
+    
+    def unshare_session(self, session_id: str) -> bool:
+        """Mark a session as not shared."""
+        def _apply(session: SessionData) -> None:
+            assert isinstance(session, ExtendedSessionData)
+            session.is_shared = False
+        return self._modify_session_locked(session_id, _apply, error_label="unshare session")
+    
+    def is_shared(self, session_id: str) -> bool:
+        """Check if a session is shared."""
+        session = self._load_extended_session(session_id)
+        return session.is_shared
+    
+    def set_title(self, session_id: str, title: str) -> bool:
+        """Set session title."""
+        def _apply(session: SessionData) -> None:
+            assert isinstance(session, ExtendedSessionData)
+            session.title = title
+        return self._modify_session_locked(session_id, _apply, error_label="set session title")
+    
+    async def auto_title(self, session_id: str) -> bool:
+        """Generate and set title automatically from first exchange.
+        
+        Args:
+            session_id: Session to generate title for
+            
+        Returns:
+            True if title was generated and set, False otherwise
+        """
+        import asyncio
+        
+        # Load session in thread to avoid blocking event loop
+        session = await asyncio.to_thread(self._load_extended_session, session_id)
+        
+        # Skip if already has a title
+        if session.title and session.title.strip():
+            return False
+            
+        # Need at least one user and one assistant message
+        messages = session.messages
+        if not messages or len(messages) < 2:
+            return False
+            
+        # Find first user message and first assistant response
+        user_msg = None
+        assistant_msg = None
+        
+        for msg in messages:
+            # Handle both SessionMessage dataclass and dict formats
+            if hasattr(msg, 'role'):
+                role = msg.role
+                content = msg.content
+            else:
+                role = msg.get("role")
+                content = msg.get("content", "")
+                
+            if role == "user" and not user_msg:
+                if isinstance(content, str) and content.strip():
+                    user_msg = content
+            elif role == "assistant" and not assistant_msg and user_msg:
+                if isinstance(content, str) and content.strip():
+                    assistant_msg = content
+                    break
+        
+        if not user_msg or not assistant_msg:
+            return False
+            
+        try:
+            # Generate title using title module
+            from .title import generate_title_async
+            title = await generate_title_async(user_msg, assistant_msg)
+            
+            if title and title.strip():
+                # Use locked read-modify-write to avoid overwriting concurrent updates
+                def _apply(fresh_session: SessionData) -> None:
+                    assert isinstance(fresh_session, ExtendedSessionData)
+                    # Only set title if it's still empty
+                    if not fresh_session.title or not fresh_session.title.strip():
+                        fresh_session.title = title.strip()
+                        
+                return await asyncio.to_thread(
+                    self._modify_session_locked, 
+                    session_id, 
+                    _apply, 
+                    error_label="auto-title session"
+                )
+                
+        except Exception as e:
+            # Title generation failed - log with context instead of silent failure
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug("Auto title generation failed for session %s: %s", session_id, str(e))
+            
+        return False
+    
+    def get_extended_session(self, session_id: str) -> ExtendedSessionData:
+        """Get extended session data."""
+        return self._read_session_fresh(session_id)
+
+    def invalidate_cache(self, session_id: Optional[str] = None) -> None:
+        """Invalidate base and extended in-memory caches atomically."""
+        with self._lock:
+            if session_id:
+                self._cache.pop(session_id, None)
+                self._extended_cache.pop(session_id, None)
+            else:
+                self._cache.clear()
+                self._extended_cache.clear()
+    
+    def export_session(self, session_id: str) -> Dict[str, Any]:
+        """
+        Export a session to a portable format.
+        
+        Returns a dictionary that can be serialized to JSON.
+        """
+        # Force reload to get latest data
+        session = self._load_extended_session(session_id, force_reload=True)
+        return session.to_dict()
+    
+    def import_session(
+        self,
+        data: Dict[str, Any],
+        new_session_id: Optional[str] = None,
+    ) -> str:
+        """
+        Import a session from exported data.
+        
+        Args:
+            data: The exported session data
+            new_session_id: Optional new session ID (generates one if not provided)
+            
+        Returns:
+            The imported session ID
+        """
+        session = ExtendedSessionData.from_dict(data)
+        
+        if new_session_id:
+            session.session_id = new_session_id
+        else:
+            session.session_id = str(uuid.uuid4())
+        
+        # Clear hierarchy references since this is an import
+        session.parent_id = None
+        session.children_ids = []
+        session.forked_from_message_id = None
+        
+        self._save_extended_session(session)
+        return session.session_id
+
+# Global hierarchical store instance
+_hierarchical_store: Optional[HierarchicalSessionStore] = None
+_hierarchical_lock = threading.Lock()
+
+def get_hierarchical_session_store() -> HierarchicalSessionStore:
+    """Get the global hierarchical session store instance."""
+    global _hierarchical_store
+    
+    if _hierarchical_store is None:
+        with _hierarchical_lock:
+            if _hierarchical_store is None:
+                _hierarchical_store = HierarchicalSessionStore()
+    
+    return _hierarchical_store

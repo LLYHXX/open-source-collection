@@ -1,0 +1,74 @@
+eval_id: 5
+name: context_adherence
+description: Measures how well responses stay within the provided context
+criteria: "You are evaluating how faithfully the output adheres to the information provided in the context.\n\n## Criteria\n\
+  \n1. Supported claims: Every factual statement in the output must be directly supported by the context.\n   - Pass: Output\
+  \ states \"Revenue was $5M in Q3\" and context confirms this.\n   - Fail: Output states \"Revenue was $5M in Q3\" but context\
+  \ says $4M.\n\n2. No external knowledge: The output must not introduce information absent from the context.\n   - Pass:\
+  \ All claims traceable to the provided context.\n   - Fail: Output adds industry benchmarks not mentioned in the context.\n\
+  \n3. Accurate emphasis: The output should reflect the proportions and emphasis of the context.\n   - Pass: Major context\
+  \ points get appropriate coverage.\n   - Fail: A minor context detail is presented as the main point.\n\n## Anti-bias Rules\n\
+  \n- DO NOT penalize reasonable inferences explicitly supported by context premises.\n- Formatting changes (prose to bullets)\
+  \ are acceptable if content remains faithful.\n- A short faithful answer scores higher than a long answer that introduces\
+  \ unsupported claims.\n\n## Scoring\n\nScore 0.0 if the output largely ignores the context or introduces substantial unsupported\
+  \ information. Score 0.5 if it partially adheres but includes some unsupported claims or minor contradictions. Score 1.0\
+  \ if every claim is directly traceable to the context with no additions or contradictions.\n\n## Inputs\n\n<output>{{output}}</output>\n\
+  \n<context>{{context}}</context>"
+eval_tags:
+- RAG
+- Hallucination
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - context
+  output: score
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    output: The output to be evaluated
+    context: The context provided for the response
+  param_modalities:
+    output:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    context:
+    - TEXT
+    - AUDIO
+    - IMAGE
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    - IMAGES
+  rule_prompt: "You are evaluating how faithfully the output adheres to the information provided in the context.\n\n## Criteria\n\
+    \n1. Supported claims: Every factual statement in the output must be directly supported by the context.\n   - Pass: Output\
+    \ states \"Revenue was $5M in Q3\" and context confirms this.\n   - Fail: Output states \"Revenue was $5M in Q3\" but\
+    \ context says $4M.\n\n2. No external knowledge: The output must not introduce information absent from the context.\n\
+    \   - Pass: All claims traceable to the provided context.\n   - Fail: Output adds industry benchmarks not mentioned in\
+    \ the context.\n\n3. Accurate emphasis: The output should reflect the proportions and emphasis of the context.\n   - Pass:\
+    \ Major context points get appropriate coverage.\n   - Fail: A minor context detail is presented as the main point.\n\n\
+    ## Anti-bias Rules\n\n- DO NOT penalize reasonable inferences explicitly supported by context premises.\n- Formatting\
+    \ changes (prose to bullets) are acceptable if content remains faithful.\n- A short faithful answer scores higher than\
+    \ a long answer that introduces unsupported claims.\n\n## Scoring\n\nScore 0.0 if the output largely ignores the context\
+    \ or introduces substantial unsupported information. Score 0.5 if it partially adheres but includes some unsupported claims\
+    \ or minor contradictions. Score 1.0 if every claim is directly traceable to the context with no additions or contradictions.\n\
+    \n## Inputs\n\n<output>{{output}}</output>\n\n<context>{{context}}</context>"

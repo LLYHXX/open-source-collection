@@ -1,0 +1,20 @@
+meta {
+  name: Clone a Dataset
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{host}}/model-hub/develops/clone-dataset/a4b01139-cf26-49ab-be3b-d7dcd8405c6a/
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  model_type: GenerativeLLM
+  new_dataset_name: ds_0505
+}

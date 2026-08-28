@@ -1,0 +1,84 @@
+import json
+from abc import ABC, abstractmethod
+from enum import Enum
+
+import structlog
+
+logger = structlog.get_logger(__name__)
+from agentic_eval.core_evals.fi_utils.evals_result import DataPoint
+
+
+class LoadFormat(Enum):
+    """Supported load formats."""
+
+    JSON = "json"
+    DICT = "dict"
+    FI = "fi"
+
+
+class BaseLoader(ABC):
+    """Abstract base class for data loaders."""
+
+    @property
+    def processed_dataset(self) -> list[DataPoint]:
+        """
+        Returns the processed dataset.
+        """
+        return self._processed_dataset  # type: ignore[attr-defined,no-any-return]
+
+    @property
+    def raw_dataset(self):
+        """
+        Returns the raw dataset.
+        """
+        return self._raw_dataset
+
+    @abstractmethod
+    def process(self) -> list[DataPoint]:
+        """Prepare dataset to be consumed by evaluators."""
+        pass
+
+    def load(self, format: str, **kwargs) -> list[DataPoint]:
+        """
+        Loads data based on the format specified.
+        """
+        if format == LoadFormat.JSON.value:
+            return self.load_json(**kwargs)
+        elif format == LoadFormat.DICT.value:
+            return self.load_dict(**kwargs)
+        elif format == LoadFormat.FI.value:
+            return self.load_fi_inferences(**kwargs)
+        else:
+            raise NotImplementedError("This file format has not been supported yet.")
+
+    def load_json(self, filename: str) -> list[DataPoint]:
+        """
+        Loads and processes data from a JSON file.
+
+        Raises:
+            FileNotFoundError: If the specified JSON file is not found.
+            json.JSONDecodeError: If there's an issue decoding the JSON.
+        """
+        try:
+            with open(filename) as f:
+                self._raw_dataset = json.load(f)
+                self.process()
+                return self._processed_dataset  # type: ignore[attr-defined,no-any-return]
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error(f"Error loading JSON: {e}")
+            raise
+
+    def load_dict(self, data: list) -> list[DataPoint]:
+        """
+        Loads and processes data from a list of dictionaries.
+        """
+        self._raw_dataset = data
+        self.process()
+        return self._processed_dataset  # type: ignore[attr-defined,no-any-return]
+
+    @abstractmethod
+    def load_fi_inferences(self, data: dict) -> list[DataPoint]:
+        """
+        Loads and processes data from a dictionary of FI inferences.
+        """
+        pass

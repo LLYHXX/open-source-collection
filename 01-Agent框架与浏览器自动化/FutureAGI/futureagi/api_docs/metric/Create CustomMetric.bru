@@ -1,0 +1,35 @@
+meta {
+  name: Create CustomMetric
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/custom-metric/create/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "name" : "Test Summary",
+      "prompt" : "Summarize the following chat history",
+      "modelId" : "ce8ff327-680a-46ac-8a22-bf6c92fe707b",
+      "modelType" : 1,
+      "metric_type":2,
+      "evaluationType" : "EVALUATE_CHAT",// EVALUATE_CHAT , EVALUATE_CONTEXT
+      "datasets" : [{
+          "environment" : "Training",
+          "model_version" : "1.1"
+      },
+      {
+          "environment" : "Production",
+          "model_version" : "v1"
+      }
+      ]
+  }
+}

@@ -1,0 +1,16 @@
+.eval-task-ag-grid .ag-paging-page-size {
+  display: none;
+}
+
+.eval-task-ag-grid .ag-cell-wrapper {
+  flex: 1 !important;
+  height: 100%;
+}
+
+.eval-task-ag-grid .ag-cell-wrapper > span {
+  height: 100%;
+}
+
+.eval-task-ag-grid .develop-data-group-header {
+  background-color: var(--surface-highlight);
+}

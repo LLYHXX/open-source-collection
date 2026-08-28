@@ -1,0 +1,25 @@
+meta {
+  name: Create Annotation Label ( Thumbs Up Down )
+  type: http
+  seq: 15
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations-labels/
+  body: json
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  {
+    "name": "Lingustic Acceptability - 11",
+    "type": "thumbs_up_down",
+      "project": "3274f1e5-803c-4dae-b26f-a37d36f6a068"
+  }
+}

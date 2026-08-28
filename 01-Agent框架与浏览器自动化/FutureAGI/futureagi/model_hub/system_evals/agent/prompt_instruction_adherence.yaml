@@ -1,0 +1,76 @@
+eval_id: 21
+name: prompt_instruction_adherence
+description: Evaluates whether the output follows the prompt’s instructions and required format.
+criteria: "You are evaluating how well the output follows the specific instructions and format requirements in the prompt.\n\
+  \n## Criteria\n\n1. Content requirements: Every topic, element, or section specified in the prompt must appear in the output.\n\
+  \   - Pass: Prompt asks for \"introduction, body, conclusion\" and all three are present.\n   - Fail: Missing the conclusion\
+  \ section.\n\n2. Format compliance: Specified formats (JSON, markdown, bullet points, specific sections) must be followed\
+  \ exactly.\n   - Pass: Prompt specifies markdown headers and output uses them.\n   - Fail: Prompt specifies JSON but output\
+  \ is plain text.\n\n3. Constraint satisfaction: Word limits, example counts, prohibited terms, and required inclusions must\
+  \ be honored.\n   - Pass: \"Maximum 100 words\" and output is 95 words.\n   - Fail: \"Maximum 100 words\" and output is\
+  \ 250 words.\n\n## Anti-bias Rules\n\n- Creative interpretation within prompt boundaries is acceptable and should NOT reduce\
+  \ the score.\n- DO NOT penalize exceeding requirements (more examples than asked) unless the prompt explicitly limits the\
+  \ count.\n- A short compliant answer scores higher than a long answer that violates format or constraint requirements.\n\
+  \n## Scoring\n\nScore 0.0 if the output disregards the prompt's instructions entirely. Score 0.5 if it follows the general\
+  \ direction but misses specific requirements. Score 1.0 if it precisely follows every instruction, format, and constraint.\n\
+  \n## Inputs\n\n<output>{{output}}</output>\n\n<prompt>{{prompt}}</prompt>"
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - prompt
+  run_prompt_column: true
+  output: score
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    output: The output to be evaluated
+    prompt: The input prompt
+  param_modalities:
+    output:
+    - TEXT
+    - AUDIO
+    - IMAGE
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    - IMAGES
+    prompt:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating how well the output follows the specific instructions and format requirements in the prompt.\n\
+    \n## Criteria\n\n1. Content requirements: Every topic, element, or section specified in the prompt must appear in the\
+    \ output.\n   - Pass: Prompt asks for \"introduction, body, conclusion\" and all three are present.\n   - Fail: Missing\
+    \ the conclusion section.\n\n2. Format compliance: Specified formats (JSON, markdown, bullet points, specific sections)\
+    \ must be followed exactly.\n   - Pass: Prompt specifies markdown headers and output uses them.\n   - Fail: Prompt specifies\
+    \ JSON but output is plain text.\n\n3. Constraint satisfaction: Word limits, example counts, prohibited terms, and required\
+    \ inclusions must be honored.\n   - Pass: \"Maximum 100 words\" and output is 95 words.\n   - Fail: \"Maximum 100 words\"\
+    \ and output is 250 words.\n\n## Anti-bias Rules\n\n- Creative interpretation within prompt boundaries is acceptable and\
+    \ should NOT reduce the score.\n- DO NOT penalize exceeding requirements (more examples than asked) unless the prompt\
+    \ explicitly limits the count.\n- A short compliant answer scores higher than a long answer that violates format or constraint\
+    \ requirements.\n\n## Scoring\n\nScore 0.0 if the output disregards the prompt's instructions entirely. Score 0.5 if it\
+    \ follows the general direction but misses specific requirements. Score 1.0 if it precisely follows every instruction,\
+    \ format, and constraint.\n\n## Inputs\n\n<output>{{output}}</output>\n\n<prompt>{{prompt}}</prompt>"

@@ -1,0 +1,15 @@
+meta {
+  name: Retrieve Run Prompt Options
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{host}}/model-hub/develops/retrieve_run_prompt_options/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

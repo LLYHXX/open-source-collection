@@ -1,0 +1,46 @@
+eval_id: 151
+name: word_count_in_range
+description: Checks if the word count of text falls within a specified range. Useful for enforcing length constraints on generated
+  responses (e.g., summaries, tweets, abstracts).
+eval_tags:
+- Output Validation
+- Text
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config: {}
+  function_params_schema:
+    min_words:
+      type: integer
+      required: true
+      minimum: 0
+    max_words:
+      type: integer
+      required: true
+      minimum: 1
+  config_params_desc:
+    text: The text to check word count for
+    min_words: Minimum word count (inclusive).
+    max_words: Maximum word count (inclusive).
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        text = str(kwargs.get("text", output or "")).strip()
+        words = text.split()
+        count = len(words)
+        min_w = kwargs.get("min_words")
+        max_w = kwargs.get("max_words")
+        if min_w is None or max_w is None:
+            return {"score": 0.0, "reason": "Both min_words and max_words must be provided"}
+        min_w = int(min_w)
+        max_w = int(max_w)
+        passed = min_w <= count <= max_w
+        reason = f"Word count {count} {'is' if passed else 'is not'} within [{min_w}, {max_w}]"
+        return {"score": 1.0 if passed else 0.0, "reason": reason}

@@ -1,0 +1,21 @@
+meta {
+  name: Huggingface Datasets Config
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{host}}/model-hub/datasets/huggingface/detail/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_id": "openai/openai_human"
+  }
+}

@@ -1,0 +1,25 @@
+meta {
+  name: compare traces
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/tracer/trace/compare_traces/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_version_ids": [
+      "0f6ce387-9bfe-44ab-8eee-d72a9a6e6c56",
+      "1e7570a4-623b-465b-b520-70e8f8b2fc48"
+    ],
+    "index": 3
+  }
+}

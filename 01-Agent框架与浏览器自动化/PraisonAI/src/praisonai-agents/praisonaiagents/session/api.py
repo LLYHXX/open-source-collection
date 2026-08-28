@@ -1,0 +1,838 @@
+"""
+Session Management for PraisonAI Agents
+
+A simple wrapper around existing stateful capabilities to provide a unified
+session API for developers building stateful agent applications.
+
+This module uses deferred imports to ensure `requests` is NOT loaded at import time.
+"""
+from __future__ import annotations
+
+import os
+import uuid
+import json
+import time
+import logging
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
+
+# Sub-agent transcripts live *inside* the parent session's own record, under
+# ``SessionData.metadata[AGENT_HISTORY_KEY][agent_key]``.
+AGENT_HISTORY_KEY = "agent_histories"
+
+# Opt-in restore of sub-agent transcripts written by older versions as separate
+# top-level sessions named ``"{parent}_{name}:{role}"`` *without* parentage
+# tags. Such an id is indistinguishable from a real user session of the same
+# sanitised name, so it is not restored unless this is explicitly set.
+LEGACY_AGENT_KEYS_ENV = "PRAISONAI_SESSION_LEGACY_AGENT_KEYS"
+
+if TYPE_CHECKING:
+    from ..memory.memory import Memory
+    from ..knowledge.knowledge import Knowledge
+    from ..agent import Agent
+
+
+def _get_requests():
+    """Deferred import of requests library."""
+    import requests
+    return requests
+
+
+class Session:
+    """
+    A simple wrapper around PraisonAI's existing stateful capabilities.
+    
+    Provides a unified API for:
+    - Session management with persistent state
+    - Memory operations (short-term, long-term, user-specific)
+    - Knowledge base operations
+    - Agent state management
+    - Remote agent connectivity
+    
+    Examples:
+        # Local session with agent
+        session = Session(session_id="chat_123", user_id="user_456")
+        agent = session.Agent(name="Assistant", role="Helpful AI")
+        
+        # Remote agent session (similar to Google ADK)
+        session = Session(agent_url="192.168.1.10:8000/agent")
+        response = session.chat("Hello from remote client!")
+        
+        # Save session state
+        session.save_state({"conversation_topic": "AI research"})
+    """
+
+    def __init__(
+        self, 
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        agent_url: Optional[str] = None,
+        memory_config: Optional[Dict[str, Any]] = None,
+        knowledge_config: Optional[Dict[str, Any]] = None,
+        timeout: int = 30,
+        session_ttl: Optional[int] = None
+    ):
+        """
+        Initialize a new session with optional persistence or remote agent connectivity.
+        
+        Args:
+            session_id: Unique session identifier. Auto-generated if None.
+            user_id: User identifier for user-specific memory operations.
+            agent_url: URL of remote agent for direct connectivity (e.g., "192.168.1.10:8000/agent")
+            memory_config: Configuration for memory system (defaults to RAG)
+            knowledge_config: Configuration for knowledge base system  
+            timeout: HTTP timeout for remote agent calls (default: 30 seconds)
+            session_ttl: Time-to-live in seconds after which session expires
+        """
+        self.session_id = session_id or str(uuid.uuid4())[:8]
+        self.user_id = user_id or "default_user"
+        self.agent_url = agent_url
+        self.timeout = timeout
+        self.is_remote = agent_url is not None
+        
+        # TTL (time-to-live) functionality
+        if session_ttl is not None and session_ttl < 0:
+            raise ValueError(
+                f"Invalid session_ttl={session_ttl} for session_id={self.session_id}. "
+                "Use None (no expiry) or a non-negative number of seconds."
+            )
+        self.session_ttl = session_ttl
+        self._created_at = time.monotonic()
+
+        # Validate agent_url format
+        if self.is_remote:
+            if not self.agent_url.startswith(('http://', 'https://')):
+                self.agent_url = f"http://{self.agent_url}"
+            self._test_remote_connection()
+
+        # Initialize memory with sensible defaults (only for local sessions)
+        if not self.is_remote:
+            default_memory_config = {
+                "provider": "rag",
+                "use_embedding": False,
+                "rag_db_path": str(self._get_session_dir() / "chroma_db")
+            }
+            if memory_config:
+                default_memory_config.update(memory_config)
+            self.memory_config = default_memory_config
+
+            default_knowledge_config = knowledge_config or {}
+            self.knowledge_config = default_knowledge_config
+
+            self._get_session_dir().mkdir(parents=True, exist_ok=True)
+
+            self._memory = None
+            self._knowledge = None
+            self._agents_instance = None
+            self._agents = {}
+            self._legacy_histories_cache = None
+        else:
+            self.memory_config = {}
+            self.knowledge_config = {}
+            self._memory = None
+            self._knowledge = None
+            self._agents_instance = None
+            self._agents = {}
+            self._legacy_histories_cache = None
+
+    def _get_session_dir(self):
+        """Get session-specific directory using centralized paths."""
+        from ..paths import get_project_sessions_dir
+        from pathlib import Path
+        return get_project_sessions_dir() / self.session_id
+
+    @property
+    def memory(self) -> "Memory":
+        """Lazy-loaded memory instance"""
+        if self.is_remote:
+            raise ValueError("Memory operations are not available for remote agent sessions")
+        if self._memory is None:
+            from ..memory.memory import Memory
+            self._memory = Memory(config=self.memory_config)
+        return self._memory
+
+    @property
+    def knowledge(self) -> "Knowledge":
+        """Lazy-loaded knowledge instance"""
+        if self.is_remote:
+            raise ValueError("Knowledge operations are not available for remote agent sessions")
+        if self._knowledge is None:
+            from ..knowledge.knowledge import Knowledge
+            self._knowledge = Knowledge(config=self.knowledge_config)
+        return self._knowledge
+
+    def Agent(
+        self,
+        name: str,
+        role: str = "Assistant", 
+        instructions: Optional[str] = None,
+        tools: Optional[List[Any]] = None,
+        memory: bool = True,
+        knowledge: Optional[List[str]] = None,
+        **kwargs
+    ) -> "Agent":
+        """
+        Create an agent with session context.
+        
+        Args:
+            name: Agent name
+            role: Agent role
+            instructions: Agent instructions
+            tools: List of tools for the agent
+            memory: Enable memory for the agent
+            knowledge: Knowledge sources for the agent
+            **kwargs: Additional agent parameters
+        
+        Returns:
+            Configured Agent instance
+            
+        Raises:
+            ValueError: If this is a remote session (use chat() instead)
+        """
+        if self.is_remote:
+            raise ValueError("Cannot create local agents in remote sessions. Use chat() to communicate with the remote agent.")
+
+        from ..agent import Agent as AgentClass
+
+        # Filter out parameters that are not valid for Agent.__init__
+        valid_kwargs = {k: v for k, v in kwargs.items() if k not in ('verbose', 'user_id')}
+
+        agent_kwargs = {
+            "name": name,
+            "role": role,
+            **valid_kwargs
+        }
+
+        if instructions:
+            agent_kwargs["instructions"] = instructions
+        if tools:
+            agent_kwargs["tools"] = tools
+        if memory:
+            agent_kwargs["memory"] = self.memory
+        if knowledge:
+            agent_kwargs["knowledge"] = knowledge
+
+        agent = AgentClass(**agent_kwargs)
+        
+        agent_key = f"{name}:{role}"
+        
+        if agent_key in self._agents:
+            agent.chat_history = self._agents[agent_key].get("chat_history", [])
+        else:
+            restored_history = self._restore_agent_chat_history(agent_key)
+            agent.chat_history = restored_history
+        
+        self._agents[agent_key] = {"agent": agent, "chat_history": agent.chat_history}
+        
+        return agent
+
+    def create_agent(self, *args, **kwargs) -> "Agent":
+        """Backward compatibility wrapper for Agent method"""
+        return self.Agent(*args, **kwargs)
+
+    def save_state(self, state_data: Dict[str, Any]) -> None:
+        """
+        Save session state data to memory.
+        
+        Args:
+            state_data: Dictionary of state data to save
+            
+        Raises:
+            ValueError: If this is a remote session
+        """
+        if self.is_remote:
+            raise ValueError("State operations are not available for remote agent sessions")
+            
+        self._save_agent_chat_histories()
+        
+        state_text = f"Session state: {state_data}"
+        self.memory.store_short_term(
+            text=state_text,
+            metadata={
+                "type": "session_state",
+                "session_id": self.session_id,
+                "user_id": self.user_id,
+                **state_data
+            }
+        )
+
+    def restore_state(self) -> Dict[str, Any]:
+        """
+        Restore session state from memory.
+        
+        Returns:
+            Dictionary of restored state data
+            
+        Raises:
+            ValueError: If this is a remote session
+        """
+        if self.is_remote:
+            raise ValueError("State operations are not available for remote agent sessions")
+        results = self.memory.search_short_term(
+            query="Session state:",
+            limit=10
+        )
+
+        self._restore_agent_chat_histories()
+        
+        for result in results:
+            metadata = result.get("metadata", {})
+            if (metadata.get("type") == "session_state" and 
+                metadata.get("session_id") == self.session_id):
+                state_data = {k: v for k, v in metadata.items() 
+                             if k not in ["type", "session_id", "user_id"]}
+                return state_data
+
+        return {}
+
+    def _get_session_store(self):
+        """Return the default session store, or ``None`` if unavailable."""
+        try:
+            from . import get_default_session_store
+            return get_default_session_store()
+        except ImportError:
+            return None
+
+    @staticmethod
+    def _legacy_agent_keys_enabled() -> bool:
+        """Whether to restore *untagged* legacy sub-agent records.
+
+        Records written before the ``parent_session_id``/``agent_key`` tags
+        existed carry no parentage, so ``"{parent}_{agent_key}"`` cannot be told
+        apart from a real user session of the same sanitised name. Restoring one
+        can silently pull an unrelated transcript into an agent, so it is
+        opt-in.
+        """
+        return os.environ.get(LEGACY_AGENT_KEYS_ENV, "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
+    def _stored_agent_histories(self, session_store) -> Dict[str, List[Dict[str, Any]]]:
+        """Sub-agent transcripts held inside this session's own record."""
+        if session_store is None or not hasattr(session_store, "get_session"):
+            return {}
+        try:
+            data = session_store.get_session(self.session_id)
+        except Exception as exc:
+            logger.debug(f"Cannot read agent histories for {self.session_id}: {exc}")
+            return {}
+        histories = (getattr(data, "metadata", None) or {}).get(AGENT_HISTORY_KEY)
+        if not isinstance(histories, dict):
+            return {}
+        return {k: v for k, v in histories.items() if isinstance(v, list) and v}
+
+    def _merged_agent_histories(self, session_store) -> Dict[str, List[Dict[str, Any]]]:
+        """All known sub-agent transcripts: legacy records under current ones.
+
+        Legacy per-agent records are read *underneath* the parent's current
+        ``metadata[AGENT_HISTORY_KEY]`` so a partially-migrated parent (one
+        agent already in the current format) still surfaces a *different*
+        agent that only exists in a tagged legacy record. Current-format
+        entries always win on key collisions.
+        """
+        merged = dict(self._legacy_agent_histories(session_store))
+        merged.update(self._stored_agent_histories(session_store))
+        return merged
+
+    def _restore_agent_chat_history(self, agent_key: str) -> List[Dict[str, Any]]:
+        """
+        Restore agent chat history from memory.
+        
+        Args:
+            agent_key: Unique identifier for the agent
+            
+        Returns:
+            List of chat history messages or empty list if not found
+        """
+        if self.is_remote:
+            return []
+
+        session_store = self._get_session_store()
+
+        # Current format first, then any (tagged / opted-in) legacy per-agent
+        # record — even when the parent is only partially migrated.
+        merged = self._merged_agent_histories(session_store)
+        if agent_key in merged:
+            return merged[agent_key]
+
+        results = self.memory.search_short_term(
+            query="Agent chat history for",
+            limit=10
+        )
+        
+        for result in results:
+            metadata = result.get("metadata", {})
+            if (metadata.get("type") == "agent_chat_history" and 
+                metadata.get("session_id") == self.session_id and
+                metadata.get("agent_key") == agent_key):
+                chat_history = metadata.get("chat_history", [])
+                return chat_history
+        
+        return []
+
+    def _legacy_agent_histories(self, session_store) -> Dict[str, List[Dict[str, Any]]]:
+        """Sub-agent transcripts older versions wrote as top-level sessions.
+
+        Never deletes them: an untagged candidate may in fact be a real user
+        session that merely sanitises to the same name.
+        """
+        # Legacy per-agent records are a frozen migration artefact: nothing
+        # writes them after the upgrade and neither save nor restore mutates
+        # them. Memoise the full-disk scan per Session so a save pass over N
+        # agents doesn't re-enumerate every stored session N times (and once
+        # migrated, the common case, the scan collapses to a single hit).
+        # Key the cache on the opt-in flag: the untagged-restore env toggle
+        # changes what the scan yields, so each mode caches independently.
+        allow_untagged = self._legacy_agent_keys_enabled()
+        cached = getattr(self, "_legacy_histories_cache", None)
+        if cached is not None and cached[0] == allow_untagged:
+            return cached[1]
+
+        histories: Dict[str, List[Dict[str, Any]]] = {}
+        list_sessions = getattr(session_store, "list_sessions", None)
+        if session_store is None or not callable(list_sessions):
+            self._legacy_histories_cache = (allow_untagged, histories)
+            return histories
+
+        prefix = f"{self.session_id}_"
+        # Migration must consider every stored session, not the 50 most recent:
+        # a legacy per-agent record is by definition older than anything written
+        # after the upgrade, so list_sessions()'s default window silently
+        # excludes it (regression from #4126).
+        try:
+            try:
+                entries = list_sessions(limit=None) or []
+            except TypeError:  # stores whose limit is not optional
+                entries = list_sessions(limit=10**9) or []
+        except Exception:
+            return histories
+
+        for entry in entries:
+            if isinstance(entry, dict):
+                stored_id = entry.get("session_id")
+                # Prefer the explicit parent/agent_key tags written on save;
+                # this disambiguates overlapping composite ids (e.g.
+                # "chat"+"support_agent" vs "chat_support"+"agent").
+                tagged_parent = entry.get("parent_session_id")
+                tagged_key = entry.get("agent_key")
+            else:
+                stored_id, tagged_parent, tagged_key = entry, None, None
+            if not isinstance(stored_id, str):
+                continue
+
+            if tagged_parent == self.session_id and tagged_key:
+                agent_key = tagged_key
+            elif (
+                tagged_parent is None
+                and tagged_key is None
+                and stored_id.startswith(prefix)
+                and len(stored_id) > len(prefix)
+            ):
+                # Saved before the tags existed: the id alone is ambiguous.
+                agent_key = stored_id[len(prefix):]
+                logger.warning(
+                    "Session %r: untagged session %r %s as sub-agent %r history "
+                    "(ambiguous id; %s).",
+                    self.session_id, stored_id,
+                    "restored" if allow_untagged else "ignored",
+                    agent_key,
+                    f"{LEGACY_AGENT_KEYS_ENV}=1" if allow_untagged
+                    else f"set {LEGACY_AGENT_KEYS_ENV}=1 to restore it",
+                )
+                if not allow_untagged:
+                    continue
+            else:
+                continue
+
+            try:
+                messages = session_store.get_chat_history(stored_id)
+            except Exception:
+                continue
+            if agent_key and messages:
+                histories[agent_key] = messages
+
+        self._legacy_histories_cache = (allow_untagged, histories)
+        return histories
+
+    def _restore_agent_chat_histories(self) -> None:
+        """Restore all agent chat histories."""
+        if self.is_remote:
+            return
+
+        session_store = self._get_session_store()
+
+        # Current-format records win; legacy (tagged / opted-in) ones fill the
+        # gaps so a partially-migrated parent still recovers every agent.
+        for agent_key, messages in self._merged_agent_histories(session_store).items():
+            self._agents[agent_key] = {"agent": None, "chat_history": messages}
+
+        results = self.memory.search_short_term(
+            query="Agent chat history for",
+            limit=50
+        )
+        
+        for result in results:
+            metadata = result.get("metadata", {})
+            if (metadata.get("type") == "agent_chat_history" and 
+                metadata.get("session_id") == self.session_id):
+                agent_key = metadata.get("agent_key")
+                chat_history = metadata.get("chat_history", [])
+                
+                if agent_key and chat_history and agent_key not in self._agents:
+                    self._agents[agent_key] = {
+                        "agent": None,
+                        "chat_history": chat_history
+                    }
+
+    def _store_agent_history(
+        self, session_store, agent_key: str, messages: List[Dict[str, Any]]
+    ) -> bool:
+        """Persist one sub-agent transcript onto this session's own record.
+
+        The store replaces the whole ``AGENT_HISTORY_KEY`` map per write, so a
+        naive read-then-replace would let a concurrent writer (another agent
+        under the same parent) clobber this agent's entry, or vice versa. We
+        re-read the freshest map immediately before each write and confirm no
+        *other* key changed underneath us, retrying a bounded number of times.
+        Legacy per-agent records are always merged in (they stay on disk).
+        """
+        update_meta = getattr(session_store, "update_session_metadata", None)
+        if not callable(update_meta):
+            return False
+        legacy = self._legacy_agent_histories(session_store)
+        for _ in range(5):
+            current = self._stored_agent_histories(session_store)
+            merged = dict(legacy)
+            merged.update(current)
+            merged[agent_key] = messages
+            if not update_meta(self.session_id, **{AGENT_HISTORY_KEY: merged}):
+                return False
+            # Verify a concurrent writer did not drop another agent between our
+            # read and write; if the persisted map matches what we wrote, we win.
+            persisted = self._stored_agent_histories(session_store)
+            if persisted.get(agent_key) == messages and all(
+                persisted.get(k) == v for k, v in current.items()
+            ):
+                return True
+        logger.warning(
+            "Session %r: could not persist sub-agent history for %r after %d "
+            "attempts; the write was not verified.",
+            self.session_id, agent_key, 5,
+        )
+        return False
+
+    def _save_agent_chat_histories(self) -> None:
+        """Save all agent chat histories.
+
+        Sub-agent transcripts go into the parent session's own record, under
+        ``metadata[AGENT_HISTORY_KEY][agent_key]``. Nothing is written into the
+        global session-id namespace, so a sub-agent can no longer overwrite an
+        unrelated user session. Falls back to Memory for backward compat.
+        """
+        if self.is_remote:
+            return
+        
+        for agent_key, agent_data in self._agents.items():
+            agent = agent_data.get("agent")
+            chat_history = None
+            
+            if agent and hasattr(agent, 'chat_history'):
+                chat_history = agent.chat_history
+                agent_data["chat_history"] = chat_history
+            else:
+                chat_history = agent_data.get("chat_history")
+            
+            if chat_history is not None:
+                session_store = self._get_session_store()
+                
+                if session_store is not None:
+                    # Replace atomically to avoid duplicate appends on repeated save_state()
+                    messages = [
+                        {
+                            "role": msg.get("role", "user"),
+                            "content": msg.get("content", ""),
+                        }
+                        for msg in chat_history
+                        if isinstance(msg, dict)
+                    ]
+                    if not messages:
+                        logging.debug(
+                            f"No chat history to persist for agent {agent_key} "
+                            f"in session {self.session_id}"
+                        )
+                    elif not self._store_agent_history(
+                        session_store, agent_key, messages
+                    ):
+                        logging.warning(
+                            f"Session store {type(session_store).__name__} cannot "
+                            f"persist sub-agent history; chat history for "
+                            f"{agent_key} in session {self.session_id} was lost."
+                        )
+                else:
+                    # Fallback to Memory.store_short_term() for backward compatibility
+                    history_text = f"Agent chat history for {agent_key}"
+                    self.memory.store_short_term(
+                        text=history_text,
+                        metadata={
+                            "type": "agent_chat_history",
+                            "session_id": self.session_id,
+                            "user_id": self.user_id,
+                            "agent_key": agent_key,
+                            "chat_history": chat_history
+                        }
+                    )
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        """Get a specific state value"""
+        state = self.restore_state()
+        return state.get(key, default)
+
+    def set_state(self, key: str, value: Any) -> None:
+        """Set a specific state value"""
+        current_state = self.restore_state()
+        current_state[key] = value
+        self.save_state(current_state)
+
+    def increment_state(self, key: str, increment: int = 1, default: int = 0) -> None:
+        """Increment a numeric state value"""
+        current_value = self.get_state(key, default)
+        self.set_state(key, current_value + increment)
+
+    def add_memory(self, text: str, memory_type: str = "long", **metadata) -> None:
+        """
+        Add information to session memory.
+        
+        Args:
+            text: Text to store
+            memory_type: "short" or "long" term memory
+            **metadata: Additional metadata
+        """
+        metadata.update({
+            "session_id": self.session_id,
+            "user_id": self.user_id
+        })
+
+        if memory_type == "short":
+            self.memory.store_short_term(text, metadata=metadata)
+        else:
+            self.memory.store_long_term(text, metadata=metadata)
+
+    def search_memory(self, query: str, memory_type: str = "long", limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Search session memory.
+        
+        Args:
+            query: Search query
+            memory_type: "short" or "long" term memory
+            limit: Maximum results to return
+
+        Returns:
+            List of memory results
+        """
+        if memory_type == "short":
+            return self.memory.search_short_term(query, limit=limit)
+        return self.memory.search_long_term(query, limit=limit)
+
+    def add_knowledge(self, source: str) -> None:
+        """
+        Add knowledge source to session.
+        
+        Args:
+            source: File path, URL, or text content
+        """
+        self.knowledge.add(source, user_id=self.user_id, agent_id=self.session_id)
+
+    def search_knowledge(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Search session knowledge base.
+        
+        Args:
+            query: Search query
+            limit: Maximum results to return
+
+        Returns:
+            List of knowledge results
+        """
+        return self.knowledge.search(query, agent_id=self.session_id, limit=limit)
+
+    def clear_memory(self, memory_type: str = "all") -> None:
+        """
+        Clear session memory.
+        
+        Args:
+            memory_type: "short", "long", or "all"
+        """
+        if memory_type in ["short", "all"]:
+            self.memory.reset_short_term()
+        if memory_type in ["long", "all"]:
+            self.memory.reset_long_term()
+
+    def get_context(self, query: str, max_items: int = 3) -> str:
+        """
+        Build context from session memory and knowledge.
+        
+        Args:
+            query: Query to build context for
+            max_items: Maximum items per section
+
+        Returns:
+            Formatted context string
+        """
+        # Use cache-optimized context if available for better prompt caching
+        if hasattr(self.memory, 'build_cache_optimized_context'):
+            try:
+                cache_result = self.memory.build_cache_optimized_context(
+                    task_descr=query,
+                    user_id=self.user_id,
+                    max_items=max_items,
+                    include_cache_boundary=False  # Don't include boundary for session context
+                )
+                return cache_result.get('stable_prefix', '')
+            except Exception as e:
+                # Fall back to standard context building
+                logger.debug(f"Cache-optimized context failed for session '{self.session_id}', falling back to standard: {e}")
+        
+        return self.memory.build_context_for_task(
+            task_descr=query,
+            user_id=self.user_id,
+            max_items=max_items
+        )
+
+    def _test_remote_connection(self) -> None:
+        """
+        Test connectivity to the remote agent.
+        
+        Raises:
+            ConnectionError: If unable to connect to the remote agent
+        """
+        requests = _get_requests()
+        try:
+            test_url = self.agent_url.rstrip('/') + '/health' if '/health' not in self.agent_url else self.agent_url
+            response = requests.get(test_url, timeout=self.timeout)
+            if response.status_code != 200:
+                response = requests.head(self.agent_url, timeout=self.timeout)
+                if response.status_code not in [200, 405]:
+                    raise ConnectionError(f"Remote agent returned status code: {response.status_code}")
+            print(f"✅ Successfully connected to remote agent at {self.agent_url}")
+        except requests.exceptions.Timeout:
+            raise ConnectionError(f"Timeout connecting to remote agent at {self.agent_url}")
+        except requests.exceptions.ConnectionError:
+            raise ConnectionError(f"Failed to connect to remote agent at {self.agent_url}")
+        except Exception as e:
+            raise ConnectionError(f"Error connecting to remote agent: {str(e)}")
+
+    def chat(self, message: str, **kwargs) -> str:
+        """
+        Send a message to the remote agent or handle local session.
+        
+        Args:
+            message: The message to send to the agent
+            **kwargs: Additional parameters for the request
+            
+        Returns:
+            The agent's response
+            
+        Raises:
+            ValueError: If this is not a remote session
+            ConnectionError: If unable to communicate with remote agent
+        """
+        if not self.is_remote:
+            raise ValueError("chat() method is only available for remote agent sessions. Use Agent.chat() for local agents.")
+        
+        requests = _get_requests()
+        try:
+            payload = {
+                "query": message,
+                "session_id": self.session_id,
+                "user_id": self.user_id,
+                **kwargs
+            }
+            
+            response = requests.post(
+                self.agent_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=self.timeout
+            )
+            
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            if isinstance(result, dict):
+                return result.get("response", str(result))
+            else:
+                return str(result)
+                
+        except requests.exceptions.Timeout:
+            raise ConnectionError(f"Timeout communicating with remote agent at {self.agent_url}")
+        except requests.exceptions.ConnectionError:
+            raise ConnectionError(f"Failed to communicate with remote agent at {self.agent_url}")
+        except requests.exceptions.HTTPError as e:
+            raise ConnectionError(f"HTTP error from remote agent: {e}")
+        except json.JSONDecodeError:
+            return response.text
+        except Exception as e:
+            raise ConnectionError(f"Error communicating with remote agent: {str(e)}")
+
+    def send_message(self, message: str, **kwargs) -> str:
+        """
+        Alias for chat() method to match Google ADK pattern.
+        
+        Args:
+            message: The message to send to the agent
+            **kwargs: Additional parameters for the request
+            
+        Returns:
+            The agent's response
+        """
+        return self.chat(message, **kwargs)
+
+    def is_expired(self) -> bool:
+        """Check if the session has expired based on TTL."""
+        if self.session_ttl is None:
+            return False
+        return time.monotonic() - self._created_at >= self.session_ttl
+
+    def close(self) -> None:
+        """Close and cleanup the session."""
+        if self.is_remote:
+            return  # No cleanup needed for remote sessions
+        
+        # Save agent chat histories before clearing agents
+        self._save_agent_chat_histories()
+        
+        # Properly cleanup memory
+        if hasattr(self, '_memory') and self._memory:
+            try:
+                # Call close_connections to properly cleanup memory adapters
+                if hasattr(self._memory, 'close_connections'):
+                    self._memory.close_connections()
+            except Exception as e:
+                logger.warning(f"Memory cleanup failed: {e}")
+            finally:
+                self._memory = None
+        
+        # Clear knowledge
+        if hasattr(self, '_knowledge') and self._knowledge:
+            self._knowledge = None
+        
+        # Clear agents
+        if hasattr(self, '_agents'):
+            self._agents.clear()
+
+    def time_to_expiry(self) -> Optional[float]:
+        """Get seconds until session expires, or None if no TTL set."""
+        if self.session_ttl is None:
+            return None
+        elapsed = time.monotonic() - self._created_at
+        return max(0, self.session_ttl - elapsed)
+
+    def __str__(self) -> str:
+        if self.is_remote:
+            return f"Session(id='{self.session_id}', user='{self.user_id}', remote_agent='{self.agent_url}')"
+        return f"Session(id='{self.session_id}', user='{self.user_id}')"
+
+    def __repr__(self) -> str:
+        return self.__str__()

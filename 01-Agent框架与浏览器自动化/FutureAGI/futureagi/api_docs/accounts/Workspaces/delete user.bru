@@ -1,0 +1,25 @@
+meta {
+  name: delete user
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{host}}/accounts/user/delete/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "userId": "{{user_id}}"
+  }
+}

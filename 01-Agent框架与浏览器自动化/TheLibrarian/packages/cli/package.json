@@ -1,0 +1,37 @@
+{
+  "name": "@librarian/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "the-librarian CLI binary.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "the-librarian": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "prepare": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "rebuild": "node --no-warnings dist/bin.js rebuild",
+    "seed": "node --no-warnings dist/bin.js seed",
+    "test:vitest": "vitest run",
+    "test": "pnpm run build && pnpm run test:vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@librarian/core": "workspace:*",
+    "@librarian/mcp-server": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "license": "Apache-2.0"
+}

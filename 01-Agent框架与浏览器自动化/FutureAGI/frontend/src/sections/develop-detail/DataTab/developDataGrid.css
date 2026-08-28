@@ -1,0 +1,30 @@
+.develop-data-grid .ag-cell-wrapper {
+  flex: 1 !important;
+  height: 100%;
+}
+
+.develop-data-grid .ag-cell-wrapper > span {
+  height: 100%;
+}
+
+.develop-data-group-header {
+  background-color: var(--surface-highlight);
+}
+
+.develop-data-grid .ag-number-field-input {
+  width: 412px !important;
+  height: 180px !important;
+  padding: 8px !important;
+}
+
+/*  */
+.develop-data-grid.show-bottom-row .ag-floating-bottom {
+  height: 40px !important;
+  min-height: 40px !important;
+  max-height: 40px !important;
+}
+
+/* for pushing scrollbar to the bottom just above pinned row */
+.develop-data-grid .ag-body-horizontal-scroll {
+  bottom: 0px !important;
+}

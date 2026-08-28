@@ -1,0 +1,519 @@
+"""
+Job Executor for PraisonAI Async Jobs API.
+
+Handles background execution of agent jobs.
+"""
+
+import asyncio
+import logging
+import os
+from typing import Optional, Callable, Any, Dict
+
+from .models import Job, JobStatus
+from .store import JobStore
+
+logger = logging.getLogger(__name__)
+
+
+class JobQueueFull(Exception):
+    """Raised when the executor is at its admission ceiling.
+
+    The router maps this to an HTTP 503 with a ``Retry-After`` header so
+    callers get honest backpressure instead of silent, unbounded memory
+    growth.
+    """
+
+    def __init__(self, retry_after: float = 1.0):
+        self.retry_after = retry_after
+        super().__init__(
+            f"Job queue is full; retry after {retry_after}s"
+        )
+
+
+class JobExecutor:
+    """
+    Executes jobs in the background using asyncio.
+    
+    Features:
+    - Concurrent job execution with configurable limits
+    - Timeout handling
+    - Cancellation support
+    - Progress callbacks
+    - Webhook notifications
+    """
+    
+    def __init__(
+        self,
+        store: JobStore,
+        max_concurrent: int = 10,
+        default_timeout: int = 3600,
+        cleanup_interval: int = 300,
+        max_queued: Optional[int] = None
+    ):
+        self.store = store
+        self.max_concurrent = max_concurrent
+        self.default_timeout = default_timeout
+        self.cleanup_interval = cleanup_interval
+        # Admission ceiling: at most this many jobs may be admitted (queued +
+        # running) at once. ``max_concurrent`` still gates how many run their
+        # body concurrently; ``max_queued`` gates how many are accepted so a
+        # flood is rejected with backpressure instead of growing memory.
+        self.max_queued = max_queued if max_queued is not None else max_concurrent * 10
+        
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._running_tasks: Dict[str, asyncio.Task] = {}
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._shutdown = False
+        # Multiple viewers can subscribe to the same job's progress (e.g. two
+        # dashboard tabs streaming the same run), so keep a list of callbacks
+        # per job and fan-out to all of them.
+        self._progress_callbacks: Dict[str, list] = {}
+    
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """Lazily create semaphore to avoid event loop issues."""
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        return self._semaphore
+    
+    async def start(self):
+        """Start the executor and cleanup loop."""
+        self._shutdown = False
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        logger.info(f"JobExecutor started (max_concurrent={self.max_concurrent})")
+    
+    async def stop(self):
+        """Stop the executor and cancel all running jobs."""
+        self._shutdown = True
+        
+        # Cancel cleanup task
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Cancel all running jobs
+        for job_id, task in list(self._running_tasks.items()):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        
+        self._running_tasks.clear()
+        logger.info("JobExecutor stopped")
+    
+    async def _cleanup_loop(self):
+        """Periodically clean up old completed jobs."""
+        while not self._shutdown:
+            try:
+                await asyncio.sleep(self.cleanup_interval)
+                await self.store.cleanup_old_jobs(max_age_seconds=86400)  # 24 hours
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Cleanup error: {e}")
+    
+    async def submit(self, job: Job) -> Job:
+        """
+        Submit a job for execution.
+        
+        Args:
+            job: Job to execute
+            
+        Returns:
+            The submitted job
+
+        Raises:
+            JobQueueFull: If the executor is already at its admission ceiling
+                (``max_queued``). The caller (router) maps this to a 503 so a
+                flood is rejected instead of growing memory unbounded.
+        """
+        # Fail fast if we're already over the admissions ceiling. This gates
+        # admission (queued + running), while the per-run semaphore in
+        # _execute_job continues to gate how many run concurrently.
+        #
+        # The check-and-reserve below runs synchronously (no ``await`` between
+        # the length check and the task insertion), so it is atomic under
+        # asyncio's cooperative scheduling: concurrent submits can't all pass
+        # the check and then over-admit past the ceiling. The task is created
+        # and registered first; the (awaiting) store.save happens only after the
+        # slot is reserved. If the persist fails we release the reserved slot.
+        if len(self._running_tasks) >= self.max_queued:
+            raise JobQueueFull(retry_after=1.0)
+
+        # Reserve the admission slot atomically by starting + registering the
+        # task before the first await. Because nothing is awaited between the
+        # ceiling check and this insertion, concurrent submits cannot both slip
+        # past the check and over-admit. Persisting the QUEUED state is the very
+        # first step of _execute_job (before the concurrency semaphore), so the
+        # store still reflects QUEUED even while the run waits for a slot.
+        task = asyncio.create_task(self._execute_job(job))
+        self._running_tasks[job.id] = task
+
+        # Clean up task reference when done
+        task.add_done_callback(lambda t: self._running_tasks.pop(job.id, None))
+
+        logger.info(f"Job submitted: {job.id}")
+        return job
+    
+    async def cancel(self, job_id: str) -> bool:
+        """
+        Cancel a running job.
+        
+        Args:
+            job_id: ID of job to cancel
+            
+        Returns:
+            True if cancelled, False if not found or already complete
+        """
+        job = await self.store.get(job_id)
+        if not job:
+            return False
+        
+        if job.is_terminal:
+            return False
+        
+        # Mark as cancelled
+        job.cancel()
+        await self.store.save(job)
+        
+        # Cancel the task if running
+        task = self._running_tasks.get(job_id)
+        if task and not task.done():
+            task.cancel()
+        
+        logger.info(f"Job cancelled: {job_id}")
+        return True
+    
+    def register_progress_callback(self, job_id: str, callback: Callable):
+        """Register a callback for job progress updates.
+
+        Multiple callbacks may be registered for the same ``job_id`` (e.g. two
+        viewers streaming the same run); each is invoked on every update.
+        """
+        self._progress_callbacks.setdefault(job_id, []).append(callback)
+    
+    def unregister_progress_callback(self, job_id: str, callback: Optional[Callable] = None):
+        """Unregister a progress callback.
+
+        Removes the specific ``callback`` for ``job_id`` so co-registered
+        viewers keep receiving updates; the slot is only freed once its last
+        callback is removed. When ``callback`` is None, all callbacks for the
+        job are removed (backward-compatible shutdown path).
+        """
+        if callback is None:
+            self._progress_callbacks.pop(job_id, None)
+            return
+        bucket = self._progress_callbacks.get(job_id)
+        if not bucket:
+            return
+        try:
+            bucket.remove(callback)
+        except ValueError:
+            return
+        if not bucket:
+            self._progress_callbacks.pop(job_id, None)
+    
+    async def _execute_job(self, job: Job):
+        """Execute a job."""
+        # Persist the QUEUED job before waiting on the concurrency semaphore so
+        # the store reflects it immediately (submit() reserved the admission slot
+        # synchronously and no longer saves, keeping the ceiling check atomic).
+        await self.store.save(job)
+        async with self._get_semaphore():
+            try:
+                # Mark as running
+                job.start()
+                await self.store.save(job)
+                await self._notify_progress(job)
+                
+                logger.info(f"Job started: {job.id}")
+                
+                # Execute with timeout
+                timeout = job.timeout or self.default_timeout
+                result = await asyncio.wait_for(
+                    self._run_agent(job),
+                    timeout=timeout
+                )
+                
+                # Mark as succeeded
+                job.succeed(result)
+                await self.store.save(job)
+                await self._notify_progress(job)
+                
+                logger.info(f"Job succeeded: {job.id}")
+                
+                # Send webhook if configured
+                if job.webhook_url:
+                    await self._send_webhook(job)
+                
+            except asyncio.TimeoutError:
+                job.fail(f"Job timed out after {job.timeout}s")
+                await self.store.save(job)
+                await self._notify_progress(job)
+                logger.warning(f"Job timed out: {job.id}")
+                
+            except asyncio.CancelledError:
+                if job.status != JobStatus.CANCELLED:
+                    job.cancel()
+                    await self.store.save(job)
+                await self._notify_progress(job)
+                logger.info(f"Job cancelled: {job.id}")
+                raise
+                
+            except Exception as e:
+                job.fail(str(e))
+                await self.store.save(job)
+                await self._notify_progress(job)
+                logger.error(f"Job failed: {job.id} - {e}")
+                
+                # Send webhook for failures too
+                if job.webhook_url:
+                    await self._send_webhook(job)
+    
+    async def _run_agent(self, job: Job) -> Any:
+        """
+        Run the agent for a job.
+        
+        This is the core execution logic that runs the PraisonAI agent.
+        Supports both direct agent execution and recipe-based execution.
+        """
+        # Check if this is a recipe job
+        if job.recipe_name:
+            return await self._run_recipe(job)
+        
+        # Imports are done lazily in _run_praisonai_agents and _run_legacy_praisonai
+        
+        # Determine agent configuration
+        agent_file = job.agent_file or "agents.yaml"
+        framework = job.framework or "praisonai"
+        
+        # Check if we should use inline YAML
+        if job.agent_yaml:
+            # Write to temp file
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                f.write(job.agent_yaml)
+                agent_file = f.name
+        
+        # Update progress
+        job.update_progress(percentage=10.0, step="Initializing agent")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        try:
+            # Prefer the native praisonaiagents path when the framework's adapter
+            # advertises workflow support (SUPPORTS_WORKFLOW) rather than
+            # hardcoding ``framework == "praisonai"``. Third-party adapters that
+            # opt in are routed natively; everything else uses the legacy path.
+            if self._framework_supports_native(framework):
+                result = await self._run_praisonai_agents(job, agent_file)
+            else:
+                # Use legacy PraisonAI for crewai/autogen
+                result = await self._run_legacy_praisonai(job, agent_file, framework)
+            
+            return result
+            
+        finally:
+            # Clean up temp file if created
+            if job.agent_yaml and agent_file != "agents.yaml":
+                try:
+                    os.unlink(agent_file)
+                except Exception:
+                    pass
+    
+    @staticmethod
+    def _framework_supports_native(framework: str) -> bool:
+        """Return True if the framework's adapter advertises workflow support.
+
+        Reads the adapter's ``SUPPORTS_WORKFLOW`` capability flag instead of
+        hardcoding ``framework == "praisonai"``. Falls back to the historical
+        native-only behaviour if adapter resolution fails.
+        """
+        try:
+            from praisonai.framework_adapters.registry import get_default_registry
+
+            adapter = get_default_registry().create(framework)
+            return bool(getattr(adapter, "SUPPORTS_WORKFLOW", False))
+        except Exception:
+            return str(framework).lower() == "praisonai"
+
+    async def _run_recipe(self, job: Job) -> Any:
+        """Run a recipe-based job."""
+        try:
+            from praisonai.recipe.bridge import resolve, execute_resolved_recipe
+        except ImportError:
+            raise RuntimeError("Recipe execution requires praisonai.recipe module")
+        
+        # Update progress
+        job.update_progress(percentage=10.0, step=f"Resolving recipe: {job.recipe_name}")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        # Resolve the recipe
+        resolved = resolve(
+            job.recipe_name,
+            input_data=job.prompt,
+            config=job.recipe_config or {},
+            session_id=job.session_id,
+            options={'timeout_sec': job.timeout},
+        )
+        
+        # Update job with recipe info
+        job.agent_id = f"recipe:{resolved.name}"
+        job.run_id = resolved.run_id
+        
+        # Update progress
+        job.update_progress(percentage=20.0, step=f"Executing recipe: {resolved.name}")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        # Execute the recipe
+        result = await asyncio.to_thread(execute_resolved_recipe, resolved)
+        
+        # Update progress
+        job.update_progress(percentage=90.0, step="Finalizing")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        return result
+    
+    async def _run_praisonai_agents(self, job: Job, agent_file: str) -> Any:
+        """Run using the native praisonai workflow (honours YAML / config).
+
+        Delegates to ``praisonai.arun``, which resolves the framework, builds
+        the config list off the event loop, honours ``cli_config`` and owns the
+        ``AgentsGenerator`` lifecycle. This ensures the caller-supplied
+        ``agent_file`` / ``agent_yaml`` (staged to ``agent_file``), ``framework``,
+        ``prompt`` and per-run ``config`` are all respected instead of silently
+        dropped.
+        """
+        from praisonai import arun
+        
+        # Update progress
+        job.update_progress(percentage=20.0, step="Preparing agent workflow")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        job.agent_id = job.agent_id or f"yaml:{os.path.basename(agent_file)}"
+        
+        # Update progress
+        job.update_progress(percentage=30.0, step="Running agent workflow")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        # Run the native workflow, honouring the caller-supplied YAML / config.
+        # Thread the required ``job.prompt`` through as the workflow input/topic
+        # so the caller's requested input drives the run instead of being
+        # dropped (the YAML's static ``input`` is only used when no prompt was
+        # supplied). Per-run ``config`` still takes precedence over this default.
+        cli_config: Dict[str, Any] = {}
+        if job.prompt:
+            cli_config["topic"] = job.prompt
+        if job.config:
+            cli_config.update(job.config)
+
+        result = await arun(
+            agent_file=agent_file,
+            framework=job.framework or "praisonai",
+            cli_config=cli_config or None,
+        )
+        
+        # Update progress
+        job.update_progress(percentage=90.0, step="Finalizing")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        return result
+    
+    async def _run_legacy_praisonai(self, job: Job, agent_file: str, framework: str) -> Any:
+        """Run using legacy PraisonAI (crewai/autogen)."""
+        try:
+            from praisonai import PraisonAI
+        except ImportError:
+            raise RuntimeError("praisonai not installed")
+        
+        # Update progress
+        job.update_progress(percentage=20.0, step="Creating PraisonAI instance")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        # Create PraisonAI instance
+        praisonai = PraisonAI(
+            agent_file=agent_file,
+            framework=framework
+        )
+        
+        # Update progress
+        job.update_progress(percentage=30.0, step="Running agents")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        # Run in executor (blocking call)
+        result = await asyncio.to_thread(praisonai.run)
+        
+        # Update progress
+        job.update_progress(percentage=90.0, step="Finalizing")
+        await self.store.save(job)
+        await self._notify_progress(job)
+        
+        return result
+    
+    async def _notify_progress(self, job: Job):
+        """Notify all registered progress callbacks for the job.
+
+        Fans out to every subscriber so concurrent viewers of the same run each
+        receive updates. Iterates over a snapshot so a callback that
+        (un)registers during dispatch can't mutate the list mid-iteration.
+        """
+        for callback in list(self._progress_callbacks.get(job.id, ())):
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(job)
+                else:
+                    callback(job)
+            except Exception as e:
+                logger.warning(f"Progress callback error for {job.id}: {e}")
+    
+    async def _send_webhook(self, job: Job):
+        """Send webhook notification for job completion."""
+        if not job.webhook_url:
+            return
+        
+        try:
+            import httpx
+            
+            payload = {
+                "job_id": job.id,
+                "status": job.status.value,
+                "result": job.result if job.status == JobStatus.SUCCEEDED else None,
+                "error": job.error if job.status == JobStatus.FAILED else None,
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                "duration_seconds": job.duration_seconds
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    job.webhook_url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                if response.status_code >= 400:
+                    logger.warning(f"Webhook failed for {job.id}: {response.status_code}")
+                else:
+                    logger.info(f"Webhook sent for {job.id}")
+                    
+        except Exception as e:
+            logger.error(f"Webhook error for {job.id}: {e}")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get executor statistics."""
+        return {
+            "running_jobs": len(self._running_tasks),
+            "max_concurrent": self.max_concurrent,
+            "default_timeout": self.default_timeout,
+            "shutdown": self._shutdown
+        }

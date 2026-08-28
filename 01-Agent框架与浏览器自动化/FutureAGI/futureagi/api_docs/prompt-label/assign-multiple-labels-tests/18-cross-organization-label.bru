@@ -1,0 +1,50 @@
+meta {
+  name: 18 - Cross Organization Label (Error)
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v1_id}}",
+    "label_ids": ["{{other_org_label_id}}"]
+  }
+}
+
+docs {
+  # Cross Organization Label - Error Case
+
+  ## Test Scenario
+  Attempt to assign a label from a different organization.
+
+  ## Prerequisites
+  - User authenticated in Organization A
+  - Label exists in Organization B
+
+  ## Expected Behavior
+  - Status: 400 Bad Request
+  - Cross-organization access should be denied
+
+  ## Expected Response
+  ```json
+  {
+    "status": false,
+    "result": "Error assigning multiple labels: Some labels not found or are not allowed to be assigned"
+  }
+  ```
+
+  ## Test Coverage
+  - Organization isolation
+  - Security boundary enforcement
+  - Access control
+}

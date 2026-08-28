@@ -1,0 +1,238 @@
+// FilterChips: chip-row IA for filterable list surfaces. Replaces the
+// previous MemoriesFilters sidebar tests. The grouping that used to
+// live in MemoriesFilters now lives in the consumer's `buildFilterDefs`
+// (see view.tsx); this test covers the *primitive* — chip rendering,
+// add-trigger popovers, overflow collapse, clear-all.
+
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useState } from "react";
+import { describe, expect, it, vi } from "vitest";
+
+const { FilterChips } = await import("@/components/memories/filter-chips");
+type FilterDef = import("@/components/memories/filter-chips").FilterDef;
+type ActiveFilter = import("@/components/memories/filter-chips").ActiveFilter;
+
+const AGENT_DEF: FilterDef = {
+  key: "agent_id",
+  label: "Agent",
+  type: "select",
+  groups: [
+    { options: [{ value: "claude-code", label: "claude-code" }] },
+    {
+      label: "System actors",
+      options: [
+        { value: "system-memory-curator", label: "system-memory-curator" },
+        { value: "cli", label: "cli" },
+      ],
+    },
+  ],
+};
+// A second generic select dimension. FilterChips is a primitive over arbitrary
+// filter defs (the memory project filter was removed when memories went
+// project-less); this neutral def keeps the multi-dimension coverage.
+const STATUS_DEF: FilterDef = {
+  key: "status",
+  label: "Status",
+  type: "select",
+  groups: [{ options: [{ value: "active", label: "active" }] }],
+};
+const TAG_DEF: FilterDef = {
+  key: "tags",
+  label: "Tag",
+  type: "select",
+  groups: [{ options: [{ value: "architecture", label: "architecture" }] }],
+};
+const FROM_DEF: FilterDef = { key: "from", label: "From", type: "date" };
+const TO_DEF: FilterDef = { key: "to", label: "To", type: "date" };
+
+const DEFS = [AGENT_DEF, STATUS_DEF, FROM_DEF, TO_DEF];
+
+describe("FilterChips", () => {
+  it("renders an add-chip trigger for every inactive filter dimension", () => {
+    render(<FilterChips defs={DEFS} active={[]} onSet={vi.fn()} onRemove={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /Agent/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Status/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear all" })).toBeNull();
+  });
+
+  it("renders an active chip showing the applied value + remove handle", () => {
+    const onRemove = vi.fn();
+    render(
+      <FilterChips
+        defs={DEFS}
+        active={[{ key: "agent_id", value: "claude-code", display: "claude-code" }]}
+        onSet={vi.fn()}
+        onRemove={onRemove}
+      />,
+    );
+    expect(screen.getByText("claude-code")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Agent filter" })).toBeInTheDocument();
+  });
+
+  it("opens the select popover with grouped options when the agent trigger is clicked", async () => {
+    render(<FilterChips defs={DEFS} active={[]} onSet={vi.fn()} onRemove={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /Agent/i }));
+    const picker = await screen.findByRole("dialog", { name: /Agent options/i });
+    expect(within(picker).getByText("System actors")).toBeInTheDocument();
+    expect(within(picker).getByRole("button", { name: "claude-code" })).toBeInTheDocument();
+    expect(
+      within(picker).getByRole("button", { name: "system-memory-curator" }),
+    ).toBeInTheDocument();
+  });
+
+  it("returns focus to the trigger when Escape closes a select picker", async () => {
+    const user = userEvent.setup();
+    render(<FilterChips defs={DEFS} active={[]} onSet={vi.fn()} onRemove={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: /Agent/i });
+
+    await user.click(trigger);
+    expect(screen.getByPlaceholderText("Filter agent…")).toHaveFocus();
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog", { name: /Agent options/i })).toBeNull();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("moves focus to the active chip when a selection replaces its trigger", async () => {
+    const user = userEvent.setup();
+
+    function ControlledChips() {
+      const [active, setActive] = useState<ActiveFilter[]>([]);
+      return (
+        <FilterChips
+          defs={[AGENT_DEF]}
+          active={active}
+          onSet={(key, value, display) => setActive([{ key, value, display }])}
+          onRemove={vi.fn()}
+        />
+      );
+    }
+
+    render(<ControlledChips />);
+    await user.click(screen.getByRole("button", { name: /Agent/i }));
+    await user.click(screen.getByRole("button", { name: "claude-code" }));
+
+    expect(screen.getByRole("button", { name: "Remove Agent filter" })).toHaveFocus();
+  });
+
+  it("returns focus to the overflow trigger when the selected filter remains collapsed", async () => {
+    const user = userEvent.setup();
+
+    function ControlledOverflowChips() {
+      const [active, setActive] = useState<ActiveFilter[]>([
+        { key: "agent_id", value: "claude-code", display: "claude-code" },
+        { key: "status", value: "active", display: "active" },
+      ]);
+      return (
+        <FilterChips
+          defs={[AGENT_DEF, STATUS_DEF, TAG_DEF]}
+          active={active}
+          onSet={(key, value, display) =>
+            setActive((current) => [...current, { key, value, display }])
+          }
+          onRemove={vi.fn()}
+          maxVisible={2}
+        />
+      );
+    }
+
+    render(<ControlledOverflowChips />);
+    await user.click(screen.getByRole("button", { name: /\+1 more/i }));
+    await user.click(screen.getByRole("button", { name: /Tag/i }));
+    await user.click(screen.getByRole("button", { name: "architecture" }));
+
+    expect(screen.getByRole("button", { name: /\+1 more/i })).toHaveFocus();
+  });
+
+  it("emits onSet with key + value + display when a select option is chosen", async () => {
+    const onSet = vi.fn();
+    render(<FilterChips defs={DEFS} active={[]} onSet={onSet} onRemove={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /Agent/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "claude-code" }));
+    expect(onSet).toHaveBeenCalledWith("agent_id", "claude-code", "claude-code");
+  });
+
+  it("can keep counted option text out of the active filter display", async () => {
+    const onSet = vi.fn();
+    const tagDef: FilterDef = {
+      key: "tags",
+      label: "Tag",
+      type: "select",
+      groups: [
+        {
+          options: [
+            {
+              value: "the-librarian",
+              label: "the-librarian · 165",
+              activeDisplay: "the-librarian",
+            },
+          ],
+        },
+      ],
+    };
+    render(<FilterChips defs={[tagDef]} active={[]} onSet={onSet} onRemove={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /tag/i }));
+    await userEvent.click(screen.getByRole("button", { name: "the-librarian · 165" }));
+
+    expect(onSet).toHaveBeenCalledWith("tags", "the-librarian", "the-librarian");
+  });
+
+  it("collapses chips past maxVisible into an overflow +N more trigger", () => {
+    // Force overflow: 4 inactive defs, maxVisible 2 → 2 visible + "+2 more"
+    render(
+      <FilterChips defs={DEFS} active={[]} onSet={vi.fn()} onRemove={vi.fn()} maxVisible={2} />,
+    );
+    expect(screen.getByRole("button", { name: /\+2 more/ })).toBeInTheDocument();
+  });
+
+  it("renders Clear all once at least one filter is active", async () => {
+    const onSet = vi.fn();
+    const onRemove = vi.fn();
+    const onClearAll = vi.fn();
+    render(
+      <FilterChips
+        defs={DEFS}
+        active={[{ key: "agent_id", value: "claude-code", display: "claude-code" }]}
+        onSet={onSet}
+        onRemove={onRemove}
+        onClearAll={onClearAll}
+      />,
+    );
+    const clear = screen.getByRole("button", { name: "Clear all" });
+    await userEvent.click(clear);
+    expect(onClearAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds a long active value while preserving its full text", () => {
+    const longTag = `tag-${"unbroken".repeat(40)}`;
+    render(
+      <FilterChips
+        defs={DEFS}
+        active={[{ key: "tags", value: longTag, display: longTag }]}
+        onSet={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(longTag)).toHaveClass("max-w-48", "truncate");
+    expect(screen.getByText(longTag)).toHaveAttribute("title", longTag);
+  });
+
+  it("keeps an active filter rendered and clearable after its definition disappears", async () => {
+    const onRemove = vi.fn();
+    render(
+      <FilterChips
+        defs={DEFS}
+        active={[{ key: "shelf", value: "team", display: "Team shelf" }]}
+        onSet={vi.fn()}
+        onRemove={onRemove}
+      />,
+    );
+
+    expect(screen.getByText("Team shelf")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /remove shelf filter/i }));
+    expect(onRemove).toHaveBeenCalledWith("shelf");
+  });
+});

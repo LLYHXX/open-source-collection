@@ -1,0 +1,75 @@
+.attributesJsonContainer * {
+  padding-left: 0px;
+  margin-left: 0px;
+  position: relative;
+}
+
+.attributesJsonContainer div {
+  padding-left: 8px !important;
+  margin-left: 14px !important;
+}
+
+.attributesLabel {
+  color: var(--syntax-key);
+  margin-right: 8px;
+}
+
+.attributesClickableLabel {
+  color: var(--syntax-key);
+  cursor: pointer;
+  margin-right: 8px;
+}
+
+.attributesNullValue,
+.attributesUndefinedValue,
+.attributesNumberValue,
+.attributesStringValue,
+.attributesBooleanValue,
+.attributesOtherValue {
+  color: var(--syntax-value-green);
+}
+
+.attributesPunctuation {
+  color: var(--syntax-punctuation);
+}
+
+.customCollapsedContent::before {
+  content: "...";
+  color: var(--syntax-key);
+  font-style: italic;
+  font-size: 14px;
+}
+
+/* Dark mode - apply filter to make SVG icons visible */
+[data-theme="dark"] .customExpandIcon::before,
+[data-theme="dark"] .customCollapseIcon::before {
+  position: absolute;
+  left: calc(0px - 20px);
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  filter: brightness(0) invert(1);
+}
+
+[data-theme="dark"] .customExpandIcon::before {
+  content: url("/assets/icons/custom/lucide--chevron-right.svg");
+}
+
+[data-theme="dark"] .customCollapseIcon::before {
+  content: url("/assets/icons/custom/lucide--chevron-down.svg");
+}
+
+/* Light mode - no filter needed */
+[data-theme="light"] .customExpandIcon::before,
+[data-theme="light"] .customCollapseIcon::before {
+  position: absolute;
+  left: calc(0px - 20px);
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  content: url("/assets/icons/custom/lucide--chevron-right.svg");
+}
+
+[data-theme="light"] .customCollapseIcon::before {
+  content: url("/assets/icons/custom/lucide--chevron-down.svg");
+}

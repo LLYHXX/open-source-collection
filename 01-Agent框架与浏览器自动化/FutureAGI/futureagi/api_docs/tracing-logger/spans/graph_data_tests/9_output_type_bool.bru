@@ -1,0 +1,47 @@
+meta {
+  name: Output Type Bool
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/tracer/observation-span/get_graph_methods/?page_number=0&page_size=30
+  body: json
+  auth: bearer
+}
+
+params:query {
+  page_number: 0
+  page_size: 30
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_id": "ec5ef8f0-729a-457f-9ec2-e831bb6de0a8",
+    "property": "average",
+    "interval": "day",
+    "filters": [
+      {
+        "columnId": "created_at",
+        "filterConfig": {
+          "filterType": "datetime",
+          "filterOp": "between",
+          "filterValue": [
+            "2025-05-13T18:30:00.000Z",
+            "2025-06-19T18:30:00.000Z"
+          ]
+        }
+      }
+    ],
+    "req_data_config": {
+      "id": "2567053f-d5f5-4b73-a0c3-101acf0f8968",
+      "output_type": "bool",
+      "type": "EVAL",
+      "value": "true"
+    }
+  }
+}

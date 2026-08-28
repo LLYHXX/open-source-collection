@@ -1,0 +1,39 @@
+meta {
+  name: Run Additional Evaluations
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/experiments/{{experimentId}}/run-evaluations/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "eval_template_ids": [
+      "uuid-eval-template-1",
+      "uuid-eval-template-2"
+    ]
+  }
+}
+
+docs {
+  ## Run Additional Evaluations (V1)
+
+  Adds and runs additional evaluation templates on an existing experiment.
+  Used by getEvalsList.jsx, AddedEvaluationCard.jsx, EvaluationListPage.jsx.
+
+  ### Request Body
+  - `eval_template_ids` — Array of UserEvalMetric UUIDs to run
+
+  ### Response
+  ```json
+  {"message": "Evaluations started successfully.", "status": 200}
+  ```
+}

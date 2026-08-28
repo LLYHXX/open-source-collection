@@ -1,0 +1,47 @@
+meta {
+  name: Create Observation Span- otel
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/tracer/observation-span/create_otel_span/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "id": "1a490416130d2f56",
+    "name": "VectorStoreRetriever",
+    "start_time": "2024-12-18T13:00:34.723445",
+    "end_time": "2024-12-18T13:00:35.377316",
+    "observation_type": "retriever",
+    "input": "What is LangChain?",
+    "output": "{\"documents\": [\"page_content='LangChain is a framework that helps build LLM applications with composability.'\", \"page_content='OpenAI provides cutting-edge language models, including GPT-4.'\"]}",
+    "model_parameters": null,
+    "functions": null,
+    "metadata": "{\"ls_retriever_name\": \"vectorstore\", \"ls_vector_store_provider\": \"FAISS\", \"ls_embedding_provider\": \"OpenAIEmbeddings\"}",
+    "tags": [],
+    "span_events": [],
+    "tool_parameters": null,
+    "tool_description": null,
+    "tool_name": null,
+    "tools": null,
+    "total_tokens": null,
+    "prompt_tokens": null,
+    "model": null,
+    "prompts": null,
+    "input_messages": [],
+    "output_messages": [],
+    "parent_span_id": "e7074e9b5322fe68",
+    "project": "f6117c95-17b0-49fd-afa2-5f374d47910e",
+    "project_version": "503d0c26-eb42-4d31-bd36-dde0d0ee6503",
+    "trace": "4da40cc4-cec0-1b18-72a9-2cb6f3d6aac3"
+  }
+
+}

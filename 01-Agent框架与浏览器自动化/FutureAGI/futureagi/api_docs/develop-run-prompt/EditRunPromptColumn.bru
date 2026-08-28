@@ -1,0 +1,33 @@
+meta {
+  name: Edit Run Prompt Column
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/model-hub/develops/edit_run_prompt_column/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "column_id": "8157b510-10b6-4bae-9f3a-4e66801ce91f",
+    "dataset_id": "cae8b577-ef2c-4001-87dd-bc253d3fb122",
+    "config": {
+      "model": "gpt-4",
+      "temperature": 0.5,
+      "max_tokens": 400,
+      "messages":[
+        {
+          "role": "user",
+          "content": "What is faithfulness in terms of Retrieval Augmented Generation"
+        }
+      ]
+    }
+  }
+}

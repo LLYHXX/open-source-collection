@@ -1,0 +1,22 @@
+meta {
+  name: Compare Dataset Common Evals
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{host}}/model-hub/datasets/compare/get-evals-list/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_ids": ["19f1c30a-9071-4a29-b319-b720f571d789", "f76d0463-32a7-4c0f-97ad-7be7c9c71945"],
+    "eval_type": "user"
+  }
+}

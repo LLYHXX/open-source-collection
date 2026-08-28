@@ -1,0 +1,53 @@
+meta {
+  name: Delete Node Connection
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{host}}/agent-playground/graphs/:graph_id/versions/:version_id/node-connections/:nc_id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+  version_id: {{version_id}}
+  nc_id: {{nc_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  nc_id: 5b7e041d-03bd-4183-a365-ea935f49911d
+  graph_id: 8da2b6d9-fded-468d-9cff-821cefa1cecf
+  version_id: 0b8b2ded-9988-453d-b4b6-e9dd59a06055
+}
+
+docs {
+  # Delete Node Connection
+
+  Soft-delete a node connection and cascade-delete all edges between the two nodes' ports.
+
+  ## Path Parameters
+  - `graph_id` (required): UUID of the graph
+  - `version_id` (required): UUID of the draft version
+  - `nc_id` (required): UUID of the node connection
+
+  ## Response (200)
+  ```json
+  {
+    "status": true,
+    "result": {"message": "Node connection deleted successfully"}
+  }
+  ```
+
+  ## Side Effects
+  - Dataset columns are synced (add-only) after connection deletion. Disconnecting nodes may expose new input ports, which creates new dataset columns. Existing columns are never deleted.
+
+  ## Errors
+  - `400`: Version is not DRAFT
+  - `404`: NodeConnection not found or doesn't belong to this version
+}

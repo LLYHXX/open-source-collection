@@ -1,0 +1,30 @@
+meta {
+  name: Compare Dataset Preview Eval
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{host}}/model-hub/datasets/compare/preview-run-eval/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_ids": ["19f1c30a-9071-4a29-b319-b720f571d789", "f76d0463-32a7-4c0f-97ad-7be7c9c71945"],
+    "template_id": "6b811e89-4615-4c52-89cb-78a3aa79288c",
+      "name": "test",
+      "config": {
+            "mapping": {
+                "input": "empid"
+            },
+            "config": {},
+            "reasonColumn": true
+        }
+  }
+}

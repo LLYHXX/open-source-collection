@@ -1,0 +1,15 @@
+meta {
+  name: Download Dataset
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{host}}/model-hub/develops/1f1697c2-b592-4eed-ae9b-5667627d7364/download_dataset/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

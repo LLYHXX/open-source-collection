@@ -1,0 +1,15 @@
+meta {
+  name: Get dataset property by id
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/dataset/properties/87beb7ca-2537-40b1-b7e7-d9be00730bae/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

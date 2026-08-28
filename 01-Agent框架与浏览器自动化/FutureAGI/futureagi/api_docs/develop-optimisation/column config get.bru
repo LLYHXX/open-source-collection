@@ -1,0 +1,15 @@
+meta {
+  name: column config get
+  type: http
+  seq: 4
+}
+
+get {
+  url: http://localhost:8000/model-hub/column-config/283b547f-63c7-484d-88f8-5c367841b62a/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

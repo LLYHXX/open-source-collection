@@ -1,0 +1,20 @@
+meta {
+  name: prompt history by id
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{backend_url}}/model-hub/prompt-history-executions/?template_id=0403ef06-96b6-4456-8417-9ec49086d471
+  body: none
+  auth: bearer
+}
+
+params:query {
+  template_id: 0403ef06-96b6-4456-8417-9ec49086d471
+  ~search:
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

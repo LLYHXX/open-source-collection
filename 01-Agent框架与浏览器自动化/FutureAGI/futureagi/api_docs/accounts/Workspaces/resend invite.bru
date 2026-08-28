@@ -1,0 +1,25 @@
+meta {
+  name: resend invite
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/accounts/user/resend-invite/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "userId": "{{user_id}}"
+  }
+}

@@ -1,0 +1,4 @@
+# Dev / test dependencies (not required for production scans)
+pytest>=7.0.0
+pytest-cov>=4.0.0
+ruff>=0.1.0

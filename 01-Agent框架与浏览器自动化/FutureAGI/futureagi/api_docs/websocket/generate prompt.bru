@@ -1,0 +1,22 @@
+meta {
+  name: generate prompt
+  type: ws
+  seq: 3
+}
+
+ws {
+  url: ws://localhost:8000/ws/prompt-stream/?token={{access_token}}
+  body: ws
+  auth: none
+}
+
+body:ws {
+  name: message 1
+  type: json
+  content: '''
+    {
+      "statement": "write an email to boss for a leave",
+      "type": "generate_prompt"
+    }
+  '''
+}

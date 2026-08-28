@@ -1,0 +1,81 @@
+eval_id: 95
+name: is_factually_consistent
+description: Checks if the generated output is factually consistent with the source/context (e.g., input text or documents).
+criteria: "You are evaluating whether the output is factually consistent with the provided context and input.\n\n## Criteria\n\
+  \n1. Claim verification: Every fact, name, date, number, and event in the output must match the context.\n   - Pass: \"\
+  Revenue grew 15% in Q3.\" (matches context)\n   - Fail: \"Revenue grew 25% in Q3.\" (context says 15%)\n\n2. Contradiction\
+  \ detection: The output must not state anything that conflicts with the context.\n   - Pass: All claims align with context\
+  \ information.\n   - Fail: Output says \"the project was delayed\" when context says it was on time.\n\n3. Fabrication detection:\
+  \ No facts or statistics should appear in the output that are absent from the context.\n   - Pass: Every claim traceable\
+  \ to context.\n   - Fail: Output adds \"according to a 2023 study\" that doesn't appear in context.\n\n## Anti-bias Rules\n\
+  \n- DO NOT penalize paraphrasing that preserves meaning; only flag changes that alter factual content.\n- Reasonable inferences\
+  \ clearly supported by context premises should pass.\n- A short factually consistent answer scores higher than a long answer\
+  \ with fabricated additions.\n\n## Scoring\n\nReturn 'Passed' if every factual claim is supported by the context with no\
+  \ contradictions or fabrications. Return 'Failed' if any claim contradicts, misrepresents, or goes beyond what the context\
+  \ supports.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>\n\n<context>{{context}}</context>"
+eval_tags:
+- Hallucination
+- NLP Metrics
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  - context
+  optional_keys:
+  - input
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    input: The source/context material
+    output: The output to be evaluated for factual consistency
+    context: The context to compare against for factual consistency
+  param_modalities:
+    input: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output: *id001
+    context:
+    - TEXT
+    - AUDIO
+    - IMAGE
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    - IMAGES
+  rule_prompt: "You are evaluating whether the output is factually consistent with the provided context and input.\n\n## Criteria\n\
+    \n1. Claim verification: Every fact, name, date, number, and event in the output must match the context.\n   - Pass: \"\
+    Revenue grew 15% in Q3.\" (matches context)\n   - Fail: \"Revenue grew 25% in Q3.\" (context says 15%)\n\n2. Contradiction\
+    \ detection: The output must not state anything that conflicts with the context.\n   - Pass: All claims align with context\
+    \ information.\n   - Fail: Output says \"the project was delayed\" when context says it was on time.\n\n3. Fabrication\
+    \ detection: No facts or statistics should appear in the output that are absent from the context.\n   - Pass: Every claim\
+    \ traceable to context.\n   - Fail: Output adds \"according to a 2023 study\" that doesn't appear in context.\n\n## Anti-bias\
+    \ Rules\n\n- DO NOT penalize paraphrasing that preserves meaning; only flag changes that alter factual content.\n- Reasonable\
+    \ inferences clearly supported by context premises should pass.\n- A short factually consistent answer scores higher than\
+    \ a long answer with fabricated additions.\n\n## Scoring\n\nReturn 'Passed' if every factual claim is supported by the\
+    \ context with no contradictions or fabrications. Return 'Failed' if any claim contradicts, misrepresents, or goes beyond\
+    \ what the context supports.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>\n\n<context>{{context}}</context>"

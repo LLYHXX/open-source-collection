@@ -1,0 +1,34 @@
+meta {
+  name: delete annotation label
+  type: http
+  seq: 12
+}
+
+delete {
+  url: {{host}}/tracer/observation-span/delete_annotation_label/?label_id=a3279207-df60-4008-9d75-9a66637bf312
+  body: none
+  auth: bearer
+}
+
+params:query {
+  label_id: a3279207-df60-4008-9d75-9a66637bf312
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "trace_id": "35b99ffc-6d44-4804-bbeb-993795f1c04d",
+    "annotation_values": {
+      "a3279207-df60-4008-9d75-9a66637bf312": "true",
+      "3e1221a6-ee16-48c5-9b6e-85d77183cce1": "Hi Annotate"
+    }
+  }
+}

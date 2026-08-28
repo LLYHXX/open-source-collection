@@ -1,0 +1,76 @@
+eval_id: 100
+name: caption_hallucination
+description: Evaluates whether image captions or descriptions contain factual inaccuracies or hallucinated details that are
+  not present in the image.
+criteria: "You are evaluating whether an image caption contains details not actually present in the image.\n\n## Criteria\n\
+  \n1. Object verification: Every object mentioned in the caption must be visible in the image.\n   - Pass: Caption says \"\
+  a red car\" and a red car is visible.\n   - Fail: Caption says \"a red car and a bicycle\" but no bicycle is visible.\n\n\
+  2. Action verification: Actions described must be depicted in the image.\n   - Pass: Caption says \"a person running\" and\
+  \ someone is clearly running.\n   - Fail: Caption says \"a person running\" but the person is standing still.\n\n3. Attribute\
+  \ accuracy: Colors, sizes, quantities, and expressions must match what's visible.\n   - Pass: Caption says \"three people\"\
+  \ and three people are visible.\n   - Fail: Caption says \"three people\" but only two are visible.\n\n## Anti-bias Rules\n\
+  \n- Reasonable visual inferences (e.g., \"smiling\" when the expression is clearly happy) are acceptable.\n- Omitting visible\
+  \ elements is NOT hallucination; hallucination is ADDING elements not present.\n- Ambiguous or blurry image elements should\
+  \ be described with uncertainty, not definitive claims.\n\n## Scoring\n\nReturn 'Passed' if every caption detail is visually\
+  \ verifiable in the image. Return 'Failed' if the caption includes any object, action, or attribute not present in the image.\n\
+  \n## Inputs\n\n<image>{{image}}</image>\n\n<caption>{{caption}}</caption>"
+eval_tags:
+- Image
+- Hallucination
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - image
+  - caption
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    image: The image to be evaluated
+    caption: The caption to be evaluated
+  param_modalities:
+    image:
+    - TEXT
+    - AUDIO
+    - IMAGE
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    - IMAGES
+    caption:
+    - TEXT
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether an image caption contains details not actually present in the image.\n\n## Criteria\n\
+    \n1. Object verification: Every object mentioned in the caption must be visible in the image.\n   - Pass: Caption says\
+    \ \"a red car\" and a red car is visible.\n   - Fail: Caption says \"a red car and a bicycle\" but no bicycle is visible.\n\
+    \n2. Action verification: Actions described must be depicted in the image.\n   - Pass: Caption says \"a person running\"\
+    \ and someone is clearly running.\n   - Fail: Caption says \"a person running\" but the person is standing still.\n\n\
+    3. Attribute accuracy: Colors, sizes, quantities, and expressions must match what's visible.\n   - Pass: Caption says\
+    \ \"three people\" and three people are visible.\n   - Fail: Caption says \"three people\" but only two are visible.\n\
+    \n## Anti-bias Rules\n\n- Reasonable visual inferences (e.g., \"smiling\" when the expression is clearly happy) are acceptable.\n\
+    - Omitting visible elements is NOT hallucination; hallucination is ADDING elements not present.\n- Ambiguous or blurry\
+    \ image elements should be described with uncertainty, not definitive claims.\n\n## Scoring\n\nReturn 'Passed' if every\
+    \ caption detail is visually verifiable in the image. Return 'Failed' if the caption includes any object, action, or attribute\
+    \ not present in the image.\n\n## Inputs\n\n<image>{{image}}</image>\n\n<caption>{{caption}}</caption>"

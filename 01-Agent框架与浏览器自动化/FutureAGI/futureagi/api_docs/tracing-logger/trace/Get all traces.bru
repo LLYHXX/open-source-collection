@@ -1,0 +1,44 @@
+meta {
+  name: Get all traces
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/tracer/trace/list_traces/?project=1b4d85f8-d122-46f9-be1c-0875ae70e5581b4d85f8-d122-46f9-be1c-0875ae70e558&project_version_id=0f6ce387-9bfe-44ab-8eee-d72a9a6e6c56
+  body: json
+  auth: bearer
+}
+
+params:query {
+  project: 1b4d85f8-d122-46f9-be1c-0875ae70e5581b4d85f8-d122-46f9-be1c-0875ae70e558
+  project_version_id: 0f6ce387-9bfe-44ab-8eee-d72a9a6e6c56
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "filters": [
+      {
+        "column_id": "var_7",
+        "filter_config": {
+          "filter_type": "number",
+          "filter_op": "less_than",
+          "filter_value": 50,
+          "col_type": "SPAN_ATTRIBUTE"
+        }
+      },
+      {
+        "column_id": "node_type",
+        "filter_config": {
+          "filter_type": "text",
+          "filter_op": "equals",
+          "filter_value": "chain"
+        }
+      }
+    ]
+  }
+}

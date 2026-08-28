@@ -1,0 +1,27 @@
+meta {
+  name: create workspace
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/accounts/workspaces/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}
+
+body:json {
+  {
+    "name": "project-rbac",
+    "display_name": "Project Alpha",
+    "description": "Development workspace for Project Alpha"
+  }
+}

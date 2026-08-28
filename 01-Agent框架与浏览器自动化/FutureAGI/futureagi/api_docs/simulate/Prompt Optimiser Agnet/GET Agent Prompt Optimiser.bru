@@ -1,0 +1,32 @@
+meta {
+  name: GET Agent Prompt Optimiser
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/simulate/api/agent-prompt-optimiser/99d1c703-784b-48ab-8128-143d2cd435ca/
+  body: none
+  auth: inherit
+}
+
+headers {
+  authorization: {{access_token}}
+}
+
+body:json {
+  {
+    "optimiser_type": "random_search",
+    "name": "trial",
+    "model": "gpt-5",
+    "configuration": {
+      "num_variations": 2
+    },
+    "test_execution_id": "5d494b3a-bd7f-4c88-999e-a6f5309ab15c"
+  }
+}
+
+settings {
+  encodeUrl: false
+  timeout: 0
+}

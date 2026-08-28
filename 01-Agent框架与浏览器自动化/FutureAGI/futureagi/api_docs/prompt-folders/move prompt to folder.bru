@@ -1,0 +1,21 @@
+meta {
+  name: move prompt to folder
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/model-hub/prompt-templates/bbde4722-9b23-4e05-8cc6-14cea6a59975/save-prompt-folder/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "prompt_folder_id": "7b8565d5-b008-43c5-b258-bda31b34b8a1"
+    }
+}

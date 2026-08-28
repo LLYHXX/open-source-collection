@@ -1,0 +1,21 @@
+meta {
+  name: duplicate dataset
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{host}}/model-hub/datasets/579c26cd-6da9-4fff-9768-8cae3e2b8a5d/duplicate/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "name": "2waaname"
+  }
+}

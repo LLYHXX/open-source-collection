@@ -1,0 +1,406 @@
+meta {
+  name: Create Graph Version
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}/agent-playground/graphs/:graph_id/versions/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  graph_id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "status": true,
+    "result": {
+      "id": "8b267ef1-e37e-43ed-89c5-c77d4b4c6535",
+      "versionNumber": 1,
+      "status": "active",
+      "tags": [],
+      "commitMessage": null,
+      "createdAt": "2026-03-18T12:28:52.531808Z",
+      "nodes": [
+        {
+          "id": "54fbb228-5e45-49bb-a002-7f858fb57577",
+          "type": "atomic",
+          "name": "My LLM Node - 3",
+          "config": {},
+          "position": {
+            "x": 100,
+            "y": 200
+          },
+          "nodeTemplateId": "e9d7c212-4f51-49e0-8e0f-fc9b81a631c8",
+          "refGraphVersionId": null,
+          "refGraphName": null,
+          "refGraphId": null,
+          "promptTemplate": {
+            "promptTemplateId": "b888679d-846d-433a-983d-18fee209d52f",
+            "promptVersionId": "42d7a9cb-e5c2-4d3a-81a9-5cd48fff9e9e",
+            "messages": [
+              {
+                "id": "msg-0",
+                "role": "system",
+                "content": [
+                  {
+                    "text": "You are a helpful assistant.",
+                    "type": "text"
+                  }
+                ]
+              },
+              {
+                "id": "msg-1",
+                "role": "user",
+                "content": [
+                  {
+                    "text": "Analyze {{context}} and answer {{question}}",
+                    "type": "text"
+                  }
+                ]
+              }
+            ],
+            "responseFormat": "text",
+            "responseSchema": null,
+            "model": "gpt-4o",
+            "temperature": 0.7,
+            "maxTokens": 1024,
+            "topP": null,
+            "frequencyPenalty": null,
+            "presencePenalty": null,
+            "outputFormat": null,
+            "tools": null,
+            "toolChoice": null,
+            "modelDetail": null,
+            "variable_names": {
+              "context": [],
+              "question": []
+            },
+            "metadata": {
+              "source": "playground"
+            },
+            "isDraft": true,
+            "templateVersion": "v1"
+          },
+          "nodeConnection": null,
+          "inputMappings": null,
+          "ports": [
+            {
+              "id": "bda65703-6788-42d3-b103-1cd9a56f6678",
+              "key": "response",
+              "displayName": "llm_output",
+              "direction": "output",
+              "dataSchema": {
+                "type": "string"
+              },
+              "required": true,
+              "defaultValue": null,
+              "metadata": {},
+              "refPortId": null
+            }
+          ]
+        },
+        {
+          "id": "f679c629-2f16-47e5-95a9-071a4b0f28f6",
+          "type": "subgraph",
+          "name": "Summary Pipeline",
+          "config": {},
+          "position": {
+            "x": 558.75,
+            "y": -38.5
+          },
+          "nodeTemplateId": null,
+          "refGraphVersionId": "a6324969-459f-48cd-8e50-fbe30c6ac957",
+          "refGraphName": "Agent Mar 18, 2026 1:26 AM",
+          "refGraphId": "109ec4c4-37ba-4fdb-8c5a-d59a4e984b12",
+          "promptTemplate": null,
+          "nodeConnection": null,
+          "inputMappings": {
+            "question": null,
+            "context": "llm_node_a1.llm_output"
+          },
+          "ports": [
+            {
+              "id": "bb8665fd-815a-4057-8060-fb14f4116b6f",
+              "key": "custom",
+              "displayName": "custom_output_name_2",
+              "direction": "output",
+              "dataSchema": {
+                "type": "string"
+              },
+              "required": true,
+              "defaultValue": null,
+              "metadata": {},
+              "refPortId": "bda65703-6788-42d3-b103-1cd9a56f6677"
+            }
+          ]
+        },
+        {
+          "id": "54fbb328-5e45-49bb-a002-7f858fb57576",
+          "type": "atomic",
+          "name": "llm_node_a1",
+          "config": {},
+          "position": {
+            "x": 7.96875,
+            "y": 126.5
+          },
+          "nodeTemplateId": "e9d7c212-4f51-49e0-8e0f-fc9b81a631c8",
+          "refGraphVersionId": null,
+          "refGraphName": null,
+          "refGraphId": null,
+          "promptTemplate": {
+            "promptTemplateId": "fed303dc-66ea-4a93-aa52-6db9693b0a91",
+            "promptVersionId": "523555a0-2e7c-4791-9e15-853efb0582ad",
+            "messages": [
+              {
+                "role": "system",
+                "content": [
+                  {
+                    "text": "You are a helpful assistant.",
+                    "type": "text"
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "text": "Analyze {{context}} and answer {{question}}cs\n",
+                    "type": "text"
+                  }
+                ]
+              }
+            ],
+            "responseFormat": "string",
+            "responseSchema": null,
+            "model": "gpt-4o",
+            "temperature": 0.7,
+            "maxTokens": 1024,
+            "topP": null,
+            "frequencyPenalty": null,
+            "presencePenalty": null,
+            "outputFormat": "string",
+            "tools": [],
+            "toolChoice": "",
+            "modelDetail": {
+              "logoUrl": "",
+              "providers": "",
+              "modelName": "",
+              "isAvailable": false
+            },
+            "variable_names": {},
+            "metadata": {
+              "source": "playground"
+            },
+            "isDraft": true,
+            "templateVersion": "v1"
+          },
+          "nodeConnection": null,
+          "inputMappings": null,
+          "ports": [
+            {
+              "id": "bda65713-6788-42d3-b103-1cd9a56f6677",
+              "key": "response",
+              "displayName": "llm_output",
+              "direction": "output",
+              "dataSchema": {
+                "type": "string"
+              },
+              "required": true,
+              "defaultValue": null,
+              "metadata": {},
+              "refPortId": null
+            }
+          ]
+        }
+      ],
+      "nodeConnections": [
+        {
+          "id": "3e60e235-0a93-401d-9e76-bfcac5dce4d2",
+          "sourceNodeId": "54fbb328-5e45-49bb-a002-7f858fb57576",
+          "targetNodeId": "f679c629-2f16-47e5-95a9-071a4b0f28f6"
+        }
+      ]
+    }
+  }
+}
+
+vars:pre-request {
+  graph_id: 05fed664-761a-4355-ae8e-fa8616cf8861
+}
+
+docs {
+  # Create Graph Version
+
+  Create a new draft version (version_number = max + 1) with optional nodes, node connections, and edges.
+
+  ## Path Parameters
+  - `id`: Graph UUID
+
+  ## Request Body (Optional)
+  You can create an empty version or provide nodes, node connections, and edges upfront:
+
+  ### Empty Version
+  ```json
+  {}
+  ```
+
+  ### With Content
+  ```json
+  {
+    "commit_message": "Initial version with nodes",
+    "nodes": [...],
+    "node_connections": [...],
+    "edges": [...]
+  }
+  ```
+
+  ### Nodes Array
+  Each node requires:
+  - `id`: Frontend-generated UUID for the node
+  - `type`: "atomic" or "subgraph"
+  - `name`: Display name
+  - `node_template_id`: Required for atomic nodes (UUID)
+  - `ref_graph_version_id`: Required for subgraph nodes (UUID)
+  - `prompt_template`: LLM prompt data (object, for LLM nodes)
+    - `messages`: Array of message objects with `id`, `role`, and `content` array
+    - `model`: Model identifier (e.g., "gpt-4")
+    - Additional model config fields (temperature, max_tokens, etc.)
+  - `position`: UI coordinates {"x": number, "y": number}
+  - `ports`: Array of port definitions (optional, auto-created if omitted)
+
+  ### Ports Array (per node)
+  - `id`: Frontend-generated UUID for the port
+  - `key`: Template-defined internal identifier (e.g., "prompt", "response"). Use "custom" for user-created ports.
+  - `display_name`: User-facing name for the port (defaults to `key` if omitted). Must be unique per node.
+  - `direction`: "input" or "output"
+  - `data_schema`: JSON Schema for validation (optional)
+  - `ref_port_id`: References an exposed port from an inner graph (subgraph nodes only)
+
+  ### Node Connections Array
+  Declares directed node-to-node connections. A NodeConnection must exist between two nodes before any edge can be created between their ports.
+  - `source_node_id`: UUID of the source node
+  - `target_node_id`: UUID of the target node
+
+  **Note:** Edges are auto-created based on port display name matching and node connections. You don't need to specify edges explicitly.
+
+  ## Response
+  Returns the new draft version with full nested structure:
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "new-version-uuid",
+      "version_number": 2,
+      "status": "draft",
+      "tags": [],
+      "commit_message": null,
+      "created_at": "2024-01-15T10:30:00Z",
+      "nodes": [
+        {
+          "id": "51fbb228-5e25-59bb-a001-7e858fb57579",
+          "type": "atomic",
+          "name": "Text Processor",
+          "prompt_template": {
+            "messages": [
+              {
+                "id": "msg-0",
+                "role": "system",
+                "content": [{"type": "text", "text": "You are a helpful assistant."}]
+              },
+              {
+                "id": "msg-1",
+                "role": "user",
+                "content": [{"type": "text", "text": "Process this text: {{text}}"}]
+              }
+            ],
+            "model": "gpt-4"
+          },
+          "position": {"x": 100, "y": 200},
+          "node_template_id": "d523c598-1b0b-48f4-91ce-feab764e3ad4",
+          "ref_graph_version_id": null,
+          "ports": [
+            {
+              "id": "auto-created-port-uuid-1",
+              "key": "custom",
+              "display_name": "text",
+              "direction": "input",
+              "data_schema": {"type": "string"},
+              "required": true,
+              "default_value": null,
+              "metadata": {}
+            },
+            {
+              "id": "bda62703-6788-41c1-b103-1cd9a56f6677",
+              "key": "response",
+              "display_name": "Text Processor Response",
+              "direction": "output",
+              "data_schema": {"type": "string"},
+              "required": true,
+              "default_value": null,
+              "metadata": {}
+            }
+          ]
+        }
+      ],
+      "node_connections": [
+        {
+          "id": "auto-created-nc-uuid-1",
+          "source_node_id": "51fbb228-5e25-59bb-a001-7e858fb57579",
+          "target_node_id": "51fbb228-5e25-59bb-a001-7e858fb57571"
+        }
+      ]
+    }
+  }
+  ```
+
+  ## Graph Interface (Implicit)
+  The graph's interface is determined by **unconnected ports**:
+  - **Graph Inputs**: Input ports with no incoming edges (e.g., node-1's "text" port)
+  - **Graph Outputs**: Output ports with no outgoing edges (e.g., node-3's "summary" port)
+
+  At runtime, `GraphExecution.input_payload` keys must match the unconnected input port keys.
+
+  ## Atomicity
+  The entire operation is wrapped in a database transaction. If any validation fails (invalid node template, cycle detection, etc.), all changes are rolled back.
+
+  ## Workflow: Creating a New Version from Existing
+
+  When editing a non-draft version (active/inactive), the frontend can:
+
+  **Option 1: Create with content in one call (recommended)**
+  ```
+  POST /graphs/{id}/versions/
+  Body: {
+    "commit_message": "Branched from v1",
+    "nodes": [...copied from source...],
+    "node_connections": [...copied from source...],
+    "edges": [...copied from source...]
+  }
+  ```
+
+  **Option 2: Create empty, then populate**
+  1. POST /graphs/{id}/versions/ (empty body)
+  2. PUT /graphs/{id}/versions/{new_version_id}/ (with nodes/node_connections/edges)
+
+  ## Frontend-Generated UUIDs
+  The frontend generates UUIDs for nodes and ports before sending the request. This allows:
+  - Establishing relationships between nodes before backend creation
+  - Idempotent operations (retries won't create duplicates)
+  - Consistent IDs across frontend and backend
+
+  ## Notes
+  - Frontend generates UUIDs for nodes and ports
+  - Edges are auto-created based on port display name matching and node connections
+  - Input ports for LLM nodes are auto-created from `{{variables}}` in messages
+  - Subgraph nodes use `ref_graph_version_id` instead of `node_template_id`
+  - All validations run before any data is committed
+  - **Breaking Change**: Message format now requires `id` field and `content` as array
+}

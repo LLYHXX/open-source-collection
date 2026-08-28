@@ -1,0 +1,73 @@
+meta {
+  name: Restore Agent Version
+  type: http
+  seq: 7
+}
+
+post {
+  url: http://localhost:8000/simulate/agent-definitions/{{agent_id}}/versions/{{version_id}}/restore/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Restore Agent Version
+  description: Restore an agent definition to its configuration from a specific version
+  response: {
+    "message": "Agent definition restored successfully from version",
+    "agent": {
+      "id": "agent-uuid-here",
+      "agent_name": "Customer Service Rep",
+      "contact_number": "+1 555-0123",
+      "inbound": true,
+      "description": "Friendly customer service agent for handling support inquiries with empathy and efficiency",
+      "assistant_id": "asst_customer_001",
+      "language": "en",
+      "websocket_url": "wss://example.com/ws",
+      "websocket_headers": {},
+      "organization": "org-uuid-here",
+      "created_at": "2025-01-15T09:15:00Z",
+      "updated_at": "2025-01-21T16:00:00Z"
+    },
+    "version": {
+      "id": "v2-uuid-here",
+      "version_number": 2,
+      "version_name": "v2",
+      "version_name_display": "v2",
+      "status": "archived",
+      "status_display": "Archived",
+      "score": 8.2,
+      "test_count": 32,
+      "pass_rate": 85.0,
+      "description": "Enhanced escalation logic and updated greeting script",
+      "release_notes": "This version includes:\n- Enhanced escalation logic\n- Updated greeting script\n- Improved response handling",
+      "agent_definition": "agent-uuid-here",
+      "organization": "org-uuid-here",
+      "configuration_snapshot": {
+        "id": "agent-uuid-here",
+        "agent_name": "Customer Service Rep",
+        "contact_number": "+1 555-0123",
+        "inbound": true,
+        "description": "Friendly customer service agent for handling support inquiries with empathy and efficiency",
+        "assistant_id": "asst_customer_001",
+        "language": "en",
+        "websocket_url": "wss://example.com/ws",
+        "websocket_headers": {},
+        "organization": "org-uuid-here",
+        "created_at": "2025-01-15T09:15:00Z",
+        "updated_at": "2025-01-18T14:20:00Z"
+      },
+      "is_active": false,
+      "is_latest": false,
+      "created_at": "2025-01-18T14:20:00Z",
+      "updated_at": "2025-01-18T14:20:00Z"
+    }
+  }
+  error_response: {
+    "error": "No configuration snapshot available"
+  }
+}

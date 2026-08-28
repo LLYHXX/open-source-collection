@@ -1,0 +1,57 @@
+eval_id: 166
+name: code_complexity
+description: Computes cyclomatic complexity of Python code using AST analysis. Counts decision points (if, for, while, except,
+  boolean ops). Lower complexity = higher score. Useful for code quality evaluation.
+criteria: Measures code complexity by counting branching decision points in the control flow graph.
+eval_tags:
+- Code
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    text: Python code to analyze for complexity
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import ast
+        text = str(kwargs.get("text", output or "")).strip()
+        if not text:
+            return {"score": 0.0, "reason": "Empty code"}
+        try:
+            tree = ast.parse(text)
+        except SyntaxError as e:
+            return {"score": 0.0, "reason": f"Cannot parse: {e}"}
+        cc = 1
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.If, ast.IfExp)):
+                cc += 1
+            elif isinstance(node, ast.For):
+                cc += 1
+            elif isinstance(node, ast.While):
+                cc += 1
+            elif isinstance(node, ast.ExceptHandler):
+                cc += 1
+            elif isinstance(node, ast.With):
+                cc += 1
+            elif isinstance(node, ast.Assert):
+                cc += 1
+            elif isinstance(node, ast.BoolOp):
+                cc += len(node.values) - 1
+        if cc <= 5:
+            score = 1.0 - (cc - 1) * 0.05
+        elif cc <= 10:
+            score = 0.75 - (cc - 6) * 0.05
+        elif cc <= 20:
+            score = 0.5 - (cc - 11) * 0.03
+        else:
+            score = max(0.0, 0.2 - (cc - 21) * 0.01)
+        return {"score": float(score), "reason": f"Cyclomatic complexity: {cc}, score={score:.3f}"}

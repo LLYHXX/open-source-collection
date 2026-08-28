@@ -1,0 +1,62 @@
+eval_id: 73
+name: ASR/STT_accuracy
+description: Analyzes the accuracy of transcriptions generated from audio inputs by Automatic Speech Recognition (ASR) or
+  Speech-to-Text (STT) systems.
+criteria: "You are evaluating the accuracy of an automatic speech recognition transcription against the source audio.\n\n\
+  ## Criteria\n\n1. Word accuracy: Every spoken word should be correctly transcribed, including proper nouns, technical terms,\
+  \ and numbers.\n   - High score: All words match the audio exactly.\n   - Low score: Frequent word substitutions, insertions,\
+  \ or deletions that change meaning.\n\n2. Filler and formatting: Spoken fillers (\"um,\" \"uh\") should be captured, and\
+  \ proper punctuation and capitalization applied.\n   - High score: Fillers included, sentences properly punctuated, \"I\"\
+  \ capitalized.\n   - Low score: No punctuation, \"i\" instead of \"I,\" fillers omitted.\n\n3. Speaker handling: Multiple\
+  \ speakers should be distinguished if present in the audio.\n   - High score: Correct speaker labels or clear speaker transitions.\n\
+  \   - Low score: All speech attributed to one speaker when multiple are present.\n\n## Anti-bias Rules\n\n- Inaudible or\
+  \ heavily accented segments may have legitimate transcription difficulty; evaluate against skilled human transcriber standards.\n\
+  - Background noise should be noted but the primary speaker should still be accurately captured.\n- Domain-specific terminology\
+  \ should be correctly spelled based on context.\n\n## Scoring\n\nScore 0.0 if the transcription is unreliable with pervasive\
+  \ errors. Score 0.5 if it captures general content but has notable word errors or formatting issues. Score 1.0 if professional-grade:\
+  \ every word correct, fillers included, proper formatting.\n\n## Inputs\n\n<audio>{{audio}}</audio>\n\n<generated_transcript>{{generated_transcript}}</generated_transcript>"
+eval_tags:
+- Audio
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - audio
+  - generated_transcript
+  output: score
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    audio: The audio to be evaluated
+    generated_transcript: The transcription of the audio
+  param_modalities:
+    audio:
+    - AUDIO
+    generated_transcript:
+    - TEXT
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating the accuracy of an automatic speech recognition transcription against the source audio.\n\
+    \n## Criteria\n\n1. Word accuracy: Every spoken word should be correctly transcribed, including proper nouns, technical\
+    \ terms, and numbers.\n   - High score: All words match the audio exactly.\n   - Low score: Frequent word substitutions,\
+    \ insertions, or deletions that change meaning.\n\n2. Filler and formatting: Spoken fillers (\"um,\" \"uh\") should be\
+    \ captured, and proper punctuation and capitalization applied.\n   - High score: Fillers included, sentences properly\
+    \ punctuated, \"I\" capitalized.\n   - Low score: No punctuation, \"i\" instead of \"I,\" fillers omitted.\n\n3. Speaker\
+    \ handling: Multiple speakers should be distinguished if present in the audio.\n   - High score: Correct speaker labels\
+    \ or clear speaker transitions.\n   - Low score: All speech attributed to one speaker when multiple are present.\n\n##\
+    \ Anti-bias Rules\n\n- Inaudible or heavily accented segments may have legitimate transcription difficulty; evaluate against\
+    \ skilled human transcriber standards.\n- Background noise should be noted but the primary speaker should still be accurately\
+    \ captured.\n- Domain-specific terminology should be correctly spelled based on context.\n\n## Scoring\n\nScore 0.0 if\
+    \ the transcription is unreliable with pervasive errors. Score 0.5 if it captures general content but has notable word\
+    \ errors or formatting issues. Score 1.0 if professional-grade: every word correct, fillers included, proper formatting.\n\
+    \n## Inputs\n\n<audio>{{audio}}</audio>\n\n<generated_transcript>{{generated_transcript}}</generated_transcript>"

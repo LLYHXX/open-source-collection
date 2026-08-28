@@ -1,0 +1,610 @@
+"""Base classes for PraisonAI Agent tools.
+
+This module provides the foundation for creating tools that can be used by agents.
+External developers can create plugins by subclassing BaseTool.
+
+Usage:
+    from praisonaiagents import BaseTool
+
+    class MyTool(BaseTool):
+        name = "my_tool"
+        description = "Does something useful"
+        
+        def run(self, query: str) -> str:
+            return f"Result for {query}"
+"""
+
+from abc import ABC, abstractmethod
+from typing import Any, Callable, Dict, List, Optional, get_type_hints
+import inspect
+import json
+import logging
+import copy
+
+from .schema import build_parameters_schema
+
+
+class ToolValidationError(Exception):
+    """Raised when a tool fails validation."""
+    pass
+
+
+class ToolResult:
+    """Wrapper for tool execution results.
+
+    In addition to the text/JSON ``output`` channel, tools may return a
+    structured, multimodal ``content`` channel so that images/files produced by
+    a tool become model-visible message parts on the next turn (e.g. a
+    screenshot tool, chart renderer, or PDF rasteriser feeding a vision model).
+
+    ``content`` is an ordered list of content parts. Each part is a dict:
+
+    - ``{"type": "text", "text": "..."}``
+    - ``{"type": "image", "data": <base64-str-or-bytes>, "mime": "image/png",
+       "name": "shot.png"}``
+    - ``{"type": "image", "url": "https://... or data:..."}``
+    - ``{"type": "file", "data": ..., "mime": "application/pdf", "name": ...}``
+
+    Plain text/JSON tool returns behave exactly as before; multimodal is purely
+    additive and opt-in by the tool author.
+
+    For context economy, a tool may also set ``model_output`` to a compact,
+    model-facing summary/diff. When present the executor feeds ``model_output``
+    to the LLM instead of the full ``output`` (fewer tokens), while the full
+    ``output``/``content`` remain available to display, hooks, and tracing.
+    """
+
+    def __init__(
+        self,
+        output: Any,
+        success: bool = True,
+        error: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        content: Optional[List[Dict[str, Any]]] = None,
+        model_output: Any = None
+    ):
+        self.output = output
+        self.success = success
+        self.error = error
+        self.metadata = metadata or {}
+        self.content = content
+        # Optional compact, model-facing view. When set, the executor feeds this
+        # to the LLM instead of the full ``output`` for context economy, while
+        # ``output``/``content`` stay available to display, hooks and tracing.
+        self.model_output = model_output
+
+    @property
+    def is_multimodal(self) -> bool:
+        """True if this result carries structured (possibly image/file) parts."""
+        return bool(self.content)
+
+    def __str__(self) -> str:
+        if self.success:
+            if self.output is not None:
+                return str(self.output)
+            # Derive a text summary from structured content if no output set
+            if self.content:
+                texts = [p.get("text", "") for p in self.content
+                         if isinstance(p, dict) and p.get("type") == "text"]
+                if texts:
+                    return "\n".join(t for t in texts if t)
+                return "[multimodal tool result]"
+            return str(self.output)
+        return f"Error: {self.error}"
+
+    def __repr__(self) -> str:
+        return f"ToolResult(success={self.success}, output={self.output!r})"
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "output": self.output,
+            "success": self.success,
+            "error": self.error,
+            "metadata": self.metadata
+        }
+        if self.content:
+            data["content"] = self.content
+        if self.model_output is not None:
+            data["model_output"] = self.model_output
+        return data
+
+
+def resolve_model_output(result: Any) -> Optional[Any]:
+    """Return a tool result's own compact, model-facing view, or ``None``.
+
+    This reads ``result.model_output`` (e.g. a ``ToolResult`` that carries its
+    own compact view). It does **not** invoke any ``to_model_output()`` hook on
+    the producing tool; the executor resolves that hook separately after this
+    result-carried view misses.
+
+    ``None`` means "no compact view carried on the result"; callers then fall
+    back to today's full stringification, so behaviour is unchanged for tools
+    that opt out.
+    """
+    model_output = getattr(result, "model_output", None)
+    if model_output is not None:
+        return model_output
+    return None
+
+
+def multimodal_content(*parts: Dict[str, Any], output: Any = None,
+                       success: bool = True) -> "ToolResult":
+    """Convenience factory for building a multimodal ToolResult.
+
+    Example::
+
+        from praisonaiagents.tools import multimodal_content, image_part, text_part
+
+        def screenshot() -> ToolResult:
+            png_bytes = capture()
+            return multimodal_content(
+                text_part("Here is the current screen:"),
+                image_part(png_bytes, mime="image/png", name="screen.png"),
+            )
+    """
+    return ToolResult(output=output, success=success, content=list(parts))
+
+
+def text_part(text: str) -> Dict[str, Any]:
+    """Build a text content part."""
+    return {"type": "text", "text": text}
+
+
+def image_part(data: Any = None, *, mime: str = "image/png",
+               name: Optional[str] = None, url: Optional[str] = None) -> Dict[str, Any]:
+    """Build an image content part from raw bytes/base64 or a URL/data URI."""
+    part: Dict[str, Any] = {"type": "image", "mime": mime}
+    if url is not None:
+        part["url"] = url
+    else:
+        part["data"] = data
+    if name:
+        part["name"] = name
+    return part
+
+
+def file_part(data: Any = None, *, mime: str = "application/octet-stream",
+              name: Optional[str] = None, url: Optional[str] = None) -> Dict[str, Any]:
+    """Build a generic file content part from raw bytes/base64 or a URL."""
+    part: Dict[str, Any] = {"type": "file", "mime": mime}
+    if url is not None:
+        part["url"] = url
+    else:
+        part["data"] = data
+    if name:
+        part["name"] = name
+    return part
+
+
+class BaseTool(ABC):
+    """Abstract base class for all PraisonAI tools.
+    
+    Subclass this to create custom tools that can be:
+    - Used directly by agents
+    - Distributed as pip-installable plugins
+    - Auto-discovered via entry_points
+    
+    Attributes:
+        name: Unique identifier for the tool
+        description: Human-readable description (used by LLM)
+        version: Tool version string (default: "1.0.0")
+        parameters: JSON Schema for parameters (auto-generated if not provided)
+    
+    Example:
+        class WeatherTool(BaseTool):
+            name = "get_weather"
+            description = "Get current weather for a location"
+            
+            def run(self, location: str, units: str = "celsius") -> dict:
+                # Implementation here
+                return {"temp": 22, "condition": "sunny"}
+    """
+    
+    # Required class attributes (must be overridden)
+    name: str = ""
+    description: str = ""
+    
+    # Optional class attributes
+    version: str = "1.0.0"
+    parameters: Optional[Dict[str, Any]] = None  # JSON Schema, auto-generated if None
+    # Restart-safety contract for durable resume. ``None`` (the default) means
+    # "undeclared": durable resume falls back to a read-only name heuristic and,
+    # when uncertain, fails closed rather than replaying a side effect. ``True``
+    # marks a read-only/idempotent tool that is safe to re-run after a crash;
+    # ``False`` marks an effectful tool that must never be silently re-executed
+    # on resume.
+    restart_safe: Optional[bool] = None
+    
+    def __init__(self, dynamic_schema_overrides: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None):
+        """Initialize the tool and validate configuration.
+        
+        Args:
+            dynamic_schema_overrides: Optional function to dynamically modify tool schema at runtime
+        """
+        if not self.name:
+            # Use class name as default
+            self.name = self.__class__.__name__.lower().replace("tool", "")
+        
+        if not self.description:
+            # Use docstring as default
+            self.description = self.__class__.__doc__ or f"Tool: {self.name}"
+        
+        # Store dynamic schema override function
+        self._schema_override = dynamic_schema_overrides
+        
+        # Auto-generate parameters schema if not provided
+        if self.parameters is None:
+            self.parameters = self._generate_parameters_schema()
+    
+    def _generate_parameters_schema(self) -> Dict[str, Any]:
+        """Generate JSON Schema from run() method signature."""
+        try:
+            sig = inspect.signature(self.run)
+            hints = get_type_hints(self.run) if hasattr(self.run, '__annotations__') else {}
+        except (ValueError, NameError, Exception) as e:
+            # Handle built-ins, forward references, and other signature/type issues
+            logging.debug(f"Could not generate schema for {self.name}: {e}")
+            return {"type": "object", "properties": {}, "required": []}
+        
+        # Use the new shared helper, skipping only 'self'
+        # Note: the TODO about parsing docstrings for param descriptions
+        # can be addressed in a future enhancement to build_parameters_schema
+        return build_parameters_schema(
+            sig,
+            hints,
+            skip={"self"},
+            func_name=self.name
+        )
+    
+    @abstractmethod
+    def run(self, **kwargs) -> Any:
+        """Execute the tool with given arguments.
+        
+        This method must be implemented by subclasses.
+        
+        Args:
+            **kwargs: Tool-specific arguments
+            
+        Returns:
+            Tool output (any type, will be converted to string for LLM)
+        """
+        pass
+    
+    def __call__(self, **kwargs) -> Any:
+        """Allow tool to be called directly like a function."""
+        return self.run(**kwargs)
+    
+    def to_model_output(self, result: Any) -> Optional[Any]:
+        """Optional hook returning a compact, model-facing view of ``result``.
+
+        ``result`` is the tool's raw return **value** (the ``output`` channel),
+        not the enclosing :class:`ToolResult`. This is the single hook contract
+        used everywhere: ``safe_run`` and the agent executor both invoke it with
+        the output value. Override to feed the LLM a terse summary/diff instead
+        of the full tool output for context economy; the full ``result`` still
+        reaches display, hooks, and tracing. Return ``None`` (the default) to
+        keep today's behaviour where the model sees the full output.
+        """
+        return None
+
+    def _safe_to_model_output(self, output: Any) -> Optional[Any]:
+        """Invoke ``to_model_output`` guarded so a failure never breaks a run.
+
+        A raising or misbehaving compact-view builder must degrade to the full
+        output (return ``None``) rather than corrupt an otherwise-successful
+        tool result.
+        """
+        try:
+            return self.to_model_output(output)
+        except Exception as e:
+            logging.warning(f"to_model_output failed for tool '{self.name}': {e}")
+            return None
+
+    def safe_run(self, **kwargs) -> ToolResult:
+        """Execute tool with error handling, returning ToolResult."""
+        try:
+            output = self.run(**kwargs)
+            if isinstance(output, ToolResult):
+                if output.model_output is None:
+                    output.model_output = self._safe_to_model_output(output.output)
+                return output
+            return ToolResult(
+                output=output,
+                success=True,
+                model_output=self._safe_to_model_output(output),
+            )
+        except Exception as e:
+            logging.error(f"Tool {self.name} failed: {e}")
+            return ToolResult(
+                output=None,
+                success=False,
+                error=str(e)
+            )
+    
+    def get_schema(self) -> Dict[str, Any]:
+        """Get OpenAI-compatible function schema for this tool.
+        
+        Applies dynamic schema overrides if present.
+        """
+        base_schema = {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": copy.deepcopy(self.parameters)
+            }
+        }
+        
+        # Apply dynamic override if present
+        if hasattr(self, '_schema_override') and self._schema_override is not None:
+            try:
+                return self._schema_override(base_schema)
+            except Exception as e:
+                logging.warning(f"Dynamic schema override failed for tool '{self.name}': {e}")
+                return base_schema
+        
+        return base_schema
+    
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__}(name='{self.name}')"
+    
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(name='{self.name}', description='{self.description[:50]}...')"
+    
+    def validate(self) -> bool:
+        """Validate the tool configuration.
+        
+        Raises:
+            ToolValidationError: If validation fails
+            
+        Returns:
+            True if validation passes
+        """
+        errors = []
+        
+        # Check required fields
+        if not self.name or not isinstance(self.name, str):
+            errors.append("Tool must have a non-empty string 'name'")
+        
+        if not self.description or not isinstance(self.description, str):
+            errors.append("Tool must have a non-empty string 'description'")
+        
+        # Check that run() is implemented (not abstract)
+        if getattr(self.run, '__isabstractmethod__', False):
+            errors.append("Tool must implement the 'run()' method")
+        
+        # Check parameters schema is valid and OpenAI-compatible
+        if self.parameters:
+            if not isinstance(self.parameters, dict):
+                errors.append("'parameters' must be a dictionary")
+            elif "type" not in self.parameters:
+                errors.append("'parameters' must have a 'type' field")
+            elif "properties" not in self.parameters:
+                errors.append("'parameters' must have a 'properties' field for OpenAI compatibility")
+            
+            # Validate schema structure for OpenAI compatibility
+            try:
+                schema = self.get_schema()
+                if not isinstance(schema, dict):
+                    errors.append("get_schema() must return a dictionary")
+                elif schema.get("type") != "function":
+                    errors.append("get_schema() must return schema with type='function'")
+                elif "function" not in schema:
+                    errors.append("get_schema() must have 'function' key")
+                else:
+                    func = schema["function"]
+                    if not isinstance(func.get("parameters"), dict):
+                        errors.append("Schema function.parameters must be a dictionary")
+                    elif "properties" not in func["parameters"]:
+                        errors.append("Schema function.parameters must have 'properties' for OpenAI compatibility")
+            except Exception as e:
+                errors.append(f"Schema generation failed: {e}")
+        
+        if errors:
+            raise ToolValidationError(f"Tool '{self.name}' validation failed: {'; '.join(errors)}")
+        
+        return True
+    
+    def validate_schema_roundtrip(self) -> bool:
+        """Validate that schema can round-trip through OpenAI-style serialization.
+        
+        This ensures the tool schema is compatible with LLM providers that expect
+        OpenAI function calling format and that parameters can be properly parsed.
+        
+        Raises:
+            ToolValidationError: If round-trip fails
+            
+        Returns:
+            True if round-trip validation passes
+        """
+        try:
+            import json
+            
+            # Get the schema
+            schema = self.get_schema()
+            
+            # Serialize to JSON (what gets sent to LLM)
+            serialized = json.dumps(schema)
+            
+            # Deserialize back
+            deserialized = json.loads(serialized)
+            
+            # Validate structure matches expectations
+            if deserialized != schema:
+                raise ToolValidationError(f"Schema serialization round-trip failed for tool '{self.name}'")
+            
+            # Validate OpenAI format requirements
+            func_schema = deserialized.get("function", {})
+            parameters = func_schema.get("parameters", {})
+            
+            if not isinstance(parameters.get("properties"), dict):
+                raise ToolValidationError(f"Tool '{self.name}' parameters.properties must be a dict for OpenAI compatibility")
+            
+            if "required" in parameters and not isinstance(parameters["required"], list):
+                raise ToolValidationError(f"Tool '{self.name}' parameters.required must be a list")
+            
+            return True
+            
+        except Exception as e:
+            raise ToolValidationError(f"Schema round-trip validation failed for tool '{self.name}': {e}")
+    
+    @classmethod
+    def validate_class(cls) -> bool:
+        """Validate a tool class before instantiation.
+        
+        This can be used to check if a class is a valid tool without creating an instance.
+        
+        Returns:
+            True if the class appears to be a valid tool
+        """
+        # Check it's a subclass of BaseTool
+        if not issubclass(cls, BaseTool):
+            return False
+        
+        # Check it has required class attributes or will get them from __init__
+        # (name and description can be set in __init__ so we can't strictly require them)
+        
+        # Check run() is defined (not just inherited abstract)
+        if 'run' not in cls.__dict__:
+            return False
+        
+        return True
+
+
+def validate_tool(tool: Any) -> bool:
+    """Validate any tool-like object.
+    
+    Args:
+        tool: Object to validate (BaseTool, callable, etc.)
+        
+    Returns:
+        True if valid
+        
+    Raises:
+        ToolValidationError: If validation fails
+    """
+    if isinstance(tool, BaseTool):
+        tool.validate()
+        tool.validate_schema_roundtrip()
+        return True
+    
+    if callable(tool):
+        # For plain functions, check they have a name
+        name = getattr(tool, '__name__', None) or getattr(tool, 'name', None)
+        if not name:
+            raise ToolValidationError("Callable tool must have a __name__ or name attribute")
+        return True
+    
+    raise ToolValidationError(f"Invalid tool type: {type(tool)}")
+
+
+def _extract_schema(tool: Any) -> Optional[Dict[str, Any]]:
+    """Resolve a tool's schema from its supported shapes.
+
+    Supports BaseTool instances, objects exposing a callable ``get_schema``,
+    and plain callables (via the ``@tool`` decorator schema builder).
+
+    Args:
+        tool: Tool object to extract a schema from
+
+    Returns:
+        The tool's schema dict, or None if the tool shape is unsupported
+    """
+    from .decorator import get_tool_schema
+    if isinstance(tool, BaseTool):
+        return tool.get_schema()
+    elif hasattr(tool, 'get_schema') and callable(getattr(tool, 'get_schema')):
+        return tool.get_schema()
+    elif callable(tool):
+        return get_tool_schema(tool)
+    return None
+
+
+def validate_tool_schema_consistency(tools: List[Any], return_schemas: bool = False):
+    """Validate a list of tools for schema consistency with OpenAI format.
+    
+    This function ensures all tools in a list can be properly serialized
+    and have consistent schema structures for use with LLM providers.
+    
+    Args:
+        tools: List of tool objects to validate
+        return_schemas: If True, return the list of built schemas instead of
+            just a boolean, so callers can reuse them without rebuilding.
+        
+    Returns:
+        True if all tools are valid and consistent (or the built schemas list
+        when ``return_schemas`` is True)
+        
+    Raises:
+        ToolValidationError: If validation fails
+    """
+    if not tools:
+        return [] if return_schemas else True
+        
+    import json
+    schemas = []
+    
+    for i, tool in enumerate(tools):
+        try:
+            # Validate individual tool
+            validate_tool(tool)
+            
+            # Get schema from different tool types
+            schema = _extract_schema(tool)
+            if schema is None:
+                raise ToolValidationError(f"Cannot extract schema from tool at index {i}: {type(tool)}")
+            
+            if not schema:
+                raise ToolValidationError(f"Tool at index {i} returned empty schema")
+                
+            # Validate JSON serialization
+            try:
+                json.dumps(schema)
+            except (TypeError, ValueError) as e:
+                raise ToolValidationError(f"Tool schema at index {i} is not JSON serializable: {e}")
+            
+            schemas.append(schema)
+            
+        except Exception as e:
+            raise ToolValidationError(f"Tool validation failed at index {i}: {e}")
+    
+    # Check for duplicate tool names
+    names = set()
+    for schema in schemas:
+        name = schema.get("function", {}).get("name")
+        if name in names:
+            raise ToolValidationError(f"Duplicate tool name '{name}' found in tool list")
+        names.add(name)
+    
+    return schemas if return_schemas else True
+
+
+def get_sorted_tool_schemas(tools: List[Any]) -> List[Dict[str, Any]]:
+    """Get tool schemas sorted by function name for deterministic ordering.
+    
+    This ensures tool schemas are always ordered consistently for prompt caching optimization.
+    
+    Args:
+        tools: List of tool objects (BaseTool instances, callables, etc.)
+        
+    Returns:
+        List of tool schemas sorted alphabetically by function name
+        
+    Raises:
+        ToolValidationError: If validation fails
+    """
+    if not tools:
+        return []
+        
+    # Validate all tools once and reuse the schemas built during validation
+    schemas = validate_tool_schema_consistency(tools, return_schemas=True)
+    
+    # Sort schemas by function name for deterministic ordering
+    def sort_key(schema):
+        return schema.get("function", {}).get("name", "")
+    
+    return sorted(schemas, key=sort_key)
+
+
+# For backward compatibility - tools can also just be functions
+# The @tool decorator (in decorator.py) wraps functions into BaseTool instances

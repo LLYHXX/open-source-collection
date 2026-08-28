@@ -1,0 +1,50 @@
+meta {
+  name: get row diff v2
+  type: http
+  seq: 15
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/row-diff/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "experiment_id": "{{experimentId}}",
+    "column_ids": ["uuid-col-1", "uuid-col-2"],
+    "row_ids": ["uuid-row-1"],
+    "compare_column_ids": ["uuid-compare-col-1"]
+  }
+}
+
+docs {
+  ## Get Row Diff V2
+
+  Calculates diff between multiple column responses for given rows.
+
+  ### Request Body
+  - `experiment_id` — Experiment UUID
+  - `column_ids` — All columns to fetch values for
+  - `row_ids` — Rows to calculate diff for
+  - `compare_column_ids` — Base columns to compare against
+
+  ### Response
+  ```json
+  {
+    "row_id": {
+      "column_id": {
+        "cellValue": "...",
+        "cellDiffValue": "..." or null,
+        "status": "...",
+        "valueInfos": {...}
+      }
+    }
+  }
+  ```
+}

@@ -1,0 +1,24 @@
+meta {
+  name: experiment compare datasets
+  type: http
+  seq: 5
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/68b54870-d00b-4005-a35d-77992f494117/compare-experiments/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "average_time": 0.5,
+      "score": 0.50,
+      "total_token": 1,
+      "completion_token": 2
+  }
+}

@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+from datetime import timedelta
+from typing import Any, Callable
+
+from .spend_sources import VISIBLE_GOAL_SLOT_SPEND_SOURCE
+from .usage_collector import UsageSample, collect_usage_for_run
+from ..runtime.time import now_utc
+
+USAGE_PROXY_NOTE = (
+    "run-history proxy; carries aggregate token/cost/duration, "
+    "excludes raw thread logs"
+)
+
+ParseTimestamp = Callable[[Any], Any]
+USAGE_METRIC_NAMES = (
+    "input_tokens",
+    "output_tokens",
+    "cache_tokens",
+    "cost_usd",
+    "duration_ms",
+)
+
+
+def quota_spend_slots(run: dict[str, Any]) -> int:
+    classification = str(run.get("classification") or "")
+    if classification not in {"quota_slot_spent", "quota_slot_voided"}:
+        return 0
+    quota_event = run.get("quota_event") if isinstance(run.get("quota_event"), dict) else {}
+    raw_slots = quota_event.get("slots", 1)
+    try:
+        slots = max(0, int(raw_slots))
+    except (TypeError, ValueError):
+        slots = 1
+    if classification == "quota_slot_voided" or str(quota_event.get("event_type") or "") == "quota_slot_voided":
+        return -slots
+    return slots
+
+
+def is_automation_run(run: dict[str, Any]) -> bool:
+    quota_event = run.get("quota_event") if isinstance(run.get("quota_event"), dict) else {}
+    source = str(quota_event.get("source") or run.get("source") or "").lower()
+    if source == VISIBLE_GOAL_SLOT_SPEND_SOURCE:
+        return False
+    if source in {"heartbeat", "automation", "cron"}:
+        return True
+    if "heartbeat" in source or "automation" in source:
+        return True
+    return str(run.get("classification") or "") in {"quota_slot_spent", "quota_slot_voided"}
+
+
+def is_progress_signal_run(run: dict[str, Any]) -> bool:
+    classification = str(run.get("classification") or "")
+    return bool(classification and classification not in {"quota_slot_spent", "quota_slot_voided", "state_refreshed"})
+
+
+def blank_usage_goal(goal_id: str) -> dict[str, Any]:
+    return {
+        "goal_id": goal_id,
+        "runs_24h": 0,
+        "runs_7d": 0,
+        "quota_spend_slots_24h": 0,
+        "quota_spend_slots_7d": 0,
+        "automation_run_count_24h": 0,
+        "automation_run_count_7d": 0,
+        "progress_signal_run_count_24h": 0,
+        "progress_signal_run_count_7d": 0,
+        "project_share_24h": 0.0,
+        "input_tokens_24h": 0,
+        "input_tokens_7d": 0,
+        "output_tokens_24h": 0,
+        "output_tokens_7d": 0,
+        "cache_tokens_24h": 0,
+        "cache_tokens_7d": 0,
+        "cost_usd_24h": 0.0,
+        "cost_usd_7d": 0.0,
+        "duration_ms_24h": 0,
+        "duration_ms_7d": 0,
+    }
+
+
+def _accumulate_usage(bucket: dict[str, Any], sample: UsageSample, suffix: str) -> None:
+    bucket[f"input_tokens_{suffix}"] += sample.input_tokens
+    bucket[f"output_tokens_{suffix}"] += sample.output_tokens
+    bucket[f"cache_tokens_{suffix}"] += sample.cache_tokens
+    bucket[f"cost_usd_{suffix}"] += sample.cost_usd
+    bucket[f"duration_ms_{suffix}"] += sample.duration_ms
+
+
+def _round_cost(bucket: dict[str, Any]) -> None:
+    for suffix in ("24h", "7d"):
+        key = f"cost_usd_{suffix}"
+        if key in bucket:
+            bucket[key] = round(float(bucket[key]), 6)
+
+
+def _strip_unobserved_usage_windows(
+    bucket: dict[str, Any],
+    observed_windows: set[str],
+) -> None:
+    for suffix in ("24h", "7d"):
+        if suffix in observed_windows:
+            continue
+        for metric_name in USAGE_METRIC_NAMES:
+            bucket.pop(f"{metric_name}_{suffix}", None)
+
+
+def build_usage_summary(
+    history: dict[str, Any],
+    *,
+    parse_timestamp: ParseTimestamp,
+) -> dict[str, Any]:
+    now = now_utc()
+    cutoff_24h = now - timedelta(hours=24)
+    cutoff_7d = now - timedelta(days=7)
+    totals = {
+        "runs_24h": 0,
+        "runs_7d": 0,
+        "quota_spend_slots_24h": 0,
+        "quota_spend_slots_7d": 0,
+        "automation_run_count_24h": 0,
+        "automation_run_count_7d": 0,
+        "progress_signal_run_count_24h": 0,
+        "progress_signal_run_count_7d": 0,
+        "input_tokens_24h": 0,
+        "input_tokens_7d": 0,
+        "output_tokens_24h": 0,
+        "output_tokens_7d": 0,
+        "cache_tokens_24h": 0,
+        "cache_tokens_7d": 0,
+        "cost_usd_24h": 0.0,
+        "cost_usd_7d": 0.0,
+        "duration_ms_24h": 0,
+        "duration_ms_7d": 0,
+    }
+    goals: dict[str, dict[str, Any]] = {}
+    observed_usage_windows: set[str] = set()
+    goal_usage_windows: dict[str, set[str]] = {}
+    sample_count = 0
+
+    for run in history.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        sample_count += 1
+        generated_at = parse_timestamp(run.get("generated_at"))
+        if generated_at is None:
+            continue
+        goal_id = str(run.get("goal_id") or "unknown-goal")
+        goal = goals.setdefault(goal_id, blank_usage_goal(goal_id))
+        slots = quota_spend_slots(run)
+        automation_event = is_automation_run(run)
+        progress_signal = is_progress_signal_run(run)
+        usage_sample = collect_usage_for_run(run)
+
+        if generated_at >= cutoff_7d:
+            totals["runs_7d"] += 1
+            goal["runs_7d"] += 1
+            totals["quota_spend_slots_7d"] += slots
+            goal["quota_spend_slots_7d"] += slots
+            if automation_event:
+                totals["automation_run_count_7d"] += 1
+                goal["automation_run_count_7d"] += 1
+            if progress_signal:
+                totals["progress_signal_run_count_7d"] += 1
+                goal["progress_signal_run_count_7d"] += 1
+            if usage_sample is not None:
+                _accumulate_usage(totals, usage_sample, "7d")
+                _accumulate_usage(goal, usage_sample, "7d")
+                observed_usage_windows.add("7d")
+                goal_usage_windows.setdefault(goal_id, set()).add("7d")
+        if generated_at >= cutoff_24h:
+            totals["runs_24h"] += 1
+            goal["runs_24h"] += 1
+            totals["quota_spend_slots_24h"] += slots
+            goal["quota_spend_slots_24h"] += slots
+            if automation_event:
+                totals["automation_run_count_24h"] += 1
+                goal["automation_run_count_24h"] += 1
+            if progress_signal:
+                totals["progress_signal_run_count_24h"] += 1
+                goal["progress_signal_run_count_24h"] += 1
+            if usage_sample is not None:
+                _accumulate_usage(totals, usage_sample, "24h")
+                _accumulate_usage(goal, usage_sample, "24h")
+                observed_usage_windows.add("24h")
+                goal_usage_windows.setdefault(goal_id, set()).add("24h")
+
+    if totals["runs_24h"]:
+        for goal in goals.values():
+            goal["project_share_24h"] = round(goal["runs_24h"] / totals["runs_24h"], 3)
+
+    _round_cost(totals)
+    for goal in goals.values():
+        _round_cost(goal)
+
+    goal_rows = sorted(
+        goals.values(),
+        key=lambda item: (
+            item["runs_24h"],
+            item["quota_spend_slots_24h"],
+            item["cost_usd_24h"],
+            item["input_tokens_24h"],
+            item["runs_7d"],
+            item["goal_id"],
+        ),
+        reverse=True,
+    )
+    _strip_unobserved_usage_windows(totals, observed_usage_windows)
+    for goal in goal_rows:
+        _strip_unobserved_usage_windows(
+            goal,
+            goal_usage_windows.get(str(goal.get("goal_id") or ""), set()),
+        )
+    return {
+        "available": True,
+        "source": "run_history",
+        "generated_at": now.isoformat(),
+        "sample_run_count": sample_count,
+        "proxy_note": USAGE_PROXY_NOTE,
+        "totals": totals,
+        "goals": goal_rows,
+    }

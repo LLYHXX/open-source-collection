@@ -1,0 +1,161 @@
+# PeerDB CDC replication: PostgreSQL -> ClickHouse
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.peerdb.yml up -d
+#
+# With ws1:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.ws1.yml -f docker-compose.peerdb.yml up -d
+#
+# After services are up, configure mirrors:
+#   ./scripts/peerdb-setup-mirrors.sh
+#
+# PeerDB UI: http://localhost:3001 (or 3002 for ws1)
+
+x-peerdb-minio-config: &peerdb-minio-config
+  PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ACCESS_KEY_ID: _peerdb_minioadmin
+  PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_SECRET_ACCESS_KEY: _peerdb_minioadmin
+  PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_REGION: us-east-1
+  PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ENDPOINT_URL_S3: http://peerdb-minio:9000
+  PEERDB_CLICKHOUSE_AWS_S3_BUCKET_NAME: peerdbbucket
+
+x-peerdb-catalog-config: &peerdb-catalog-config
+  PEERDB_CATALOG_HOST: peerdb-catalog
+  PEERDB_CATALOG_PORT: 5432
+  PEERDB_CATALOG_USER: postgres
+  PEERDB_CATALOG_PASSWORD: postgres
+  PEERDB_CATALOG_DATABASE: postgres
+
+x-peerdb-flow-env: &peerdb-flow-env
+  TEMPORAL_HOST_PORT: peerdb-temporal:7233
+  TEMPORAL_CLIENT_CERT:
+  TEMPORAL_CLIENT_KEY:
+  PEERDB_TEMPORAL_NAMESPACE: default
+  AWS_ACCESS_KEY_ID:
+  AWS_SECRET_ACCESS_KEY:
+  AWS_REGION:
+  AWS_ENDPOINT:
+
+services:
+  # Override main PG to enable logical replication
+  db:
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_wal_senders=25
+      -c max_replication_slots=25
+
+  # PeerDB catalog database (separate from app DB)
+  peerdb-catalog:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - peerdb-catalog-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PeerDB's own Temporal (separate from app Temporal)
+  peerdb-temporal:
+    image: temporalio/auto-setup:1.29
+    restart: unless-stopped
+    depends_on:
+      peerdb-catalog:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
+      - POSTGRES_SEEDS=peerdb-catalog
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    volumes:
+      - ./config/peerdb/temporal-dynamicconfig.yaml:/etc/temporal/config/dynamicconfig/development-sql.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x temporal-server"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # PeerDB Flow API
+  peerdb-flow-api:
+    image: ghcr.io/peerdb-io/flow-api:stable-v0.36.9
+    restart: unless-stopped
+    environment:
+      <<: [*peerdb-catalog-config, *peerdb-flow-env, *peerdb-minio-config]
+      PEERDB_ALLOWED_TARGETS:
+    depends_on:
+      peerdb-temporal:
+        condition: service_healthy
+
+  # PeerDB Flow Worker
+  peerdb-flow-worker:
+    image: ghcr.io/peerdb-io/flow-worker:stable-v0.36.9
+    restart: unless-stopped
+    environment:
+      <<: [*peerdb-catalog-config, *peerdb-flow-env, *peerdb-minio-config]
+    depends_on:
+      peerdb-temporal:
+        condition: service_healthy
+
+  # PeerDB Server (SQL interface)
+  peerdb-server:
+    image: ghcr.io/peerdb-io/peerdb-server:stable-v0.36.9
+    stop_signal: SIGINT
+    restart: unless-stopped
+    environment:
+      <<: *peerdb-catalog-config
+      PEERDB_PASSWORD: peerdb
+      PEERDB_FLOW_SERVER_ADDRESS: grpc://peerdb-flow-api:8112
+      RUST_LOG: info
+    ports:
+      - "${PEERDB_PORT:-9900}:9900"
+    depends_on:
+      peerdb-catalog:
+        condition: service_healthy
+
+  # PeerDB UI
+  peerdb-ui:
+    image: ghcr.io/peerdb-io/peerdb-ui:stable-v0.36.9
+    restart: unless-stopped
+    ports:
+      - "${PEERDB_UI_PORT:-3001}:3000"
+    environment:
+      <<: *peerdb-catalog-config
+      PEERDB_FLOW_SERVER_HTTP: http://peerdb-flow-api:8113
+      NEXTAUTH_SECRET: peerdb-local-dev
+      NEXTAUTH_URL: http://localhost:3001
+      PEERDB_ALLOWED_TARGETS:
+      PEERDB_CLICKHOUSE_ALLOWED_DOMAINS:
+    depends_on:
+      - peerdb-flow-api
+
+  # PeerDB MinIO (staging area for CH ingestion)
+  peerdb-minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    volumes:
+      - peerdb-minio-data:/data
+    environment:
+      MINIO_ROOT_USER: _peerdb_minioadmin
+      MINIO_ROOT_PASSWORD: _peerdb_minioadmin
+    entrypoint: >
+      /bin/sh -c "
+      minio server /data --console-address=:36987 &
+      sleep 2;
+      mc alias set myminiopeerdb http://localhost:9000 _peerdb_minioadmin _peerdb_minioadmin;
+      mc mb --ignore-existing myminiopeerdb/peerdbbucket;
+      wait
+      "
+
+volumes:
+  peerdb-catalog-data:
+    driver: local
+  peerdb-minio-data:
+    driver: local

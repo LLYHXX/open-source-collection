@@ -1,0 +1,35 @@
+meta {
+  name: Get Observation Span
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/tracer/observation-span/:id
+  body: none
+  auth: bearer
+}
+
+params:query {
+  ~project: 241358a5-7558-4987-bb57-e4d033db159c
+  ~project_version: 947f51e7-19c8-4a2f-a239-f1fd2ede64ee
+  ~trace: e2711d73-5d03-4ea2-b42b-7843ce17d408
+  ~observation_span: 8c08e00b-f34d-40dd-bad1-e7f8251b2e24
+}
+
+params:path {
+  id: 436d7b3dc9c347e0
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "241358a5-7558-4987-bb57-e4d033db159c",
+    "trace": "e2711d73-5d03-4ea2-b42b-7843ce17d408",
+    "project_version": "947f51e7-19c8-4a2f-a239-f1fd2ede64ee",
+    "":"8c08e00b-f34d-40dd-bad1-e7f8251b2e2"
+  }
+}

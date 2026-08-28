@@ -1,0 +1,42 @@
+meta {
+  name: suggest experiment name v2
+  type: http
+  seq: 16
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/suggest-name/{{datasetId}}/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+vars:pre-request {
+  datasetId: aa1abcc5-fef9-44ee-96c6-2f499296c8f3
+}
+
+docs {
+  ## Suggest Experiment Name V2
+
+  Generates a suggested experiment name for a dataset.
+
+  Format: `DS_{dataset_name}_exp_{yy/mm/dd}[_vN]`
+
+  - Uses server UTC date
+  - Versioned: `_v2`, `_v3`, etc. when multiple experiments already exist
+    for the same dataset on the same day
+  - Max 98 characters total; dataset name is cropped if needed (min 4 chars)
+
+  ### Response
+  ```json
+  {
+    "data": {
+      "suggested_name": "DS_MyDataset_exp_26/03/03"
+    },
+    "status": 200
+  }
+  ```
+}

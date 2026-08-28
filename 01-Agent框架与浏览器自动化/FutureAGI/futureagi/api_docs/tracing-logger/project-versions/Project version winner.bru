@@ -1,0 +1,27 @@
+meta {
+  name: Project version winner
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{host}}/tracer/project-version/project_version_winner/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "projectId": "10117e60-750c-48b3-854e-b8d3d78a2405",
+      "config": {
+          "avg_latency_ms": 2,
+          "46e6adce-e5ac-4494-a167-c15ddf722566": {
+            "No": 4
+          }
+      }
+  }
+}

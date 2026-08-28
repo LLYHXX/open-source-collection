@@ -1,0 +1,33 @@
+eval_id: 191
+name: word_info_preserved
+description: "Computes Word Information Preserved (WIP) for speech. WIP = (hits/ref) * (hits/hyp). Higher = better."
+eval_tags:
+- NLP Metrics
+- Audio
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [reference, hypothesis]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {reference: Ground truth, hypothesis: ASR output}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        ref = str(kwargs.get("reference", expected or "")).strip().lower().split()
+        hyp = str(kwargs.get("hypothesis", output or "")).strip().lower().split()
+        if not ref and not hyp: return {"score": 1.0, "reason": "WIP: 1.0 (both empty)"}
+        if not ref or not hyp: return {"score": 0.0, "reason": "WIP: 0.0 (one empty)"}
+        n, m = len(ref), len(hyp)
+        dp = list(range(m+1))
+        for i in range(1, n+1):
+            prev = dp[:]
+            dp[0] = i
+            for j in range(1, m+1):
+                cost = 0 if ref[i-1] == hyp[j-1] else 1
+                dp[j] = min(dp[j-1]+1, prev[j]+1, prev[j-1]+cost)
+        hits = max(0, n - dp[m])
+        wip = (hits/n) * (hits/m)
+        return {"score": float(wip), "reason": f"WIP: {wip:.4f}"}

@@ -1,0 +1,28 @@
+meta {
+  name: preview
+  type: http
+  seq: 4
+}
+
+post {
+  url: http://localhost:8000/model-hub/datasets/508a4a94-b9dd-4677-a677-003f0cdad258/add_vector_db_column/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "column_id": "36223a33-4a13-4065-8f9d-63013d1d23ae",
+    "new_column_name": "Pinecone Results",
+    "sub_type": "pinecone",
+    "api_key": "pcsk_4JdZYd_7erNF9tQ63j5hHgXDxuVAMFJyRnxRQuzNwSMV5YMnEDCEUygtUvjuN6dkwtSkf3",
+    "index_name": "apicall",
+    "top_k": 1,
+    "namespace": "garv",
+    "concurrency": 5
+  }
+}

@@ -1,0 +1,248 @@
+# Build the desktop app for macOS, Windows and Linux, and attach it to the
+# release.
+#
+# Releases carried no assets at all -- v4.7.1 shipped zero -- so there was
+# nothing for anyone to download. The macOS half of this shipped first; this
+# adds the other two, which were not merely missing from CI but impossible:
+# the bundle targets were `["app", "dmg"]`, both macOS-only, so a Windows or
+# Linux build produced zero artifacts and still exited zero.
+#
+# Unsigned, deliberately, on every platform. macOS signing needs a Developer ID
+# and Windows signing now needs a hardware-backed certificate or a hosted
+# signing service -- neither is in secrets. Shipping builds people can open
+# past the warning is better than shipping none, and the release notes say so
+# rather than letting Gatekeeper and SmartScreen say it for us.
+name: Desktop release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to attach the build to'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  # Queue rather than cancel: a cancelled release build looks identical to a
+  # release that simply never produced assets, which is the bug being fixed.
+  group: desktop-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-15, not macos-14: that image entered deprecation on
+          # 2026-07-06 and is fully unsupported from 2026-11-02, with brownout
+          # periods failing jobs before then. This is the only Apple-silicon
+          # leg, so losing it means no arm64 DMG at all.
+          - runner: macos-15        # Apple silicon
+            target: aarch64-apple-darwin
+            bundles: dmg
+            ext: dmg
+            asset: macos-apple-silicon
+          # macos-15-intel, not macos-13: that image was retired on
+          # 2025-12-04, so the leg would never schedule and the verify job
+          # below would correctly report a missing asset on every release,
+          # forever. macos-15-intel is GitHub's named x86_64 replacement.
+          - runner: macos-15-intel  # Intel
+            target: x86_64-apple-darwin
+            bundles: dmg
+            ext: dmg
+            asset: macos-intel
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            ext: exe
+            asset: windows-x64-setup
+          # ubuntu-22.04 rather than -latest on purpose: glibc is forward
+          # compatible only, so the build host sets the *oldest* distribution
+          # the .deb can run on. Building on 24.04 would produce a package that
+          # refuses to start on 22.04 and Debian 12 with a "GLIBC_2.38 not
+          # found" that no runtime flag can fix.
+          #
+          # This image begins deprecation on 2026-09-17 and is retired on
+          # 2027-04-17. When it goes, move to `ubuntu-latest` with
+          # `container: debian:12` rather than bumping the runner -- that keeps
+          # the glibc floor decided by us instead of by GitHub's image
+          # lifecycle.
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb
+            ext: deb
+            asset: linux-x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          # Retried: a degraded mirror otherwise burns the whole job and
+          # reports "cancelled", which reads as our failure rather than apt's.
+          for attempt in 1 2 3; do
+            sudo apt-get update && break || sleep 15
+          done
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            xdg-utils
+          # libappindicator3-dev, not the ayatana package: the .deb's generated
+          # Depends: follows whichever one the binary linked against, so the
+          # two must not be mixed between builds.
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src/praisonai-desktop/src-tauri -> target
+          # Saving the Windows target directory costs more minutes than the
+          # rebuild it saves.
+          save-if: ${{ runner.os != 'Windows' }}
+
+      - name: Install the Tauri CLI
+        shell: bash
+        # `|| true` swallowed a genuine install failure and the next step then
+        # died with an unrelated "no such command: tauri". It also behaved
+        # differently per leg, since Windows defaults to pwsh where `true` is
+        # not a command. Skip the install if it is already there; otherwise
+        # let a failure be a failure.
+        run: command -v cargo-tauri >/dev/null || cargo install tauri-cli --version '^2' --locked
+
+      - name: Set the desktop version from the release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: node src/praisonai-desktop/tools/set-release-version.mjs "$RELEASE_TAG"
+
+      - name: Build the bundle
+        working-directory: src/praisonai-desktop/src-tauri
+        run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: The Windows binary must carry the release version
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: src/praisonai-desktop/src-tauri
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          $expected = $env:RELEASE_TAG -replace '^v', ''
+          $numeric = ($expected -split '[-+]')[0] + '.0'
+          $version = (Get-Item "target/${{ matrix.target }}/release/praisonai-desktop.exe").VersionInfo
+          if ($version.ProductVersion -ne $expected) {
+            throw "ProductVersion $($version.ProductVersion) does not match $expected"
+          }
+          if ($version.FileVersion -ne $numeric) {
+            throw "FileVersion $($version.FileVersion) does not match $numeric"
+          }
+
+      - name: The macOS bundle must carry a valid signature
+        if: runner.os == 'macOS'
+        working-directory: src/praisonai-desktop/src-tauri
+        run: |
+          set -euo pipefail
+          dmg="$(find "target/${{ matrix.target }}/release/bundle" -name '*.dmg' -print -quit)"
+          [ -n "$dmg" ] || { echo "no .dmg was produced"; exit 1; }
+
+          # Verify inside the DMG, not the .app beside it.
+          #
+          # Tauri deletes the app bundle once the DMG is built -- the build log
+          # says so plainly ("Cleaning .../bundle/macos/PraisonAI.app") -- so a
+          # gate that looked for the .app found nothing and failed every macOS
+          # leg. Reading the DMG is also the better check: it is the artifact
+          # people download, and the one that was broken.
+          #
+          # v4.7.2 shipped a DMG that macOS called "damaged and can't be
+          # opened" on every Mac. The cause was not the missing Developer ID:
+          # the only signature was the one rustc's linker puts on the bare
+          # executable, whose CodeDirectory declares a resource seal that an
+          # unsigned bundle does not have --
+          #
+          #   Sealed Resources=none
+          #   code has no resources but signature indicates they must be present
+          #
+          # That is an *invalid* signature, not an unsigned one, and macOS
+          # reports invalid as "damaged". Right-click -> Open cannot bypass it,
+          # so the instructions shipped alongside it could not work either.
+          mnt="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -quiet -mountpoint "$mnt" "$dmg"
+          trap 'hdiutil detach "$mnt" -quiet || true' EXIT
+
+          app="$(find "$mnt" -maxdepth 1 -name '*.app' -print -quit)"
+          [ -n "$app" ] || { echo "the DMG contains no .app"; ls -la "$mnt"; exit 1; }
+
+          echo "verifying $app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # Printed, not asserted: --verify already fails on the exact bundle
+          # that shipped, so a second check for the same thing would only be a
+          # second way to say it. This is here to make the log readable.
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -E 'Sealed Resources|flags=' || true
+
+      - name: Name the artifact for the platform it runs on
+        id: artifact
+        shell: bash
+        working-directory: src/praisonai-desktop/src-tauri
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name || inputs.tag }}"
+          root="target/${{ matrix.target }}/release/bundle"
+          found="$(find "$root" -name "*.${{ matrix.ext }}" -print -quit || true)"
+          # Fail loudly rather than uploading nothing: an empty release asset
+          # list is exactly the state this workflow exists to fix, and a bundler
+          # given a target it does not support exits zero having written none.
+          if [ -z "$found" ]; then
+            echo "no .${{ matrix.ext }} was produced under $root"
+            find "$root" -type f -print || echo "(the bundle directory does not exist)"
+            exit 1
+          fi
+          out="PraisonAI-${tag}-${{ matrix.asset }}.${{ matrix.ext }}"
+          mv "$found" "../$out"
+          echo "path=src/praisonai-desktop/$out" >> "$GITHUB_OUTPUT"
+
+      - name: Attach it to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload \
+            "${{ github.event.release.tag_name || inputs.tag }}" \
+            "${{ steps.artifact.outputs.path }}" --clobber
+
+  verify:
+    # A release with a missing platform is worse than an obviously failed
+    # build, because nobody notices. This says which one is absent.
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check every platform produced an asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+                      --json assets -q '.assets[].name')"
+          echo "$assets"
+          missing=""
+          for want in macos-apple-silicon macos-intel windows-x64-setup linux-x64; do
+            echo "$assets" | grep -q -- "$want" || missing="$missing $want"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::the release is missing:$missing"
+            exit 1
+          fi
+          echo "all four platform builds are attached"

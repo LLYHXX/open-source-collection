@@ -1,0 +1,27 @@
+id: backup-file-exposure
+info:
+  name: Common Backup File Exposure
+  severity: high
+  description: Common backup / source-dump paths return 200 with sensitive markers
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.env.bak"
+      - "{{BaseURL}}/config.php.bak"
+      - "{{BaseURL}}/wp-config.php.bak"
+      - "{{BaseURL}}/backup.sql"
+      - "{{BaseURL}}/database.sql"
+      - "{{BaseURL}}/.git/HEAD"
+      - "{{BaseURL}}/web.config.bak"
+    matchers:
+      - type: word
+        words:
+          - "DB_PASSWORD"
+          - "APP_KEY"
+          - "ref: refs/"
+          - "CREATE TABLE"
+          - "mysqli_connect"
+        condition: or
+      - type: status
+        status:
+          - 200

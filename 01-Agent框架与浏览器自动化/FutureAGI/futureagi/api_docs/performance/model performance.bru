@@ -1,0 +1,37 @@
+meta {
+  name: model performance
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/performance/:model_id/
+  body: json
+  auth: bearer
+}
+
+params:path {
+  model_id: 3dc60c07-1f6e-49d0-ad84-7306381ac83f
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "dataset": {
+          "version": "1.1",
+          "environment": "Training",
+          "startDate": "2024-01-07 10:08:12",
+          "endDate": "2024-07-07 10:08:12",
+          "aggBy": "daily"
+      },
+      "metric": {
+          "id": "e8c51415-c68c-453e-a22b-35e911158d21"
+      },
+      "filters": [
+
+      ]
+  }
+}

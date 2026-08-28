@@ -1,0 +1,96 @@
+{
+  "themes": {
+    "enabled": true
+  },
+  "monitor": {
+    "menuEnabled": true,
+    "docsLink": "https://www.jaegertracing.io/docs/latest/spm/",
+    "emptyState": {
+      "mainTitle": "Service Performance Monitoring",
+      "subTitle": "Monitor service metrics and performance indicators",
+      "description": "View service health, latency, and error rates across your distributed system"
+    }
+  },
+  "dependencies": {
+    "dagMaxNumServices": 200,
+    "menuEnabled": true
+  },
+  "archiveEnabled": false,
+  "tracking": {
+    "gaID": "",
+    "trackErrors": true
+  },
+  "search": {
+    "maxLimit": 1500,
+    "maxLookback": {
+      "label": "2 Days",
+      "value": "2d"
+    }
+  },
+  "linkPatterns": [
+    {
+      "type": "tags",
+      "key": "http.url",
+      "url": "#{http.url}",
+      "text": "Open URL"
+    },
+    {
+      "type": "tags",
+      "key": "user.id",
+      "url": "/api/users/#{user.id}",
+      "text": "View User Profile"
+    },
+    {
+      "type": "tags",
+      "key": "organization.id",
+      "url": "/api/organizations/#{organization.id}",
+      "text": "View Organization"
+    },
+    {
+      "type": "tags",
+      "key": "project.id",
+      "url": "/api/projects/#{project.id}",
+      "text": "View Project"
+    },
+    {
+      "type": "tags",
+      "key": "experiment.id",
+      "url": "/api/experiments/#{experiment.id}",
+      "text": "View Experiment"
+    },
+    {
+      "type": "tags",
+      "key": "trace.id",
+      "url": "/api/traces/#{trace.id}",
+      "text": "View Trace Details"
+    },
+    {
+      "type": "logs",
+      "key": "event",
+      "url": "/logs?q=#{event}",
+      "text": "Search Logs"
+    }
+  ],
+  "traceIdDisplayLength": 16,
+  "topTagPrefixes": [
+    "http.",
+    "db.",
+    "rpc.",
+    "gen_ai.",
+    "llm.",
+    "user.",
+    "organization.",
+    "project.",
+    "experiment.",
+    "temporal.",
+    "celery.",
+    "otel."
+  ],
+  "criticalPathEnabled": true,
+  "deepDependencies": {
+    "menuEnabled": true
+  },
+  "qualityMetrics": {
+    "menuEnabled": true
+  }
+}

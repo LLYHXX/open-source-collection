@@ -1,0 +1,38 @@
+meta {
+  name: Get Experiments by Dataset
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/experiment-detail/?dataset_id={{datasetId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+query {
+  dataset_id: {{datasetId}}
+  ~search:
+}
+
+docs {
+  ## Get Experiments by Dataset (V1)
+
+  Returns list of experiments for a given dataset. Returns only id and name.
+
+  ### Query Parameters
+  - `dataset_id` — Filter by dataset (required)
+  - `search` — Search by name (optional)
+
+  ### Response
+  ```json
+  [
+    {"id": "uuid", "name": "Exp1"},
+    {"id": "uuid", "name": "Exp2"}
+  ]
+  ```
+}

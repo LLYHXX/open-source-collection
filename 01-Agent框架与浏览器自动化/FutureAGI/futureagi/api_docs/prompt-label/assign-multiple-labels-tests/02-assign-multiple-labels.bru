@@ -1,0 +1,54 @@
+meta {
+  name: 02 - Assign Multiple Labels (Success)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v2_id}}",
+    "label_ids": [
+      "{{prod_label_id}}",
+      "{{staging_label_id}}"
+    ]
+  }
+}
+
+docs {
+  # Assign Multiple Labels - Success Case
+
+  ## Test Scenario
+  Assigns multiple labels (Production and Staging) to a version at once.
+
+  ## Prerequisites
+  - `version_v1` has both Production and Staging labels
+  - `version_v2` exists and is the target
+
+  ## Expected Behavior
+  - Status: 200 OK
+  - Both labels are added to version_v2
+  - Both labels are removed from version_v1 (exclusivity)
+
+  ## Expected Response
+  ```json
+  {
+    "status": true,
+    "result": "Labels assigned successfully"
+  }
+  ```
+
+  ## Test Coverage
+  - Multiple labels in single request
+  - Batch label assignment
+  - Exclusivity enforcement for multiple labels
+}

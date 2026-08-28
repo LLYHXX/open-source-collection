@@ -1,0 +1,15 @@
+meta {
+  name: get status
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{host}}/model-hub/prompt-templates/0403ef06-96b6-4456-8417-9ec49086d471/get-run-status/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

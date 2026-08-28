@@ -1,0 +1,21 @@
+meta {
+  name: Add Empty Columns
+  type: http
+  seq: 30
+}
+
+post {
+  url: {{host}}/model-hub/develops/58065dbc-6968-4d82-be0c-cd0e73373961/add_empty_columns/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "num_cols": 2
+  }
+}

@@ -1,0 +1,15 @@
+meta {
+  name: prompt delete
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{backend_url}}/model-hub/prompt-templates/6481dd5a-90f9-43c4-861b-75def5ad0e26/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

@@ -1,0 +1,22 @@
+meta {
+  name: run eval Rows
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{host}}/model-hub/evaluate-rows/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "user_eval_metric_ids" : ["40fcce34-4b89-4450-9f28-05e2a64e7359"],
+    "row_ids" : ["dc742fa2-5219-4d7f-a60c-461dba0063a3"]
+  }
+}

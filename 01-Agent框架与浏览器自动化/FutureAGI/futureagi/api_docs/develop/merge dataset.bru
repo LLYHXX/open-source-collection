@@ -1,0 +1,22 @@
+meta {
+  name: merge dataset
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{host}}/model-hub/datasets/d96df725-4a02-4af8-81da-51ce01711992/merge/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "source_dataset_id": "1355ed0e-ba30-4539-a2b7-c93cc6044488"
+
+  }
+}

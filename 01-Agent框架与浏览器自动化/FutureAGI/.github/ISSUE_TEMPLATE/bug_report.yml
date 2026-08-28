@@ -1,0 +1,82 @@
+name: 🐛 Bug report
+description: Something isn't working as expected
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out this form as completely as you can — it makes triage much faster.
+
+        **Security issues:** please report privately to security@futureagi.com instead of opening a public issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: "I expected X, but Y happened instead."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the issue. If possible, link to a small repro repo.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Future AGI Cloud (app.futureagi.com)
+        - Self-hosted (Docker Compose)
+        - Self-hosted (Kubernetes)
+        - Self-hosted (other)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Run `git rev-parse HEAD` if self-hosted, or paste the version string from your settings page."
+      placeholder: "e.g. v1.2.3 or commit abc1234"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "OS, Python/Node version, Docker version, browser if relevant"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any stack traces, error output, or server logs. Redact secrets.
+      render: shell
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checks
+      options:
+        - label: I searched [existing issues](https://github.com/future-agi/future-agi/issues) and didn't find a duplicate
+          required: true
+        - label: I redacted any secrets, PII, or customer data from logs/screenshots
+          required: true

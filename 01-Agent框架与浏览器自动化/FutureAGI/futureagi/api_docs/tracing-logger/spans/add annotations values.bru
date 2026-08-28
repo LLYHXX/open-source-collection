@@ -1,0 +1,33 @@
+meta {
+  name: add annotations values
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{host}}/tracer/observation-span/add_annotations/
+  body: json
+  auth: bearer
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "annotation_values": {
+      "776c814b-8503-4662-b93f-9f9165c75c4a": 45,
+      "2455baab-aec7-4dc4-892b-a49ae502c3df": ["medium","bad"],
+      "164fbdcb-b214-4c01-8576-72a942510d89": 2.5,
+      "0a433d8f-9402-4c0f-9055-00933dc4d10e": "up",
+      "730f5a14-87a2-44ab-9605-b496eafaa3da": "TEXT ANNOTATION"
+    },
+    "trace_id": "6d608ffa-6dc5-4c30-95c8-d29bf9568c5c"
+  }
+}

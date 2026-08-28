@@ -1,0 +1,61 @@
+meta {
+  name: is_run prompt run_template
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{host}}/model-hub/prompt-templates/0403ef06-96b6-4456-8417-9ec49086d471/run_template/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "prompt_config": [
+      {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hello {{name}}, how can I help you with {{task}} today?"
+              }
+            ]
+          }
+        ],
+
+        "configuration": {
+          "model": "gpt-4o",
+          "temperature": 0.7,
+          "frequency_penalty": 0.0,
+          "presence_penalty": 0.0,
+          "max_tokens": 1000,
+          "top_p": 1.0
+        }
+      }
+    ],
+    "variable_names": {
+      "name": ["abhay","sapra.garvit@gmail.com"],
+      "task": ["sleeping","sapra.garvit@gmail.com"]
+
+    },
+
+    "evaluation_configs": [
+      {
+      "id":"d46d1864-9190-40be-a5f0-fd6f750f6def",
+
+      "mapping":  {
+    "input": "input_prompt"
+    }
+    }
+    ],
+    "is_run": true
+  }
+
+}

@@ -1,0 +1,37 @@
+meta {
+  name: Get Experiment Rows
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/experiments/{{experimentId}}/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+query {
+  ~column_config_only: true
+  ~page: 1
+  ~limit: 25
+}
+
+docs {
+  ## Get Experiment Dataset Rows (V1)
+
+  Returns experiment dataset rows with results, column config, and cell values.
+  Used by ExperimentDataView.jsx.
+
+  ### Query Parameters
+  - `column_config_only` — If "true", returns only column config without row data
+  - `page` — Page number for row pagination
+  - `limit` — Rows per page
+
+  ### Response
+  Returns column config and table data with cell values including metadata
+  (tokens, response time, status).
+}

@@ -1,0 +1,618 @@
+/* @import "src/components/annotate/build/main.css"; */
+/* scrollbar */
+@import "simplebar-react/dist/simplebar.min.css";
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap");
+
+/* ============================================================
+   CSS Variable Bridge — Light / Dark mode tokens
+   Set by ThemeProvider via data-theme attribute on <body>
+   ============================================================ */
+
+:root {
+  --ag-checkbox-border-radius: 2.5px;
+
+  /* ---------------------------------------------------------------
+     Palette-derived variables (light-mode defaults).
+     These are overridden at runtime by ThemeProvider (src/theme/index.jsx)
+     which generates them from palette.js — the single source of truth.
+     Kept here as fallbacks before React hydrates.
+     --------------------------------------------------------------- */
+  --primary-main: #7857fc;
+
+  --bg-default: #f0f0f5;
+  --bg-paper: #ffffff;
+  --bg-neutral: #f1f0f5;
+  --bg-subtle: #f8f8f8;
+  --bg-elevated: #fbfbfb;
+
+  --text-primary: #201e25;
+  --text-secondary: #605c70;
+  --text-muted: #938fa3;
+  --text-disabled: #c8c4d4;
+
+  --border-default: #e1dfec;
+  --border-light: #e6e6e6;
+  --border-hover: #c8c4d4;
+  --border-active: #938fa3;
+
+  --surface-row-active: #f2f2f2;
+  --surface-row-hover: #f8f8f8;
+  --surface-menu: #ffffff;
+  --surface-header: #fbfbfb;
+
+  --bg-input: #f5f5f5;
+
+  /* AG Grid group header highlight */
+  --surface-highlight: #eefdfe;
+
+  /* Shimmer loading gradients */
+  --shimmer-dark: #818181;
+  --shimmer-light: #dcdcdc;
+
+  /* Loader dots */
+  --loader-dot: #333333;
+  --loader-dot-faded: #e0e0e0;
+
+  /* Progress indicators */
+  --progress-inactive: #d1d5db;
+  --progress-active: #4f46e5;
+
+  /* Resize handle */
+  --resize-handle: #e6e6e6;
+
+  /* Slider / pagination bullets */
+  --slider-bullet: #121212;
+  --slider-bullet-inactive: #12121233;
+
+  /* JSON syntax highlighting */
+  --syntax-key: #b64db3;
+  --syntax-value-green: #51a150;
+  --syntax-value-blue: #2e7cd6;
+  --syntax-label-orange: #cf5e0b;
+  --syntax-punctuation: #808080;
+  --syntax-string: #b5520a;
+  --syntax-number: #1750eb;
+  --syntax-boolean: #9333ea;
+
+  /* Chip colors */
+  --chip-success-bg: #00a2510d;
+  --chip-success-text: #005f2f;
+  --chip-delete-hover: #fee2e2;
+
+  /* Mention / variable tag colors */
+  --mention-valid-color: #005f2f;
+  --mention-valid-bg: #e0f7ec;
+  --mention-invalid-color: #7f1a12;
+  --mention-invalid-bg: #fce8e7;
+
+  /* Diff text colors (added / removed) */
+  --diff-added-bg: #e0f7ec;
+  --diff-added-text: #00a251;
+  --diff-removed-bg: #fce8e7;
+  --diff-removed-text: #d92d20;
+
+  /* Quill placeholder */
+  --text-placeholder-alpha: rgba(0, 0, 0, 0.6);
+
+  /* Shadows & depth */
+  --shadow-dropdown: rgba(0, 0, 0, 0.1);
+  --shadow-elevated: 0 8px 24px -4px rgba(0, 0, 0, 0.08);
+  --elevation-border: none;
+
+  /* Scrollbar */
+  --scrollbar-thumb: #d1d5db;
+  --scrollbar-thumb-hover: #9ca3af;
+  --scrollbar-track: transparent;
+
+  /* Icon filter for embed components outside ThemeProvider */
+  --icon-filter: none;
+
+  /* Score heatmap colors (evaluation cells) */
+  --score-red-strong: #d92d2033;
+  --score-red-light: #d92d201a;
+  --score-orange: #fdeee2;
+  --score-yellow: #fdfadf;
+  --score-green-light: #00a2511a;
+  --score-green-strong: #00a25133;
+
+  --eval-score-yellow-bg: #fff9e6;
+  --eval-score-yellow-text: #997a00;
+
+  /* Monaco editor */
+  --monaco-bg: rgba(243, 243, 243, 1);
+  --monaco-gutter-bg: rgba(231, 231, 231, 1);
+}
+
+[data-theme="dark"] {
+  /* ---------------------------------------------------------------
+     Palette-derived variables (dark-mode defaults).
+     These are overridden at runtime by ThemeProvider (src/theme/index.jsx).
+     Kept here as fallbacks before React hydrates (FOUC prevention).
+     --------------------------------------------------------------- */
+  --primary-main: #fafafa;
+
+  --bg-default: #0a0a0a;
+  --bg-paper: #111111;
+  --bg-neutral: #18181b;
+  --bg-subtle: #1a1a1a;
+  --bg-elevated: #18181b;
+
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-muted: #a1a1aa;
+  --text-disabled: #71717a;
+
+  --border-default: #27272a;
+  --border-light: #27272a;
+  --border-hover: #3f3f46;
+  --border-active: #52525b;
+
+  --surface-row-active: #18181b;
+  --surface-row-hover: #1a1a1a;
+  --surface-menu: #18181b;
+  --surface-header: #18181b;
+
+  --bg-input: #18181b;
+
+  /* AG Grid group header highlight */
+  --surface-highlight: rgba(0, 162, 81, 0.08);
+
+  /* Shimmer loading gradients */
+  --shimmer-dark: #555555;
+  --shimmer-light: #3a3a3a;
+
+  /* Loader dots */
+  --loader-dot: #cccccc;
+  --loader-dot-faded: #444444;
+
+  /* Progress indicators — monochrome in dark mode */
+  --progress-inactive: #3f3f46;
+  --progress-active: #fafafa;
+
+  /* Resize handle */
+  --resize-handle: #3f3f46;
+
+  /* Slider / pagination bullets */
+  --slider-bullet: #fafafa;
+  --slider-bullet-inactive: #fafafa33;
+
+  /* JSON syntax highlighting */
+  --syntax-key: #d87de0;
+  --syntax-value-green: #6bc76a;
+  --syntax-value-blue: #6ba8e6;
+  --syntax-label-orange: #e89b5a;
+  --syntax-punctuation: #909090;
+  --syntax-string: #e89b5a;
+  --syntax-number: #6ba8e6;
+  --syntax-boolean: #c4b5fd;
+
+  /* Chip colors */
+  --chip-success-bg: rgba(34, 197, 94, 0.08);
+  --chip-success-text: #4ade80;
+  --chip-delete-hover: rgba(239, 68, 68, 0.15);
+
+  /* Mention / variable tag colors */
+  --mention-valid-color: #4dcc94;
+  --mention-valid-bg: rgba(0, 162, 81, 0.15);
+  --mention-invalid-color: #ed7e7a;
+  --mention-invalid-bg: rgba(217, 45, 32, 0.15);
+
+  /* Diff text colors (added / removed) */
+  --diff-added-bg: rgba(0, 162, 81, 0.18);
+  --diff-added-text: #4dcc94;
+  --diff-removed-bg: rgba(217, 45, 32, 0.18);
+  --diff-removed-text: #ed7e7a;
+
+  /* Quill placeholder */
+  --text-placeholder-alpha: rgba(255, 255, 255, 0.4);
+
+  /* Shadows & depth — borders required on dark backgrounds */
+  --shadow-dropdown: 0 12px 32px -4px rgba(0, 0, 0, 0.6);
+  --shadow-elevated: 0 8px 24px -4px rgba(0, 0, 0, 0.6);
+  --elevation-border: 1px solid #3f3f46;
+  --elevation-bg: #18181b;
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.3);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.5);
+  --scrollbar-track: transparent;
+
+  /* Icon filter for embed components outside ThemeProvider */
+  --icon-filter: invert(1) brightness(2);
+
+  /* Score heatmap colors (evaluation cells) */
+  --score-red-strong: rgba(217, 45, 32, 0.25);
+  --score-red-light: rgba(217, 45, 32, 0.14);
+  --score-orange: rgba(233, 105, 12, 0.18);
+  --score-yellow: rgba(230, 184, 0, 0.14);
+  --score-green-light: rgba(0, 162, 81, 0.14);
+  --score-green-strong: rgba(0, 162, 81, 0.25);
+
+  --eval-score-yellow-bg: rgba(75, 57, 1, 0.5);
+  --eval-score-yellow-text: #edbe00;
+
+  /* Monaco editor */
+  --monaco-bg: #111111;
+  --monaco-gutter-bg: #18181b;
+}
+
+/* ============================================================
+   Syntax Highlighter Token Colors (Prism + hljs)
+   Driven by data-theme — no JS theme switching needed.
+   ============================================================ */
+
+/* --- Prism tokens (react-syntax-highlighter Prism variant) --- */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: var(--syntax-punctuation);
+  font-style: italic;
+}
+
+.token.punctuation {
+  color: var(--syntax-punctuation);
+}
+
+.token.property,
+.token.tag,
+.token.constant,
+.token.symbol,
+.token.deleted {
+  color: var(--syntax-key);
+}
+
+.token.boolean,
+.token.number {
+  color: var(--syntax-value-blue);
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted {
+  color: var(--syntax-value-green);
+}
+
+.token.operator,
+.token.entity,
+.token.url,
+.language-css .token.string,
+.style .token.string {
+  color: var(--syntax-label-orange);
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: var(--syntax-value-blue);
+}
+
+.token.function,
+.token.class-name {
+  color: var(--syntax-key);
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: var(--syntax-label-orange);
+}
+
+/* --- hljs tokens (react-syntax-highlighter default variant) --- */
+.hljs-comment,
+.hljs-quote {
+  color: var(--syntax-punctuation);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-type {
+  color: var(--syntax-value-blue);
+}
+
+.hljs-string,
+.hljs-literal,
+.hljs-template-variable,
+.hljs-addition {
+  color: var(--syntax-value-green);
+}
+
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name {
+  color: var(--syntax-value-blue);
+}
+
+.hljs-title,
+.hljs-function,
+.hljs-section {
+  color: var(--syntax-key);
+}
+
+.hljs-name,
+.hljs-attribute {
+  color: var(--syntax-label-orange);
+}
+
+.hljs-variable,
+.hljs-tag,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link {
+  color: var(--syntax-key);
+}
+
+.hljs-meta {
+  color: var(--syntax-punctuation);
+}
+
+.hljs-deletion {
+  color: #e06c75;
+}
+
+/* Ensure code backgrounds respect theme — override Prism default inline styles */
+pre[class*="language-"],
+code[class*="language-"] {
+  color: var(--text-primary) !important;
+  background: transparent !important;
+  text-shadow: none !important;
+}
+
+/* ============================================================ */
+
+body {
+  overscroll-behavior-x: none;
+  overflow-y: hidden;
+}
+
+.MuiInputBase-root {
+  border-radius: 4px !important;
+}
+
+.MuiPaper-root {
+  border-radius: 8px !important;
+}
+
+.MuiInputBase-input:not(textarea) {
+  height: max-content !important;
+  line-height: 1.7 !important;
+}
+
+.hasRightBorder {
+  border-right: 1px solid var(--border-default) !important;
+}
+
+.ag-menu-list {
+  background-color: var(--bg-paper);
+  border: none;
+  border-radius: 12px;
+}
+
+.ag-menu-option:hover {
+  background-color: var(--surface-row-hover) !important;
+  border-radius: 4px;
+}
+
+.ag-theme-quartz .ag-header-cell {
+  line-height: 22px;
+}
+
+.ag-cell:focus,
+.ag-cell-focus,
+.ag-cell-focus:focus-within {
+  outline: none !important;
+  border-color: var(--border-light) !important;
+  box-shadow: none !important;
+}
+
+.develop-view .ag-pinned-left-header,
+.develop-view .ag-pinned-left-cols-container,
+.develop-view .ag-cell-last-left-pinned {
+  border-right: none !important;
+}
+
+.no-scroll-x {
+  overflow-x: scroll;
+  overflow-y: auto;
+}
+
+.no-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scroll-x {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.json-editor .monaco-editor {
+  --vscode-editor-background: var(--monaco-bg);
+  --vscode-editorGutter-background: var(--monaco-gutter-bg);
+}
+.ag-row.active-row {
+  background-color: var(--surface-row-active);
+}
+
+.no-padding {
+  padding-left: 0px !important;
+  padding-right: 0px !important;
+}
+
+/* ============================================================
+   Global Scrollbar Styling (WebKit: Chrome, Safari, Edge)
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: content-box;
+}
+
+/* ============================================================
+   Firefox Scrollbar Styling
+   ============================================================ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* ============================================================
+   Prompt-specific scrollbar (maintain legacy styling)
+   ============================================================ */
+.promptScroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.promptScroll::-webkit-scrollbar-track {
+  border-radius: 5px;
+}
+
+.promptScroll::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 5px;
+}
+
+.ql-mention-list-container {
+  max-height: 200px !important;
+  padding: 12px 0 !important;
+  font-family:
+    IBM Plex Sans,
+    sans-serif !important;
+  background-color: var(--bg-paper) !important;
+  border-color: var(--border-default) !important;
+  color: var(--text-primary) !important;
+  box-shadow: 0 4px 12px var(--shadow-dropdown) !important;
+}
+
+.ql-mention-list-item {
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 22px !important;
+  padding: 4px 12px !important;
+  color: var(--text-primary) !important;
+}
+
+.ql-mention-list-item.selected {
+  background-color: var(--surface-row-hover) !important;
+  color: var(--text-primary) !important;
+}
+
+.custom-header-text .ag-header-cell-text {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.ag-input-field {
+  padding: 0px;
+}
+
+.ag-input-field-input {
+  border: none;
+  cursor: auto;
+  line-height: 18px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.ag-input-field-input :focus {
+  cursor: auto !important;
+}
+
+.alert-chart-wrapper .apexcharts-legend-series[seriesname="HIDDEN"] {
+  display: none !important;
+}
+
+.grecaptcha-badge {
+  visibility: hidden;
+}
+
+.dataset-table .ag-overlay-no-rows-wrapper {
+  pointer-events: auto !important;
+}
+
+.no-min-height-grid .ag-center-cols-viewport {
+  min-height: unset !important;
+}
+
+.ag-grid-disabled .ag-selection-checkbox,
+.ag-grid-disabled .ag-header-cell .ag-checkbox-input-wrapper {
+  pointer-events: none;
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+
+.ag-grid-disabled .ag-column-first {
+  pointer-events: none;
+}
+
+/* Quill snow theme — inherit background in dark mode */
+[data-theme="dark"] .ql-container.ql-snow,
+[data-theme="dark"] .ql-snow .ql-editor {
+  background-color: transparent;
+}
+
+[data-theme="dark"] .ql-toolbar.ql-snow {
+  border-color: var(--border-default);
+}
+
+/* ============================================================
+   ReactFlow (@xyflow/react) dark-mode overrides
+   ============================================================ */
+[data-theme="dark"] .react-flow__controls {
+  background-color: var(--bg-paper);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+}
+
+[data-theme="dark"] .react-flow__controls button {
+  background-color: var(--bg-paper);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+  fill: var(--text-primary);
+}
+
+[data-theme="dark"] .react-flow__controls button:hover {
+  background-color: var(--bg-neutral);
+}
+
+[data-theme="dark"] .react-flow__controls button svg {
+  fill: var(--text-primary);
+}
+
+[data-theme="dark"] .react-flow__minimap {
+  background-color: var(--bg-neutral);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+}
+
+[data-theme="dark"] .react-flow__minimap-mask {
+  fill: rgba(10, 10, 10, 0.45);
+}
+
+[data-theme="dark"] .react-flow__attribution {
+  background: transparent;
+}
+
+[data-theme="dark"] .react-flow__attribution a {
+  color: var(--text-disabled);
+}

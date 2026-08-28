@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "name": "tfc",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ]
+}

@@ -1,0 +1,20 @@
+# Harbor Job Configuration — PraisonAI external (SDK-level) agent on Terminal-Bench 2.1
+#
+# Run from the repo root with PYTHONPATH set:
+#   PYTHONPATH=. harbor run -c examples/terminal_bench/job.yaml
+#
+# Uses the REAL Harbor JobConfig schema. A single YAML document only —
+# multiple `---` documents make yaml.safe_load raise ComposerError.
+
+datasets:
+  - name: terminal-bench
+    version: "2.1"
+
+agents:
+  - import_path: examples.terminal_bench.praisonai_external_agent:PraisonAIExternalAgent
+    model_name: openai/gpt-4o-mini
+    env:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+n_concurrent_trials: 4
+n_attempts: 1

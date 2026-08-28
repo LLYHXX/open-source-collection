@@ -1,0 +1,65 @@
+# Test Dockerfile for Model Serving Service
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TESTING=true
+
+# Set the working directory
+WORKDIR /app/embedding
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    python3-dev \
+    libffi-dev \
+    libpq-dev \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN pip install uv
+
+# Copy pyproject.toml first for dependency caching
+COPY pyproject.toml ./
+
+# Install all dependencies including dev/test dependencies
+RUN uv pip install --system .[dev,test]
+
+# Install additional test dependencies
+RUN uv pip install --system \
+    pytest>=7.0.0 \
+    pytest-cov>=4.0.0 \
+    pytest-mock>=3.10.0 \
+    pytest-xdist>=3.0.0 \
+    pytest-html>=3.1.0 \
+    pytest-timeout>=2.1.0 \
+    pytest-asyncio>=0.21.0 \
+    pytest-env>=0.8.0 \
+    httpx>=0.24.0 \
+    factory-boy>=3.2.0 \
+    responses>=0.22.0 \
+    freezegun>=1.2.0 \
+    coverage>=7.0.0
+
+# Copy the rest of the application
+COPY . .
+
+# Create test directories
+RUN mkdir -p /app/embedding/test-reports
+RUN mkdir -p /app/embedding/htmlcov
+RUN mkdir -p /app/embedding/coverage-reports
+
+# Make entrypoint executable
+RUN chmod +x entrypoint.sh
+
+# Expose ports
+EXPOSE 8000
+EXPOSE 8080
+
+# Default test command
+CMD ["uv", "run", "pytest", "tests/", "-v", "--cov=app", "--cov-report=term-missing", "--cov-report=html"]

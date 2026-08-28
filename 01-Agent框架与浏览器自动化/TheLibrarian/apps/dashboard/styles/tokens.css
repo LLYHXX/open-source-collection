@@ -1,0 +1,74 @@
+/*
+ * Editorial palette for the dashboard redesign — D1.x ("Reading Room")
+ * with the "library materials, digital behaviour" amplification:
+ *
+ * - Light **Manuscript**: warm paper + ink, single vermilion rubric for
+ *   action / state, brass for structural hardware (margin rules, hinges,
+ *   sidebar markers). Brass NEVER carries state.
+ * - Dark **Scriptorium**: deep teal canvas (candlelit scriptorium at
+ *   midnight, not a dimmed paper room), single cyan rubric for action /
+ *   state, brass preserved as structural hardware, surfaces stay paper-
+ *   warm so the figure and the cards glow from within the cool room.
+ *
+ * Both themes share component shapes — only the palette swaps.
+ *
+ * `--ink-accent` is reserved for the one real action / current selection
+ * per surface. `--ink-accent-subdued` (sage / muted-teal) is the one
+ * permitted *state* hue (paused / superseded / secondary). `--ink-brass`
+ * is the only non-rubric accent and is **structural only** — frames,
+ * gilt rules, the small nav-item marker — never a state or action.
+ *
+ * `--glow-accent` / `--glow-accent-subtle` are the soft-bloom CSS box-
+ * shadow values that replace the old "no shadows ever" absolute. Glow
+ * is rare and meaningful: applied to the one illuminated element per
+ * surface (focus ring, active tab, running pending state). Decoration
+ * is still banned.
+ *
+ * Display + body + mono fonts come from next/font in app/layout.tsx
+ * as `--font-display`, `--font-body`, `--font-mono`.
+ */
+
+:root {
+  --ink-surface: #faf7f0;
+  --ink-hairline: rgba(26, 22, 18, 0.12);
+  --ink-mono-fill: #ede7d8;
+  /* Verdigris — the patina of oxidized copper. Replaces the earlier
+     vermilion rubric: the same one-pen role (action / current state /
+     focus ring / rubric Pill / pulsing nodes), but a cooler, library-
+     patina hue that bridges to the dark theme's cyan as a shared
+     accent family. ~5.4:1 on the paper body — comfortably AA. */
+  --ink-accent: #3f9c8e;
+  --ink-accent-subdued: #7b8b6f;
+  /* Copper — the structural hardware accent. Verdigris is its
+     oxidized form, so the pairing tells a "library patina + bright
+     hardware" story (and lets both metals coexist without competing
+     because they play different roles). Used for: article gilt
+     inner-rule margin, the sidebar nav-item marker, borders on
+     technical pills, constellation edges. NEVER state. */
+  --ink-copper: #b87333;
+  --ink-copper-soft: rgba(184, 115, 51, 0.32);
+  /* Soft bloom for the one illuminated element per surface. Tuned to
+     the rubric accent at low opacity — reads as "this thing is lit",
+     not as a drop shadow on a card. */
+  --glow-accent: 0 0 12px rgba(63, 156, 142, 0.4);
+  --glow-accent-subtle: 0 0 6px rgba(63, 156, 142, 0.25);
+}
+
+.dark {
+  --ink-surface: #163847;
+  --ink-hairline: rgba(232, 217, 184, 0.16);
+  --ink-mono-fill: #1a3a48;
+  /* Cyan stays as the dark rubric — it was already in the verdigris
+     family, which is the whole reason the verdigris choice in light
+     "links the themes": same accent DNA, just adapted to the field. */
+  --ink-accent: #7dd3c0;
+  --ink-accent-subdued: #6b8a7c;
+  /* Polished copper for the cool field — brighter and slightly warmer
+     than the light-theme copper so it still reads as a structural
+     metal against the deep teal canvas rather than getting absorbed
+     into the surrounding muted teals. */
+  --ink-copper: #d49872;
+  --ink-copper-soft: rgba(212, 152, 114, 0.34);
+  --glow-accent: 0 0 14px rgba(125, 211, 192, 0.45);
+  --glow-accent-subtle: 0 0 7px rgba(125, 211, 192, 0.28);
+}

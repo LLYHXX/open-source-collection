@@ -1,0 +1,60 @@
+meta {
+  name: Get Persona Detail
+  type: http
+  seq: 3
+}
+
+get {
+  url: http://localhost:8000/simulate/api/personas/:persona_id/
+  auth: bearer
+}
+
+params:path {
+  persona_id: {{persona_id}}
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  name: Get Persona Detail
+  description: Retrieve a specific persona by ID
+
+  Path Parameters:
+  - persona_id: UUID of the persona
+
+  Response Example:
+  {
+    "status": true,
+    "result": {
+      "id": "uuid",
+      "persona_type": "workspace",
+      "persona_type_display": "Workspace",
+      "name": "Software Engineer",
+      "description": "A senior software engineer with expertise in backend development",
+      "gender": "male",
+      "age_group": "30-40",
+      "occupation": "Software Developer",
+      "location": "San Francisco",
+      "personality": "Analytical",
+      "communication_style": "Direct",
+      "multilingual": false,
+      "languages": ["English"],
+      "accent": "American",
+      "conversation_speed": "1.0",
+      "background_sound": false,
+      "finished_speaking_sensitivity": 5,
+      "interrupt_sensitivity": 5,
+      "keywords": ["engineer", "technical", "backend"],
+      "metadata": {
+        "skill_level": "senior",
+        "years_experience": 10
+      },
+      "additional_instruction": "Speak clearly and use technical terminology when appropriate",
+      "is_default": false,
+      "created_at": "2025-10-29T10:00:00Z",
+      "updated_at": "2025-10-29T10:00:00Z"
+    }
+  }
+}

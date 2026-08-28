@@ -1,0 +1,24 @@
+meta {
+  name: Performance Options
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/performance/options/{{model_id}}/?search_query=language
+  body: none
+  auth: bearer
+}
+
+params:query {
+  search_query: language
+  ~metric_id: 4817ee7a-b692-453e-8e95-7370cfacdedb
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  model_id: 4167a227-43c5-4091-9810-6cbc33b292ec
+}

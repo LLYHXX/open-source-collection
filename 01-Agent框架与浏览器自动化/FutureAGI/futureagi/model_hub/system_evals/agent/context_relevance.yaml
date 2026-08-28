@@ -1,0 +1,78 @@
+eval_id: 9
+name: context_relevance
+description: Evaluates the relevancy of the context to the query
+criteria: "You are evaluating whether the retrieved context is relevant to the user's input query.\n\n## Criteria\n\n1. Topical\
+  \ alignment: The context should cover the same subject matter as the query.\n   - Pass: Query about Python lists, context\
+  \ explains Python list methods.\n   - Fail: Query about Python lists, context discusses JavaScript arrays.\n\n2. Information\
+  \ utility: The context should contain information that directly helps answer the query.\n   - Pass: Context provides specific\
+  \ facts or explanations needed for the answer.\n   - Fail: Context covers the general topic but lacks the specific details\
+  \ needed.\n\n3. Information density: The proportion of relevant vs. irrelevant content matters.\n   - Pass: Most of the\
+  \ context is directly applicable to the query.\n   - Fail: Relevant information is buried in mostly unrelated content.\n\
+  \n## Anti-bias Rules\n\n- Closely related but different topics (e.g., Python lists vs. Python tuples) are partially relevant,\
+  \ NOT irrelevant.\n- If the query is ambiguous, context addressing any reasonable interpretation should receive credit.\n\
+  - A short highly relevant context scores higher than a long context with diluted relevance.\n\n## Scoring\n\nScore 0.0 if\
+  \ the context is entirely unrelated to the query. Score 0.5 if partially relevant, covering the general topic but missing\
+  \ specific needed details. Score 1.0 if highly relevant, directly addressing the query with sufficient detail.\n\n## Inputs\n\
+  \n<context>{{context}}</context>\n\n<input>{{input}}</input>"
+eval_tags:
+- RAG
+- Retrieval Systems
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - context
+  - input
+  output: score
+  eval_type_id: AgentEvaluator
+  config:
+    check_internet:
+      type: boolean
+      default: false
+  config_params_desc:
+    context: The context to be evaluated
+    input: The input to be evaluated
+  param_modalities:
+    context:
+    - TEXT
+    - AUDIO
+    - IMAGE
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    - IMAGES
+    input:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether the retrieved context is relevant to the user's input query.\n\n## Criteria\n\n\
+    1. Topical alignment: The context should cover the same subject matter as the query.\n   - Pass: Query about Python lists,\
+    \ context explains Python list methods.\n   - Fail: Query about Python lists, context discusses JavaScript arrays.\n\n\
+    2. Information utility: The context should contain information that directly helps answer the query.\n   - Pass: Context\
+    \ provides specific facts or explanations needed for the answer.\n   - Fail: Context covers the general topic but lacks\
+    \ the specific details needed.\n\n3. Information density: The proportion of relevant vs. irrelevant content matters.\n\
+    \   - Pass: Most of the context is directly applicable to the query.\n   - Fail: Relevant information is buried in mostly\
+    \ unrelated content.\n\n## Anti-bias Rules\n\n- Closely related but different topics (e.g., Python lists vs. Python tuples)\
+    \ are partially relevant, NOT irrelevant.\n- If the query is ambiguous, context addressing any reasonable interpretation\
+    \ should receive credit.\n- A short highly relevant context scores higher than a long context with diluted relevance.\n\
+    \n## Scoring\n\nScore 0.0 if the context is entirely unrelated to the query. Score 0.5 if partially relevant, covering\
+    \ the general topic but missing specific needed details. Score 1.0 if highly relevant, directly addressing the query with\
+    \ sufficient detail.\n\n## Inputs\n\n<context>{{context}}</context>\n\n<input>{{input}}</input>"

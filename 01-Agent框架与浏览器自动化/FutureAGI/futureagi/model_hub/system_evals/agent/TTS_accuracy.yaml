@@ -1,0 +1,59 @@
+eval_id: 122
+name: TTS_accuracy
+description: Analyzes if the text-to-speech output accurately reflects the intended message, including pronunciation, emphasis,
+  and emotional tone.
+criteria: "You are evaluating whether text-to-speech audio output accurately conveys the intended text message.\n\n## Criteria\n\
+  \n1. Pronunciation: Every word should be pronounced correctly, including proper nouns and technical terms.\n   - High score:\
+  \ All words clearly and correctly pronounced.\n   - Low score: Frequent mispronunciations that obscure meaning.\n\n2. Prosody:\
+  \ Appropriate emphasis, rhythm, and pausing at punctuation marks.\n   - High score: Natural sentence rhythm with correct\
+  \ emphasis on key words.\n   - Low score: Monotone delivery or emphasis on wrong words.\n\n3. Emotional alignment: Vocal\
+  \ tone should match the text's context and sentiment.\n   - High score: Serious text sounds serious, questions have rising\
+  \ intonation.\n   - Low score: Happy-sounding delivery for somber content.\n\n## Anti-bias Rules\n\n- Homographs (e.g.,\
+  \ \"read\" past vs. present) should be pronounced based on context.\n- Abbreviations should be spoken conventionally (\"\
+  NASA\" as word, \"FBI\" letter-by-letter).\n- Numbers should be spoken naturally (\"2024\" as \"twenty twenty-four\").\n\
+  \n## Scoring\n\nScore 0.0 if largely unintelligible or severely mispronounced. Score 0.5 if understandable but with pronunciation\
+  \ errors or unnatural prosody. Score 1.0 if clear, natural, correctly pronounced, with appropriate emphasis and tone.\n\n\
+  ## Inputs\n\n<text>{{text}}</text>\n\n<generated_audio>{{generated_audio}}</generated_audio>"
+eval_tags:
+- Audio
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  - generated_audio
+  output: score
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    text: The original text input
+    generated_audio: The TTS audio output to be evaluated
+  param_modalities:
+    text:
+    - TEXT
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    generated_audio:
+    - AUDIO
+  rule_prompt: "You are evaluating whether text-to-speech audio output accurately conveys the intended text message.\n\n##\
+    \ Criteria\n\n1. Pronunciation: Every word should be pronounced correctly, including proper nouns and technical terms.\n\
+    \   - High score: All words clearly and correctly pronounced.\n   - Low score: Frequent mispronunciations that obscure\
+    \ meaning.\n\n2. Prosody: Appropriate emphasis, rhythm, and pausing at punctuation marks.\n   - High score: Natural sentence\
+    \ rhythm with correct emphasis on key words.\n   - Low score: Monotone delivery or emphasis on wrong words.\n\n3. Emotional\
+    \ alignment: Vocal tone should match the text's context and sentiment.\n   - High score: Serious text sounds serious,\
+    \ questions have rising intonation.\n   - Low score: Happy-sounding delivery for somber content.\n\n## Anti-bias Rules\n\
+    \n- Homographs (e.g., \"read\" past vs. present) should be pronounced based on context.\n- Abbreviations should be spoken\
+    \ conventionally (\"NASA\" as word, \"FBI\" letter-by-letter).\n- Numbers should be spoken naturally (\"2024\" as \"twenty\
+    \ twenty-four\").\n\n## Scoring\n\nScore 0.0 if largely unintelligible or severely mispronounced. Score 0.5 if understandable\
+    \ but with pronunciation errors or unnatural prosody. Score 1.0 if clear, natural, correctly pronounced, with appropriate\
+    \ emphasis and tone.\n\n## Inputs\n\n<text>{{text}}</text>\n\n<generated_audio>{{generated_audio}}</generated_audio>"

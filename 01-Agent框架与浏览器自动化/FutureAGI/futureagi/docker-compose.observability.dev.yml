@@ -1,0 +1,70 @@
+# Observability docker-compose override
+# Adds Jaeger for distributed tracing
+#
+# Usage (with dev):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.observability.yml up
+#
+# Usage (with prod):
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up
+#
+# View traces: http://localhost:16686
+
+services:
+  # ===========================================
+  # Jaeger - Distributed Tracing
+  # ===========================================
+  # All-in-one Jaeger with OTLP support
+  # UI: http://localhost:16686
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686" # Jaeger UI
+      - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317" # OTLP gRPC receiver
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318" # OTLP HTTP receiver
+    volumes:
+      - ./config/jaeger-ui-config.json:/etc/jaeger/jaeger-ui-config.json:ro
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      # Query service configuration
+      - SPAN_STORAGE_TYPE=memory
+      - QUERY_BASE_PATH=/
+      - QUERY_UI_CONFIG=/etc/jaeger/jaeger-ui-config.json
+      # Memory storage limits
+      - MEMORY_MAX_TRACES=50000
+      # Log level for debugging
+      - LOG_LEVEL=info
+    restart: unless-stopped
+
+  # ===========================================
+  # Override services with OTEL config
+  # ===========================================
+
+  backend:
+    environment:
+      - OTEL_ENABLED=true
+      - OTEL_SERVICE_NAME=core-backend
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+    depends_on:
+      - jaeger
+
+  serving:
+    environment:
+      - OTEL_ENABLED=true
+      - OTEL_SERVICE_NAME=model-serving
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+    depends_on:
+      - jaeger
+
+  # For dev mode (when using docker-compose.dev.yml)
+  temporal-worker-dev:
+    environment:
+      - OTEL_ENABLED=true
+      - OTEL_SERVICE_NAME=temporal-worker-dev
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+    depends_on:
+      - jaeger

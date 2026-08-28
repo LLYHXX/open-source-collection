@@ -1,0 +1,32 @@
+eval_id: 3
+name: deterministic_evals
+description: Evaluates if the output is deterministic or not
+eval_tags:
+- Output Validation
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: deterministic
+config:
+  required_keys: []
+  output: choices
+  eval_type_id: AgentEvaluator
+  config:
+    multi_choice:
+      type: boolean
+      default: false
+    choices:
+      type: choices
+      default: []
+    rule_prompt:
+      type: rule_prompt
+      default: ''
+    input:
+      type: rule_string
+      default: []
+  config_params_desc:
+    rule_prompt: The rule prompt to be evaluated
+    multi_choice: Whether the output is a multiple choice question or not
+    choices: The choices for the multiple choice question
+    input: The input to be evaluated

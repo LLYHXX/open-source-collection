@@ -1,0 +1,66 @@
+meta {
+  name: Delete Graph Version
+  type: http
+  seq: 11
+}
+
+delete {
+  url: {{host}}/agent-playground/graphs/:id/versions/:version_id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  id: {{graph_id}}
+  version_id: {{version_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  version_id: d4a9c26c-e9e8-42f7-a6b4-f086ff51a7b3
+  graph_id: 85424f9d-b024-4906-b3b4-1b84ce9b5578
+}
+
+docs {
+  # Delete Graph Version
+
+  Soft-delete a specific version and its content (nodes, ports, edges).
+
+  ## Path Parameters
+  - `id`: Graph UUID
+  - `version_id`: Version UUID to delete
+
+  ## Business Rules
+  - Cannot delete if this is the only version (graph must have at least one version)
+  - CAN delete active version - graph will then have no active version (only drafts/inactive)
+  - Soft-delete: cascade soft-deletes nodes, ports, edges for that version
+
+  ## Response (Success)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "message": "Version deleted successfully"
+    }
+  }
+  ```
+
+  ## Response (Error - Only Version)
+  ```json
+  {
+    "status": false,
+    "result": "Cannot delete the only version"
+  }
+  ```
+
+  ## Atomicity
+  The entire operation is wrapped in a database transaction. If any error occurs during the cascade delete, all changes are rolled back.
+
+  ## Notes
+  - This is a soft-delete operation; data can potentially be recovered
+  - If the deleted version was active, the graph will have no active version
+  - Frontend should handle the case where no active version exists
+}

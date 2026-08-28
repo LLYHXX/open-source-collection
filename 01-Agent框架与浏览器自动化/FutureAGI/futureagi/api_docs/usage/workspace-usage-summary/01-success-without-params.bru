@@ -1,0 +1,58 @@
+meta {
+  name: 01 - Success - Without Parameters (Current Month)
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/usage/workspace-usage-summary/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Workspace Usage Summary - Current Month (No Parameters)
+
+  ### Test Scenario
+  - No month or year parameters provided
+  - Should return usage for current month by default
+  - Tests default behavior
+
+  ### Expected Response
+  - Status: 200 OK
+  - Response structure:
+    ```json
+    {
+      "status": true,
+      "result": {
+        "organization_id": "uuid",
+        "organization_name": "string",
+        "total_workspaces": 0,
+        "workspaces": [
+          {
+            "workspace_id": "uuid",
+            "workspace_name": "string",
+            "totals": {
+              "creditsUsed": 0,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "totalCalls": 0
+            },
+            "breakdown": {
+              "byCallType": [...]
+            }
+          }
+        ]
+      }
+    }
+    ```
+
+  ### Notes
+  - Unlike usage-summary, this endpoint accepts requests without month/year
+  - Returns current month data when parameters are omitted
+  - Returns all workspaces in the organization
+}

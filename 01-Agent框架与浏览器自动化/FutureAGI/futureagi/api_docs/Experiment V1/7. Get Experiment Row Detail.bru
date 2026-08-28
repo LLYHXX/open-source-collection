@@ -1,0 +1,26 @@
+meta {
+  name: Get Experiment Row Detail
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/experiments/{{experimentId}}/{{rowId}}/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  ## Get Single Row Results (V1)
+
+  Returns results for a specific row in the experiment.
+  Currently commented out in frontend but endpoint exists.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+  - `rowId` — Row UUID
+}

@@ -1,0 +1,28 @@
+meta {
+  name: get experiment row detail v2
+  type: http
+  seq: 13
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/rows/{{rowId}}/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+docs {
+  ## Get Experiment Row Detail V2
+
+  Returns results for a specific row including next row IDs for navigation.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+  - `rowId` — Row UUID
+
+  ### Response
+  Returns single row data with cell values, column config, and nextRowIds.
+}

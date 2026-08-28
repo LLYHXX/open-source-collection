@@ -1,0 +1,173 @@
+"""PraisonAI helper utilities for Langflow integration.
+
+Provides conversion functions for tools, LLMs, and memory configuration
+between Langflow and PraisonAI formats.
+"""
+
+from __future__ import annotations
+
+import threading
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from praisonaiagents.trace.context_events import ContextTraceEmitter
+else:
+    ContextTraceEmitter = Any
+
+_LANGFUSE_CONTEXT_EMITTER: ContextTraceEmitter | None = None
+_LANGFUSE_OBS_LOCK = threading.Lock()
+
+
+def convert_tools(tools: list | None) -> list[Callable] | None:
+    """Convert Langflow/LangChain tools to PraisonAI-compatible callables.
+
+    PraisonAI accepts any callable, so we extract the callable portion
+    from LangChain-style tools.
+
+    Args:
+        tools: List of tools from Langflow (may be LangChain tools, callables, etc.)
+
+    Returns:
+        List of callables compatible with PraisonAI, or None if no tools provided.
+    """
+    if not tools:
+        return None
+
+    converted = []
+    for tool in tools:
+        if tool is None:
+            continue
+
+        # Already a plain callable
+        if callable(tool) and not hasattr(tool, "run"):
+            converted.append(tool)
+        # LangChain StructuredTool or similar with .run method
+        elif hasattr(tool, "run") and callable(tool.run):
+            converted.append(tool.run)
+        # LangChain tool with _run method (internal convention)
+        elif hasattr(tool, "_run"):
+            run_method = tool._run  # noqa: SLF001 — intentional for LangChain compat
+            if callable(run_method):
+                converted.append(run_method)
+        # Fallback: if it's callable, use it directly
+        elif callable(tool):
+            converted.append(tool)
+
+    return converted if converted else None
+
+
+def convert_llm(llm: Any) -> str | None:
+    """Convert Langflow LanguageModel to PraisonAI LLM string format.
+
+    PraisonAI uses 'provider/model-name' format (e.g., 'openai/gpt-4o-mini').
+
+    Args:
+        llm: LLM from Langflow (could be string, LangChain model, or None)
+
+    Returns:
+        String in 'provider/model-name' format, or None if no LLM provided.
+    """
+    if llm is None:
+        return None
+
+    # Already a string (most common case)
+    if isinstance(llm, str):
+        return llm
+
+    # LangChain model object — extract model name
+    if hasattr(llm, "model_name") and llm.model_name:
+        model_name = llm.model_name
+    elif hasattr(llm, "model") and llm.model:
+        model_name = llm.model
+    else:
+        # Fallback to string representation
+        return str(llm)
+
+    # Try to determine provider from LangChain namespace
+    provider = None
+    if hasattr(llm, "get_lc_namespace"):
+        namespace = llm.get_lc_namespace()
+        if namespace:
+            provider_raw = namespace[0]
+            # Remove langchain_ prefix if present
+            if provider_raw.startswith("langchain_"):
+                provider = provider_raw[10:]
+
+    if provider:
+        return f"{provider}/{model_name}"
+    return model_name
+
+
+def build_memory_config(
+    *,
+    memory: bool | dict | None,
+    memory_provider: str | None = None,
+    memory_config_dict: dict | None = None,
+) -> bool | dict:
+    """Build PraisonAI MemoryConfig from Langflow inputs.
+
+    Args:
+        memory: Simple bool toggle or existing config dict
+        memory_provider: Optional provider name (e.g., 'rag', 'mem0')
+        memory_config_dict: Optional full MemoryConfig as dict from advanced input
+
+    Returns:
+        bool (False/True) or dict (MemoryConfig) for PraisonAI Agent.
+    """
+    # If full config dict provided, use it
+    if memory_config_dict and isinstance(memory_config_dict, dict):
+        return memory_config_dict
+
+    # If memory is already a dict, return as-is
+    if isinstance(memory, dict):
+        return memory
+
+    # Simple bool case
+    if not memory:
+        return False
+
+    # Memory enabled but no provider specified
+    if not memory_provider:
+        return True
+
+    # Build config with provider
+    return {
+        "provider": memory_provider,
+    }
+
+
+def setup_langfuse_context_observability() -> None:
+    """Set up Langfuse context observability once per process."""
+    import os
+
+    if os.environ.get("PRAISONAI_OBSERVE", "") != "langfuse":
+        return
+
+    try:
+        from praisonai.observability.langfuse import LangfuseSink
+        from praisonaiagents.trace.context_events import ContextTraceEmitter, set_context_emitter
+    except ImportError:
+        return
+
+    global _LANGFUSE_CONTEXT_EMITTER
+
+    with _LANGFUSE_OBS_LOCK:
+        if _LANGFUSE_CONTEXT_EMITTER is None:
+            sink = LangfuseSink()
+            _LANGFUSE_CONTEXT_EMITTER = ContextTraceEmitter(sink=sink, enabled=True)
+
+        set_context_emitter(_LANGFUSE_CONTEXT_EMITTER)
+
+
+def get_langfuse_context_emitter() -> ContextTraceEmitter | None:
+    """Return the cached Langfuse context emitter."""
+    with _LANGFUSE_OBS_LOCK:
+        return _LANGFUSE_CONTEXT_EMITTER
+
+
+def reset_langfuse_context_observability_for_tests() -> None:
+    """Reset cached Langfuse context emitter (for tests)."""
+    global _LANGFUSE_CONTEXT_EMITTER
+    with _LANGFUSE_OBS_LOCK:
+        _LANGFUSE_CONTEXT_EMITTER = None

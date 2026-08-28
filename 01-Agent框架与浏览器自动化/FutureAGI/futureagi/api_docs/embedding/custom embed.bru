@@ -1,0 +1,22 @@
+meta {
+  name: custom embed
+  type: http
+  seq: 6
+}
+
+post {
+  url: http://localhost:8080/model/v1/infer/openai
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+      "text": "text",
+      "input_type": "text",
+      "model_params": {
+          "model": "all-mpnet-base-v2",
+          "api_key": "{{HUGGINGFACE_API_KEY}}"
+      }
+  }
+}

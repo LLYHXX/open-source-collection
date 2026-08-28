@@ -1,0 +1,572 @@
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+
+from simulate.views.agent_prompt_optimiser import AgentPromptOptimiserRunViewSet
+from simulate.views.call_transcript import (
+    CallBranchAnalysisView,
+    CallTranscriptView,
+    TestExecutionTranscriptsView,
+)
+from simulate.views.chat_simulation import (
+    ChatSDKCodeView,
+    ChatSendMessageView,
+    RunTestChatExecutionView,
+    RunTestNameView,
+    TestExecutionChatBatchView,
+)
+from simulate.views.prompt_simulation import (
+    ExecutePromptSimulationView,
+    PromptSimulationDetailView,
+    PromptSimulationListCreateView,
+    PromptSimulationScenariosView,
+)
+from simulate.views.run_test import (
+    AddEvalConfigView,
+    AllActiveTestsView,
+    CallExecutionAPIView,
+    CallExecutionDeleteView,
+    CallExecutionDetailView,
+    CallExecutionErrorLocalizerTasksView,
+    CallExecutionLogsView,
+    CallExecutionRerunView,
+    CSVExportView,
+    DeleteEvalConfigView,
+    GetEvalConfigStructureView,
+    PerformanceSummaryView,
+    RunNewEvalsOnTestExecutionView,
+    RunTestAnalyticsView,
+    RunTestAPIView,
+    RunTestCallExecutionsView,
+    RunTestComponentsUpdateView,
+    RunTestDeleteView,
+    RunTestEvalExplanationSummaryRefreshView,
+    RunTestEvalExplanationSummaryView,
+    RunTestEvalSummaryComparisonView,
+    RunTestEvalSummaryView,
+    RunTestExecutionsView,
+    RunTestExecutionView,
+    RunTestKPIsView,
+    RunTestScenariosView,
+    TestExecutionAnalyticsView,
+    TestExecutionAPIView,
+    TestExecutionBulkDeleteView,
+    TestExecutionCancelView,
+    TestExecutionColumnOrderView,
+    TestExecutionDeleteView,
+    TestExecutionDetailView,
+    TestExecutionOptimiserAnalysisRefreshView,
+    TestExecutionOptimiserAnalysisView,
+    TestExecutionRerunView,
+    TestExecutionStatusView,
+    UpdateEvalConfigView,
+)
+from simulate.views.session_comparison_chat_sim import SessionComparisonChatSimView
+
+from .views import (
+    AddScenarioColumnsView,
+    AddScenarioRowsView,
+    AgentDefinitionDetailView,
+    AgentDefinitionOperationsViewSet,
+    AgentDefinitionView,
+    CreateAgentDefinitionView,
+    CreateRunTestView,
+    CreateScenarioView,
+    CreateSimulatorAgentView,
+    DeleteAgentDefinitionView,
+    DeleteScenarioView,
+    DeleteSimulatorAgentView,
+    EditAgentDefinitionView,
+    EditScenarioView,
+    EditSimulatorAgentView,
+    RunTestDetailView,
+    RunTestListView,
+    ScenarioDetailView,
+    ScenariosListView,
+    SimulatorAgentDetailView,
+    SimulatorAgentListView,
+)
+from .views.agent_version import (
+    ActivateAgentVersionView,
+    AgentVersionCallExecutionView,
+    AgentVersionDetailView,
+    AgentVersionEvalSummaryView,
+    AgentVersionListView,
+    CreateAgentVersionView,
+    DeleteAgentVersionView,
+    RestoreAgentVersionView,
+)
+from .views.alk_simulate_ingestion import ALKSimulateIngestionViewSet
+from .views.livekit_api import (
+    CallConfigView,
+    CallExecutionUpdateView,
+    LiveCallListenerTokenView,
+    LiveKitWebhookView,
+    PhoneResolutionView,
+    TemporalSignalView,
+    TranscriptsView,
+    ValidateLiveKitCredentialsView,
+)
+from .views.persona import PersonaDuplicateView, PersonaViewSet
+from .views.scenarios import EditScenarioPromptsView
+
+app_name = "simulate"
+
+# Set up router for API endpoints
+router = DefaultRouter()
+router.register(r"personas", PersonaViewSet, basename="persona")
+router.register(
+    r"agent-definition-operations",
+    AgentDefinitionOperationsViewSet,
+    basename="agent-definition-operations",
+)
+router.register(r"agent-prompt-optimiser", AgentPromptOptimiserRunViewSet)
+router.register(
+    r"alk-simulate", ALKSimulateIngestionViewSet, basename="alk-simulate-ingestion"
+)
+
+urlpatterns = [
+    path("api/", include(router.urls)),
+    # Persona duplicate endpoint with custom URL pattern
+    path(
+        "api/personas/duplicate/<uuid:persona_id>/",
+        PersonaDuplicateView.as_view(),
+        name="persona-duplicate",
+    ),
+    # Scenarios API endpoints
+    path("scenarios/", ScenariosListView.as_view(), name="scenarios-list"),
+    path(
+        "scenarios/get-columns/",
+        ScenariosListView.as_view(),
+        {"action": "multi-dataset"},
+        name="get-columns",
+    ),
+    path("scenarios/create/", CreateScenarioView.as_view(), name="scenarios-create"),
+    path(
+        "scenarios/<uuid:scenario_id>/",
+        ScenarioDetailView.as_view(),
+        name="scenarios-detail",
+    ),
+    path(
+        "scenarios/<uuid:scenario_id>/edit/",
+        EditScenarioView.as_view(),
+        name="scenarios-edit",
+    ),
+    path(
+        "scenarios/<uuid:scenario_id>/prompts/",
+        EditScenarioPromptsView.as_view(),
+        name="scenarios-edit-prompts",
+    ),
+    path(
+        "scenarios/<uuid:scenario_id>/delete/",
+        DeleteScenarioView.as_view(),
+        name="scenarios-delete",
+    ),
+    path(
+        "scenarios/<uuid:scenario_id>/add-rows/",
+        AddScenarioRowsView.as_view(),
+        name="scenarios-add-rows",
+    ),
+    path(
+        "scenarios/<uuid:scenario_id>/add-columns/",
+        AddScenarioColumnsView.as_view(),
+        name="scenarios-add-columns",
+    ),
+    # Agent Definition API endpoints
+    path(
+        "agent-definitions/",
+        AgentDefinitionView.as_view(),
+        name="agent-definitions-list",
+    ),
+    path(
+        "agent-definitions/create/",
+        CreateAgentDefinitionView.as_view(),
+        name="agent-definitions-create",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/",
+        AgentDefinitionDetailView.as_view(),
+        name="agent-definitions-detail",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/edit/",
+        EditAgentDefinitionView.as_view(),
+        name="agent-definitions-edit",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/delete/",
+        DeleteAgentDefinitionView.as_view(),
+        name="agent-definitions-delete",
+    ),
+    # Agent Version API endpoints
+    path(
+        "agent-definitions/<uuid:agent_id>/versions/",
+        AgentVersionListView.as_view(),
+        name="agent-versions-list",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/versions/create/",
+        CreateAgentVersionView.as_view(),
+        name="agent-versions-create",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/versions/<uuid:version_id>/",
+        AgentVersionDetailView.as_view(),
+        name="agent-versions-detail",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/versions/<uuid:version_id>/activate/",
+        ActivateAgentVersionView.as_view(),
+        name="agent-versions-activate",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/versions/<uuid:version_id>/delete/",
+        DeleteAgentVersionView.as_view(),
+        name="agent-versions-delete",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/versions/<uuid:version_id>/restore/",
+        RestoreAgentVersionView.as_view(),
+        name="agent-versions-restore",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/versions/<uuid:version_id>/eval-summary/",
+        AgentVersionEvalSummaryView.as_view(),
+        name="agent-versions-eval-summary",
+    ),
+    path(
+        "agent-definitions/<uuid:agent_id>/versions/<uuid:version_id>/call-executions/",
+        AgentVersionCallExecutionView.as_view(),
+        name="agent-versions-call-executions",
+    ),
+    # Simulator Agent API endpoints
+    path(
+        "simulator-agents/",
+        SimulatorAgentListView.as_view(),
+        name="simulator-agents-list",
+    ),
+    path(
+        "simulator-agents/create/",
+        CreateSimulatorAgentView.as_view(),
+        name="simulator-agents-create",
+    ),
+    path(
+        "simulator-agents/<uuid:agent_id>/",
+        SimulatorAgentDetailView.as_view(),
+        name="simulator-agents-detail",
+    ),
+    path(
+        "simulator-agents/<uuid:agent_id>/edit/",
+        EditSimulatorAgentView.as_view(),
+        name="simulator-agents-edit",
+    ),
+    path(
+        "simulator-agents/<uuid:agent_id>/delete/",
+        DeleteSimulatorAgentView.as_view(),
+        name="simulator-agents-delete",
+    ),
+    # Run Test API endpoints
+    path("run-tests/", RunTestListView.as_view(), name="run-tests-list"),
+    path("run-tests/create/", CreateRunTestView.as_view(), name="run-tests-create"),
+    path(
+        "run-tests/<uuid:run_test_id>/",
+        RunTestDetailView.as_view(),
+        name="run-tests-detail",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/scenarios/",
+        RunTestScenariosView.as_view(),
+        name="run-tests-scenarios",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/eval-configs/",
+        AddEvalConfigView.as_view(),
+        name="run-tests-add-eval-configs",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/eval-configs/<uuid:eval_config_id>/",
+        DeleteEvalConfigView.as_view(),
+        name="run-tests-delete-eval-configs",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/eval-configs/<uuid:eval_config_id>/get-structure/",
+        GetEvalConfigStructureView.as_view(),
+        name="run-tests-get-eval-config-structure",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/eval-configs/<uuid:eval_config_id>/update/",
+        UpdateEvalConfigView.as_view(),
+        name="run-tests-update-eval-config",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/executions/",
+        RunTestExecutionsView.as_view(),
+        name="run-tests-executions",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/eval-summary/",
+        RunTestEvalSummaryView.as_view(),
+        name="run-tests-eval-summary",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/eval-explanation-summary/",
+        RunTestEvalExplanationSummaryView.as_view(),
+        name="test-execution-eval-explanation-summary",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/eval-explanation-summary/refresh/",
+        RunTestEvalExplanationSummaryRefreshView.as_view(),
+        name="test-execution-eval-explanation-summary-refresh",
+    ),
+    # Agent Optimiser Analysis APIs
+    path(
+        "test-executions/<uuid:test_execution_id>/optimiser-analysis/",
+        TestExecutionOptimiserAnalysisView.as_view(),
+        name="test-execution-optimiser-analysis",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/optimiser-analysis/refresh/",
+        TestExecutionOptimiserAnalysisRefreshView.as_view(),
+        name="test-execution-optimiser-analysis-refresh",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/eval-summary-comparison/",
+        RunTestEvalSummaryComparisonView.as_view(),
+        name="run-tests-eval-summary-comparison",
+    ),
+    # Test Execution API endpoints
+    path(
+        "run-tests/<uuid:run_test_id>/execute/",
+        RunTestExecutionView.as_view(),
+        name="run-test-execute",
+    ),
+    path(
+        "run-tests/get-id-by-name/<str:run_test_name>/",
+        RunTestNameView.as_view(),
+        name="run-test-get-id-by-name",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/chat-execute/",
+        RunTestChatExecutionView.as_view(),
+        name="run-test-execute-chat",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/chat/call-executions/batch/",
+        TestExecutionChatBatchView.as_view(),
+        name="test-execution-chat-batch",
+    ),
+    path(
+        "call-executions/<uuid:call_execution_id>/chat/send-message/",
+        ChatSendMessageView.as_view(),
+        name="call-execution-chat-send-message",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/sdk-code/",
+        ChatSDKCodeView.as_view(),
+        name="run-test-sdk-code",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/status/",
+        TestExecutionStatusView.as_view(),
+        name="test-execution-status",
+    ),
+    # Call Execution Rerun endpoint
+    path(
+        "test-executions/<uuid:test_execution_id>/rerun-calls/",
+        CallExecutionRerunView.as_view(),
+        name="call-execution-rerun",
+    ),
+    # Bulk Test Execution Rerun endpoint
+    path(
+        "run-tests/<uuid:run_test_id>/rerun-test-executions/",
+        TestExecutionRerunView.as_view(),
+        name="test-execution-rerun",
+    ),
+    # Run New Evaluations endpoint
+    path(
+        "run-tests/<uuid:run_test_id>/run-new-evals/",
+        RunNewEvalsOnTestExecutionView.as_view(),
+        name="run-new-evals-on-test-execution",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/cancel/",
+        TestExecutionCancelView.as_view(),
+        name="test-execution-cancel-by-id",
+    ),
+    path("run-tests/active/", AllActiveTestsView.as_view(), name="all-active-tests"),
+    # Call Transcript API endpoints
+    path(
+        "call-executions/<uuid:call_execution_id>/transcripts/",
+        CallTranscriptView.as_view(),
+        name="call-transcripts",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/transcripts/",
+        TestExecutionTranscriptsView.as_view(),
+        name="test-execution-transcripts",
+    ),
+    # Branch Analysis API endpoints
+    path(
+        "call-executions/<uuid:call_execution_id>/branch-analysis/",
+        CallBranchAnalysisView.as_view(),
+        name="call-branch-analysis",
+    ),
+    # New API endpoints for listing data
+    path("api/run-tests/", RunTestAPIView.as_view(), name="api-run-tests"),
+    path(
+        "api/test-executions/",
+        TestExecutionAPIView.as_view(),
+        name="api-test-executions",
+    ),
+    path(
+        "api/call-executions/",
+        CallExecutionAPIView.as_view(),
+        name="api-call-executions",
+    ),
+    # New endpoints for individual details
+    path(
+        "test-executions/<uuid:test_execution_id>/",
+        TestExecutionDetailView.as_view(),
+        name="test-execution-detail",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/column-order/",
+        TestExecutionColumnOrderView.as_view(),
+        name="test-execution-column-order",
+    ),
+    path(
+        "call-executions/<uuid:call_execution_id>/",
+        CallExecutionDetailView.as_view(),
+        name="call-execution-detail",
+    ),
+    path(
+        "call-executions/<uuid:call_execution_id>/session-comparison/",
+        SessionComparisonChatSimView.as_view(),
+        name="call-execution-session-comparison",
+    ),
+    path(
+        "call-executions/<uuid:call_execution_id>/logs/",
+        CallExecutionLogsView.as_view(),
+        name="call-execution-logs",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/call-executions/",
+        RunTestCallExecutionsView.as_view(),
+        name="run-test-call-executions",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/kpis/",
+        RunTestKPIsView.as_view(),
+        name="test-execution-kpis",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/performance-summary/",
+        PerformanceSummaryView.as_view(),
+        name="test-execution-performance-summary",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/analytics/",
+        TestExecutionAnalyticsView.as_view(),
+        name="test-execution-analytics",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/analytics/",
+        RunTestAnalyticsView.as_view(),
+        name="run-test-analytics",
+    ),
+    # Delete endpoints
+    path(
+        "run-tests/<uuid:run_test_id>/delete/",
+        RunTestDeleteView.as_view(),
+        name="run-test-delete",
+    ),
+    path(
+        "run-tests/<uuid:run_test_id>/delete-test-executions/",
+        TestExecutionBulkDeleteView.as_view(),
+        name="test-execution-bulk-delete",
+    ),
+    path(
+        "test-executions/<uuid:test_execution_id>/delete/",
+        TestExecutionDeleteView.as_view(),
+        name="test-execution-delete",
+    ),
+    path(
+        "call-executions/<uuid:call_execution_id>/delete/",
+        CallExecutionDeleteView.as_view(),
+        name="call-execution-delete",
+    ),
+    # Error Localizer endpoints
+    path(
+        "call-executions/<uuid:call_execution_id>/error-localizer-tasks/",
+        CallExecutionErrorLocalizerTasksView.as_view(),
+        name="call-execution-error-localizer-tasks",
+    ),
+    # CSV Export endpoints
+    path("export/<uuid:item_id>/", CSVExportView.as_view(), name="csv-export"),
+    path(
+        "run-tests/<uuid:run_test_id>/components/",
+        RunTestComponentsUpdateView.as_view(),
+        name="update-components",
+    ),
+    # Prompt Simulation API endpoints (for Prompt Workbench)
+    path(
+        "prompt-simulations/scenarios/",
+        PromptSimulationScenariosView.as_view(),
+        name="prompt-simulations-scenarios",
+    ),
+    path(
+        "prompt-templates/<uuid:prompt_template_id>/simulations/",
+        PromptSimulationListCreateView.as_view(),
+        name="prompt-simulations-list-create",
+    ),
+    path(
+        "prompt-templates/<uuid:prompt_template_id>/simulations/<uuid:run_test_id>/",
+        PromptSimulationDetailView.as_view(),
+        name="prompt-simulations-detail",
+    ),
+    path(
+        "prompt-templates/<uuid:prompt_template_id>/simulations/<uuid:run_test_id>/execute/",
+        ExecutePromptSimulationView.as_view(),
+        name="prompt-simulations-execute",
+    ),
+    # LiveKit agent worker internal API
+    path(
+        "api/livekit/call-config/<uuid:call_id>/",
+        CallConfigView.as_view(),
+        name="livekit-call-config",
+    ),
+    path(
+        "api/livekit/transcripts/<uuid:call_id>/",
+        TranscriptsView.as_view(),
+        name="livekit-transcripts",
+    ),
+    path(
+        "api/livekit/phone-resolution/<str:phone_number>/",
+        PhoneResolutionView.as_view(),
+        name="livekit-phone-resolution",
+    ),
+    path(
+        "api/livekit/call-execution/<uuid:call_id>/",
+        CallExecutionUpdateView.as_view(),
+        name="livekit-call-execution-update",
+    ),
+    path(
+        "api/livekit/temporal-signal/",
+        TemporalSignalView.as_view(),
+        name="livekit-temporal-signal",
+    ),
+    path(
+        "api/livekit/webhook/",
+        LiveKitWebhookView.as_view(),
+        name="livekit-webhook",
+    ),
+    path(
+        "api/livekit/listener-token/<uuid:call_id>/",
+        LiveCallListenerTokenView.as_view(),
+        name="livekit-listener-token",
+    ),
+    path(
+        "api/livekit/validate-credentials/",
+        ValidateLiveKitCredentialsView.as_view(),
+        name="livekit-validate-credentials",
+    ),
+]

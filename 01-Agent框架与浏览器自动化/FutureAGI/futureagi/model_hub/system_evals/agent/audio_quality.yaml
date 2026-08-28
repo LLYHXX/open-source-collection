@@ -1,0 +1,48 @@
+eval_id: 75
+name: audio_quality
+description: Evaluates the overall quality of the given audio, like MOS (Mean Opinion Score) evaluation
+criteria: "You are evaluating the overall technical quality of the audio recording (similar to MOS assessment).\n\n## Criteria\n\
+  \n1. Signal clarity: Intended audio content should be clear, distinct, and easily audible.\n   - High score: Every word/sound\
+  \ is crisp and immediately understandable.\n   - Low score: Muffled, distorted, or barely audible content.\n\n2. Noise and\
+  \ artifacts: Check for microphone hiss, electrical hum, clipping, distortion, or compression artifacts.\n   - High score:\
+  \ Clean recording free from distracting noise or artifacts.\n   - Low score: Persistent hiss, hum, clipping, or digital\
+  \ glitches.\n\n3. Balance and naturalness: Consistent volume levels and natural sound reproduction.\n   - High score: Even\
+  \ volume, natural tone, no over-processing.\n   - Low score: Extreme volume variations, robotic processing, or artificial\
+  \ sound.\n\n## Anti-bias Rules\n\n- Intentional audio effects (reverb in music, radio-style processing) should NOT be penalized\
+  \ if they serve the content.\n- Field recordings naturally have ambient sound; evaluate based on primary content clarity,\
+  \ not absolute silence.\n- Compressed audio (phone call quality) should be evaluated against expected quality for its medium.\n\
+  \n## Scoring\n\nScore 0.0 if severely degraded with heavy distortion or unintelligible content. Score 0.5 if understandable\
+  \ but with noticeable quality issues. Score 1.0 if studio-quality: crystal clear, artifact-free, natural-sounding.\n\n##\
+  \ Inputs\n\n<input_audio>{{input_audio}}</input_audio>"
+eval_tags:
+- Audio
+- NLP Metrics
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input_audio
+  output: score
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    input_audio: The audio to be evaluated
+  param_modalities:
+    input_audio:
+    - AUDIO
+  rule_prompt: "You are evaluating the overall technical quality of the audio recording (similar to MOS assessment).\n\n##\
+    \ Criteria\n\n1. Signal clarity: Intended audio content should be clear, distinct, and easily audible.\n   - High score:\
+    \ Every word/sound is crisp and immediately understandable.\n   - Low score: Muffled, distorted, or barely audible content.\n\
+    \n2. Noise and artifacts: Check for microphone hiss, electrical hum, clipping, distortion, or compression artifacts.\n\
+    \   - High score: Clean recording free from distracting noise or artifacts.\n   - Low score: Persistent hiss, hum, clipping,\
+    \ or digital glitches.\n\n3. Balance and naturalness: Consistent volume levels and natural sound reproduction.\n   - High\
+    \ score: Even volume, natural tone, no over-processing.\n   - Low score: Extreme volume variations, robotic processing,\
+    \ or artificial sound.\n\n## Anti-bias Rules\n\n- Intentional audio effects (reverb in music, radio-style processing)\
+    \ should NOT be penalized if they serve the content.\n- Field recordings naturally have ambient sound; evaluate based\
+    \ on primary content clarity, not absolute silence.\n- Compressed audio (phone call quality) should be evaluated against\
+    \ expected quality for its medium.\n\n## Scoring\n\nScore 0.0 if severely degraded with heavy distortion or unintelligible\
+    \ content. Score 0.5 if understandable but with noticeable quality issues. Score 1.0 if studio-quality: crystal clear,\
+    \ artifact-free, natural-sounding.\n\n## Inputs\n\n<input_audio>{{input_audio}}</input_audio>"

@@ -1,0 +1,19 @@
+meta {
+  name: Get metric tag options
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/custom-metric/tag-options/:metric_id
+  body: none
+  auth: bearer
+}
+
+params:path {
+  metric_id: e7b40552-2e66-411c-b485-d25313717e26
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

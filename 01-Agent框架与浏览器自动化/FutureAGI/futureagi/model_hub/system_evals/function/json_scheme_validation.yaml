@@ -1,0 +1,76 @@
+eval_id: 37
+name: json_scheme_validation
+description: Validates JSON against specified criteria
+eval_tags:
+- Output Format
+- Output Validation
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - actual_json
+  - expected_json
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config:
+    validations:
+      type: list
+      default: []
+  config_params_desc:
+    actual_json: The JSON to be validated
+    expected_json: The expected JSON structure
+    validations: List of validation criteria to apply
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        actual_json = kwargs.get("actual_json", output or "")
+        expected_json = kwargs.get("expected_json", expected or "")
+        validations = kwargs.get("validations", [])
+        # Parse JSON strings if needed
+        if isinstance(actual_json, str):
+            try:
+                actual_json = json.loads(actual_json)
+            except (json.JSONDecodeError, ValueError) as e:
+                return {"score": 0.0, "reason": f"actual_json is not valid JSON: {str(e)}"}
+        if isinstance(expected_json, str) and expected_json:
+            try:
+                expected_json = json.loads(expected_json)
+            except (json.JSONDecodeError, ValueError):
+                expected_json = None
+        # Validate type matches expected
+        if expected_json is not None:
+            if type(actual_json) != type(expected_json):
+                return {"score": 0.0, "reason": f"Type mismatch: expected {type(expected_json).__name__}, got {type(actual_json).__name__}"}
+            if isinstance(expected_json, dict):
+                missing_keys = set(expected_json.keys()) - set(actual_json.keys())
+                if missing_keys:
+                    return {"score": 0.0, "reason": f"Missing keys: {', '.join(missing_keys)}"}
+                # Check value types match for each key
+                type_mismatches = []
+                for key in expected_json:
+                    if key in actual_json and type(actual_json[key]) != type(expected_json[key]):
+                        type_mismatches.append(f"{key}: expected {type(expected_json[key]).__name__}, got {type(actual_json[key]).__name__}")
+                if type_mismatches:
+                    return {"score": 0.0, "reason": f"Type mismatches: {'; '.join(type_mismatches)}"}
+        # Run custom validations
+        errors = []
+        for v in (validations or []):
+            if isinstance(v, dict):
+                field = v.get("field", "")
+                rule = v.get("rule", "")
+                if field and rule == "required":
+                    if isinstance(actual_json, dict) and field not in actual_json:
+                        errors.append(f"Required field '{field}' missing")
+                elif field and rule == "type":
+                    expected_type = v.get("value", "")
+                    if isinstance(actual_json, dict) and field in actual_json:
+                        actual_type = type(actual_json[field]).__name__
+                        if actual_type != expected_type:
+                            errors.append(f"Field '{field}' type mismatch: expected {expected_type}, got {actual_type}")
+        if errors:
+            return {"score": 0.0, "reason": "; ".join(errors)}
+        return {"score": 1.0, "reason": "JSON validates against schema successfully"}

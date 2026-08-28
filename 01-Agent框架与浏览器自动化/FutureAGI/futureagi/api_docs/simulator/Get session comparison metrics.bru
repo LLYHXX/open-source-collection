@@ -1,0 +1,62 @@
+meta {
+  name: Get session comparison metrics
+  type: http
+  seq: 29
+}
+
+get {
+  url: http://localhost:8000/simulate/call-executions/27a25fc1-1b1a-4572-9f8e-8fc03c41fa3b/session-comparison/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Get Call Execution Details
+  description: Get detailed information about a specific call execution
+  response: {
+    "id": "call-1247",
+    "phone_number": "+1234567890",
+    "vapi_call_id": "vapi-call-1247",
+    "status": "completed",
+    "started_at": "2025-01-29T14:32:15Z",
+    "completed_at": "2025-01-29T14:36:38Z",
+    "duration_seconds": 263,
+    "recording_url": "https://vapi.com/recordings/call-1247.mp3",
+    "cost_cents": 45,
+    "overall_score": 4.7,
+    "response_time_ms": 1800,
+    "accuracy_score": 94.0,
+    "sentiment_score": 87.0,
+    "call_summary": "Customer requested password reset assistance",
+    "ended_reason": "completed",
+    "scenario_name": "Password Reset",
+    "transcripts": [
+      {
+        "id": "transcript-1",
+        "speaker_role": "user",
+        "content": "Hi, I need help with my password reset",
+        "start_time_ms": 0,
+        "end_time_ms": 3000,
+        "confidence_score": 0.95
+      },
+      {
+        "id": "transcript-2",
+        "speaker_role": "assistant",
+        "content": "I'd be happy to help you with that. Can you provide your email address?",
+        "start_time_ms": 3500,
+        "end_time_ms": 8000,
+        "confidence_score": 0.98
+      }
+    ],
+    "row_data": {
+      "name": "John Smith",
+      "department_name": "IT Support"
+    },
+    "dynamic_prompt": "You are calling a car dealership and talking to the front-desk assistant. Follow the scenario below:\n\nYour name: John Smith\nDepartment you want to talk to: IT Support",
+    "created_at": "2025-01-29T14:32:15Z"
+  }
+}

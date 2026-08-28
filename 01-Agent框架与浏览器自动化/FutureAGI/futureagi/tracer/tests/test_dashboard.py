@@ -1,0 +1,6017 @@
+"""
+Tests for the Custom Dashboards feature.
+
+Covers:
+- Dashboard CRUD API
+- DashboardWidget CRUD API
+- DashboardQueryBuilder (all metric types, time ranges, filters, breakdowns)
+- Serializer validation
+- Metrics discovery endpoint
+- Query execution (mocked ClickHouse)
+"""
+
+import json
+import uuid
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock, patch
+from urllib.parse import urlencode
+
+import pytest
+
+from accounts.models.workspace import Workspace
+from model_hub.models.ai_model import AIModel
+from tracer.models.dashboard import Dashboard, DashboardWidget
+from tracer.models.project import Project
+from tracer.serializers.dashboard import (
+    DashboardCreateUpdateSerializer,
+    DashboardQuerySerializer,
+    DashboardWidgetSerializer,
+)
+from tracer.services.clickhouse.query_builders.dashboard import (
+    AGGREGATIONS,
+    FILTER_OPERATORS,
+    GRANULARITY_TO_CH,
+    PRESET_RANGES,
+    SYSTEM_METRICS,
+    DashboardQueryBuilder,
+    InvalidMetricCombinationError,
+    _coerce_filter_value,
+    _generate_time_buckets,
+)
+from tracer.services.clickhouse.query_builders.dashboard_base import (
+    DashboardQueryBuilderBase,
+)
+from tracer.services.clickhouse.v2.query_builders.dashboard import (
+    DashboardQueryBuilderV2,
+)
+from tracer.views.dashboard import DashboardViewSet, _normalize_dashboard_query_filters
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def dashboard(db, workspace, user):
+    return Dashboard.objects.create(
+        workspace=workspace,
+        name="Test Dashboard",
+        description="A test dashboard",
+        created_by=user,
+        updated_by=user,
+    )
+
+
+@pytest.fixture
+def dashboard_widget(db, dashboard, user):
+    return DashboardWidget.objects.create(
+        dashboard=dashboard,
+        name="Latency Chart",
+        position=0,
+        width=6,
+        height=4,
+        query_config={
+            "project_ids": [str(uuid.uuid4())],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+        },
+        chart_config={"chart_type": "line"},
+        created_by=user,
+    )
+
+
+@pytest.fixture
+def sample_query_config():
+    return {
+        "project_ids": [str(uuid.uuid4())],
+        "granularity": "day",
+        "time_range": {"preset": "7D"},
+        "metrics": [
+            {
+                "id": "latency",
+                "name": "latency",
+                "type": "system_metric",
+                "aggregation": "avg",
+            }
+        ],
+        "filters": [],
+        "breakdowns": [],
+    }
+
+
+# ===========================================================================
+# Dashboard CRUD API
+# ===========================================================================
+
+
+class TestDashboardCRUD:
+    @pytest.mark.django_db
+    def test_create_dashboard(self, auth_client, workspace):
+        response = auth_client.post(
+            "/tracer/dashboard/",
+            {"name": "My Dashboard", "description": "Test description"},
+            format="json",
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert data["name"] == "My Dashboard"
+        assert data["description"] == "Test description"
+        assert data["id"] is not None
+
+    @pytest.mark.django_db
+    def test_create_dashboard_empty_name_rejected(self, auth_client):
+        response = auth_client.post(
+            "/tracer/dashboard/",
+            {"name": "", "description": "No name"},
+            format="json",
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    def test_list_dashboards(self, auth_client, dashboard):
+        response = auth_client.get("/tracer/dashboard/")
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert len(data) >= 1
+        names = [d["name"] for d in data]
+        assert "Test Dashboard" in names
+
+    @pytest.mark.django_db
+    def test_retrieve_dashboard(self, auth_client, dashboard, dashboard_widget):
+        response = auth_client.get(f"/tracer/dashboard/{dashboard.id}/")
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert data["name"] == "Test Dashboard"
+        assert "widgets" in data
+        assert len(data["widgets"]) == 1
+
+    @pytest.mark.django_db
+    def test_update_dashboard(self, auth_client, dashboard):
+        response = auth_client.put(
+            f"/tracer/dashboard/{dashboard.id}/",
+            {"name": "Updated Dashboard", "description": "Updated desc"},
+            format="json",
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert data["name"] == "Updated Dashboard"
+
+    @pytest.mark.django_db
+    def test_partial_update_dashboard(self, auth_client, dashboard):
+        response = auth_client.patch(
+            f"/tracer/dashboard/{dashboard.id}/",
+            {"name": "Patched Name"},
+            format="json",
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert data["name"] == "Patched Name"
+        assert data["description"] == "A test dashboard"
+
+    @pytest.mark.django_db
+    def test_delete_dashboard(self, auth_client, dashboard, dashboard_widget):
+        response = auth_client.delete(f"/tracer/dashboard/{dashboard.id}/")
+        assert response.status_code == 200
+        dashboard.refresh_from_db()
+        dashboard_widget.refresh_from_db()
+        assert dashboard.deleted is True
+        assert dashboard.deleted_at is not None
+        assert dashboard_widget.deleted is True
+        assert dashboard_widget.deleted_at is not None
+
+    @pytest.mark.django_db
+    def test_deleted_dashboard_not_in_list(self, auth_client, dashboard):
+        dashboard.deleted = True
+        dashboard.save()
+        response = auth_client.get("/tracer/dashboard/")
+        assert response.status_code == 200
+        data = response.json()["result"]
+        ids = [d["id"] for d in data]
+        assert str(dashboard.id) not in ids
+
+    @pytest.mark.django_db
+    def test_list_dashboard_has_widget_count(
+        self, auth_client, dashboard, dashboard_widget
+    ):
+        response = auth_client.get("/tracer/dashboard/")
+        assert response.status_code == 200
+        data = response.json()["result"]
+        d = next(item for item in data if item["id"] == str(dashboard.id))
+        assert d["widget_count"] == 1
+
+
+# ===========================================================================
+# DashboardWidget CRUD API
+# ===========================================================================
+
+
+class TestDashboardWidgetCRUD:
+    @pytest.mark.django_db
+    def test_create_widget(self, auth_client, dashboard):
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/",
+            {
+                "name": "New Widget",
+                "position": 0,
+                "width": 12,
+                "height": 6,
+                "query_config": {"metrics": [], "project_ids": []},
+                "chart_config": {},
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert data["name"] == "New Widget"
+        assert data["width"] == 12
+
+    @pytest.mark.django_db
+    def test_create_widget_default_name(self, auth_client, dashboard):
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/",
+            {
+                "position": 0,
+                "query_config": {},
+                "chart_config": {},
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert data["name"] == "Untitled"
+
+    @pytest.mark.django_db
+    def test_create_widget_invalid_width(self, auth_client, dashboard):
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/",
+            {
+                "name": "Too Wide",
+                "position": 0,
+                "width": 15,
+                "query_config": {},
+                "chart_config": {},
+            },
+            format="json",
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    def test_update_widget(self, auth_client, dashboard, dashboard_widget):
+        response = auth_client.patch(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/",
+            {"name": "Updated Widget"},
+            format="json",
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert data["name"] == "Updated Widget"
+
+    @pytest.mark.django_db
+    def test_put_widget_replaces_fields(
+        self, auth_client, dashboard, dashboard_widget, sample_query_config
+    ):
+        response = auth_client.put(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/",
+            {
+                "name": "Fully Updated Widget",
+                "description": "Full update description",
+                "position": 2,
+                "width": 7,
+                "height": 6,
+                "query_config": sample_query_config,
+                "chart_config": {"chart_type": "bar", "show_legend": False},
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert data["name"] == "Fully Updated Widget"
+        assert data["description"] == "Full update description"
+        assert data["position"] == 2
+        assert data["width"] == 7
+        assert data["height"] == 6
+        assert data["query_config"]["metrics"][0]["name"] == "latency"
+        assert data["chart_config"]["chart_type"] == "bar"
+
+        dashboard_widget.refresh_from_db()
+        assert dashboard_widget.name == "Fully Updated Widget"
+        assert dashboard_widget.query_config["metrics"][0]["name"] == "latency"
+        assert dashboard_widget.chart_config["chart_type"] == "bar"
+
+    @pytest.mark.django_db
+    def test_put_widget_wrong_dashboard_not_found(
+        self, auth_client, dashboard, dashboard_widget, user
+    ):
+        other_dashboard = Dashboard.objects.create(
+            workspace=dashboard.workspace,
+            name="Other Dashboard",
+            description="Other",
+            created_by=user,
+            updated_by=user,
+        )
+        response = auth_client.put(
+            f"/tracer/dashboard/{other_dashboard.id}/widgets/{dashboard_widget.id}/",
+            {
+                "name": "Should Not Mutate",
+                "position": 1,
+                "width": 6,
+                "height": 4,
+                "query_config": {},
+                "chart_config": {},
+            },
+            format="json",
+        )
+        assert response.status_code == 404
+        dashboard_widget.refresh_from_db()
+        assert dashboard_widget.name == "Latency Chart"
+
+    @pytest.mark.django_db
+    def test_put_widget_under_deleted_dashboard_not_found(
+        self, auth_client, dashboard, dashboard_widget
+    ):
+        dashboard.deleted = True
+        dashboard.save(update_fields=["deleted"])
+
+        response = auth_client.put(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/",
+            {
+                "name": "Should Not Mutate",
+                "position": 1,
+                "width": 6,
+                "height": 4,
+                "query_config": {},
+                "chart_config": {},
+            },
+            format="json",
+        )
+        assert response.status_code == 404
+        dashboard_widget.refresh_from_db()
+        assert dashboard_widget.name == "Latency Chart"
+
+    @pytest.mark.django_db
+    def test_delete_widget(self, auth_client, dashboard, dashboard_widget):
+        response = auth_client.delete(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/"
+        )
+        assert response.status_code == 200
+        dashboard_widget.refresh_from_db()
+        assert dashboard_widget.deleted is True
+
+    @pytest.mark.django_db
+    def test_create_widget_for_nonexistent_dashboard(self, auth_client):
+        fake_id = uuid.uuid4()
+        response = auth_client.post(
+            f"/tracer/dashboard/{fake_id}/widgets/",
+            {"name": "Orphan", "query_config": {}, "chart_config": {}},
+            format="json",
+        )
+        assert response.status_code == 404
+
+
+class TestWidgetReadEndpoints:
+    """GET /dashboard/<pk>/widgets/ (list) and /widgets/<pk>/ (retrieve).
+
+    The web app never calls these two reads (widgets load embedded in the
+    dashboard-detail payload), but they are publicly reachable API, so they
+    carry a basic happy-path + not-found + workspace-isolation contract.
+    """
+
+    @pytest.mark.django_db
+    def test_list_returns_dashboard_widgets(
+        self, auth_client, dashboard, dashboard_widget
+    ):
+        response = auth_client.get(f"/tracer/dashboard/{dashboard.id}/widgets/")
+        assert response.status_code == 200
+        assert str(dashboard_widget.id) in response.content.decode()
+
+    @pytest.mark.django_db
+    def test_list_empty_dashboard_returns_ok(self, auth_client, dashboard):
+        response = auth_client.get(f"/tracer/dashboard/{dashboard.id}/widgets/")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["count"] == 0
+        assert body["results"] == []
+
+    @pytest.mark.django_db
+    def test_retrieve_returns_single_widget(
+        self, auth_client, dashboard, dashboard_widget
+    ):
+        response = auth_client.get(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/"
+        )
+        assert response.status_code == 200
+        body = response.content.decode()
+        assert str(dashboard_widget.id) in body
+        assert dashboard_widget.name in body
+
+    @pytest.mark.django_db
+    def test_retrieve_nonexistent_widget_returns_404(self, auth_client, dashboard):
+        response = auth_client.get(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{uuid.uuid4()}/"
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.django_db
+    def test_reads_isolate_other_workspace_widgets(
+        self, auth_client, organization, user
+    ):
+        other_ws = Workspace.objects.create(
+            name="Other workspace",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+        other_dash = Dashboard.objects.create(
+            workspace=other_ws,
+            name="Other WS Dashboard",
+            created_by=user,
+            updated_by=user,
+        )
+        other_widget = DashboardWidget.objects.create(
+            dashboard=other_dash,
+            name="Secret Chart",
+            position=0,
+            width=6,
+            height=4,
+            query_config={},
+            chart_config={},
+            created_by=user,
+        )
+        # List must not leak another workspace's widgets.
+        list_resp = auth_client.get(f"/tracer/dashboard/{other_dash.id}/widgets/")
+        assert list_resp.status_code == 200
+        assert str(other_widget.id) not in list_resp.content.decode()
+        # The widget itself is not retrievable across the workspace boundary.
+        detail_resp = auth_client.get(
+            f"/tracer/dashboard/{other_dash.id}/widgets/{other_widget.id}/"
+        )
+        assert detail_resp.status_code == 404
+
+
+# ===========================================================================
+# Metrics Discovery Endpoint
+# ===========================================================================
+
+
+class TestMetricsEndpoint:
+    @pytest.mark.django_db
+    def test_metrics_without_project_ids_returns_all(self, auth_client):
+        """Unified metrics endpoint returns all metrics even without project_ids."""
+        response = auth_client.get("/tracer/dashboard/metrics/")
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert "metrics" in data
+
+    @pytest.mark.django_db
+    def test_metrics_endpoint_survives_cache_backend_outage(
+        self, auth_client, observe_project
+    ):
+        """Prod django-redis has no ``IGNORE_EXCEPTIONS``, so a cache-backend
+        outage used to re-raise into the view's ``except`` and 500 the
+        metrics endpoint. The cache is best-effort — a get/set failure must
+        fall through to ``build_metrics_catalog`` and return live results.
+        """
+        with (
+            patch(
+                "tracer.services.dashboard_metrics_catalog.cache.get",
+                side_effect=RuntimeError("redis down"),
+            ),
+            patch(
+                "tracer.services.dashboard_metrics_catalog.cache.set",
+                side_effect=RuntimeError("redis down"),
+            ),
+        ):
+            response = auth_client.get(
+                f"/tracer/dashboard/metrics/?project_ids={observe_project.id}"
+            )
+        assert response.status_code == 200
+        metric_names = [m["name"] for m in response.json()["result"]["metrics"]]
+        assert "latency" in metric_names
+
+    @pytest.mark.django_db
+    def test_metrics_returns_system_metrics(self, auth_client, observe_project):
+        response = auth_client.get(
+            f"/tracer/dashboard/metrics/?project_ids={observe_project.id}"
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        # Unified API returns flat {"metrics": [...]} array
+        assert "metrics" in data
+        metric_names = [m["name"] for m in data["metrics"]]
+        assert "latency" in metric_names
+        assert "cost" in metric_names
+        # latency_ms ("Duration") was removed from the catalog (duplicate of latency)
+        assert "latency_ms" not in metric_names
+
+    @pytest.mark.django_db
+    def test_metrics_returns_agent_scoped_simulation_eval_metrics(
+        self, auth_client, organization, workspace
+    ):
+        from model_hub.models.evals_metric import EvalTemplate
+        from simulate.models import AgentDefinition
+        from simulate.models.eval_config import SimulateEvalConfig
+        from simulate.models.run_test import RunTest
+
+        agent = AgentDefinition.objects.create(
+            agent_name="Metrics Agent",
+            agent_type=AgentDefinition.AgentTypeChoices.VOICE,
+            contact_number="+1234567001",
+            inbound=True,
+            organization=organization,
+            workspace=workspace,
+            languages=["en"],
+        )
+        run_test = RunTest.objects.create(
+            name="Metrics Test",
+            agent_definition=agent,
+            organization=organization,
+            workspace=workspace,
+        )
+        template = EvalTemplate.objects.create(
+            name="Metrics Eval",
+            organization=organization,
+            workspace=workspace,
+            config={"output": "pass_fail"},
+        )
+        eval_config = SimulateEvalConfig.objects.create(
+            name="Metrics Eval Config",
+            eval_template=template,
+            run_test=run_test,
+        )
+
+        response = auth_client.get(
+            f"/tracer/dashboard/metrics/?agent_definition_id={agent.id}"
+        )
+
+        assert response.status_code == 200
+        metric = next(
+            m
+            for m in response.json()["result"]["metrics"]
+            if m["name"] == str(eval_config.id)
+        )
+        assert metric["display_name"] == "Metrics Eval Config"
+        assert metric["category"] == "eval_metric"
+        assert metric["source"] == "simulation"
+        assert metric["output_type"] == "PASS_FAIL"
+        assert metric["choices"] == ["Passed", "Failed"]
+
+    @pytest.mark.django_db
+    def test_metrics_includes_span_backed_annotation_labels(
+        self, auth_client, project, observation_span, user, organization, workspace
+    ):
+        from model_hub.models.choices import AnnotationTypeChoices
+        from model_hub.models.develop_annotations import AnnotationsLabels
+        from model_hub.models.score import Score
+
+        label = AnnotationsLabels.objects.create(
+            name="Quality",
+            type=AnnotationTypeChoices.NUMERIC.value,
+            organization=organization,
+            workspace=workspace,
+            project=project,
+            settings={
+                "min": 0,
+                "max": 10,
+                "step_size": 1,
+                "display_type": "slider",
+            },
+        )
+        Score.objects.create(
+            source_type="observation_span",
+            observation_span=observation_span,
+            label=label,
+            annotator=user,
+            value={"value": 7},
+            score_source="human",
+            organization=organization,
+            workspace=workspace,
+        )
+
+        response = auth_client.get(
+            f"/tracer/dashboard/metrics/?project_ids={project.id}"
+        )
+
+        assert response.status_code == 200
+        metric_names = [m["name"] for m in response.json()["result"]["metrics"]]
+        assert str(label.id) in metric_names
+
+    @pytest.mark.django_db
+    @patch(
+        "tracer.services.dashboard_metrics_catalog.is_clickhouse_enabled",
+        return_value=False,
+    )
+    @patch("tracer.views.dashboard.SQL_query_handler.get_span_attributes_for_project")
+    def test_metrics_suppresses_customer_attribute_aliases_when_canonical_metric_exists(
+        self,
+        mock_get_span_attrs,
+        _mock_clickhouse_enabled,
+        auth_client,
+        observe_project,
+    ):
+        mock_get_span_attrs.return_value = [
+            "call.bot_wpm",
+            "call.user_wpm",
+            "freeform.attr",
+        ]
+
+        response = auth_client.get(
+            f"/tracer/dashboard/metrics/?project_ids={observe_project.id}"
+        )
+
+        assert response.status_code == 200
+        metrics = response.json()["result"]["metrics"]
+        metric_names = [m["name"] for m in metrics]
+        assert "bot_wpm" in metric_names
+        assert "user_wpm" in metric_names
+        assert "call.bot_wpm" not in metric_names
+        assert "call.user_wpm" not in metric_names
+        assert "freeform.attr" in metric_names
+
+    @pytest.mark.django_db
+    @patch(
+        "tracer.services.dashboard_metrics_catalog.is_clickhouse_enabled",
+        return_value=False,
+    )
+    @patch("tracer.views.dashboard.SQL_query_handler.get_span_attributes_for_project")
+    def test_metrics_exposes_agent_talk_percentage_for_simulator_project(
+        self,
+        mock_get_span_attrs,
+        _mock_clickhouse_enabled,
+        auth_client,
+        organization,
+        workspace,
+    ):
+        from model_hub.models.ai_model import AIModel
+        from tracer.models.project import Project, ProjectSourceChoices
+
+        simulator_project = Project.objects.create(
+            name="Voice Project",
+            organization=organization,
+            workspace=workspace,
+            model_type=AIModel.ModelTypes.GENERATIVE_LLM,
+            trace_type="observe",
+            source=ProjectSourceChoices.SIMULATOR.value,
+        )
+        mock_get_span_attrs.return_value = ["call.talk_ratio", "freeform.attr"]
+
+        response = auth_client.get(
+            f"/tracer/dashboard/metrics/?project_ids={simulator_project.id}"
+        )
+
+        assert response.status_code == 200
+        metrics = response.json()["result"]["metrics"]
+        metric_names = [m["name"] for m in metrics]
+        assert "agent_talk_percentage" in metric_names
+        # Raw call.talk_ratio collapsed by _suppress_customer_attribute_metric_aliases
+        # once the canonical agent_talk_percentage is published.
+        assert "call.talk_ratio" not in metric_names
+        assert "freeform.attr" in metric_names
+
+        entry = next(m for m in metrics if m["name"] == "agent_talk_percentage")
+        assert entry["category"] == "system_metric"
+        assert entry["source"] == "traces"
+        assert entry["type"] == "number"
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=False)
+    @patch("tracer.views.dashboard.SQL_query_handler.get_span_attributes_for_project")
+    def test_metrics_hides_agent_talk_percentage_for_non_simulator_project(
+        self,
+        mock_get_span_attrs,
+        _mock_clickhouse_enabled,
+        auth_client,
+        observe_project,
+    ):
+        # observe_project defaults to ProjectSourceChoices.PROTOTYPE.
+        mock_get_span_attrs.return_value = ["call.talk_ratio"]
+
+        response = auth_client.get(
+            f"/tracer/dashboard/metrics/?project_ids={observe_project.id}"
+        )
+
+        assert response.status_code == 200
+        metric_names = [m["name"] for m in response.json()["result"]["metrics"]]
+        assert "agent_talk_percentage" not in metric_names
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=False)
+    @patch("tracer.views.dashboard.SQL_query_handler.get_span_attributes_for_project")
+    def test_metrics_hides_agent_talk_percentage_when_mixed_sources(
+        self,
+        mock_get_span_attrs,
+        _mock_clickhouse_enabled,
+        auth_client,
+        organization,
+        workspace,
+        observe_project,
+    ):
+        from model_hub.models.ai_model import AIModel
+        from tracer.models.project import Project, ProjectSourceChoices
+
+        simulator_project = Project.objects.create(
+            name="Voice Project",
+            organization=organization,
+            workspace=workspace,
+            model_type=AIModel.ModelTypes.GENERATIVE_LLM,
+            trace_type="observe",
+            source=ProjectSourceChoices.SIMULATOR.value,
+        )
+        mock_get_span_attrs.return_value = []
+
+        response = auth_client.get(
+            "/tracer/dashboard/metrics/"
+            f"?project_ids={simulator_project.id},{observe_project.id}"
+        )
+
+        assert response.status_code == 200
+        metric_names = [m["name"] for m in response.json()["result"]["metrics"]]
+        # Gate requires *every* queried project to be SIMULATOR — mixed scope
+        # must hide the option so a non-voice project can't filter on it.
+        assert "agent_talk_percentage" not in metric_names
+
+    @pytest.mark.django_db
+    def test_metrics_hides_agent_talk_percentage_without_explicit_project_ids(
+        self, auth_client
+    ):
+        # Workspace-wide call (used by dashboard widget pickers) must not
+        # expose the voice-only metric.
+        response = auth_client.get("/tracer/dashboard/metrics/")
+        assert response.status_code == 200
+        metric_names = [m["name"] for m in response.json()["result"]["metrics"]]
+        assert "agent_talk_percentage" not in metric_names
+
+    @pytest.fixture
+    def _annotation_label_factory(self, db, organization, workspace):
+        from model_hub.models.choices import AnnotationTypeChoices
+        from model_hub.models.develop_annotations import AnnotationsLabels
+
+        def _make(name="Test Annotation Label"):
+            return AnnotationsLabels.objects.create(
+                name=name,
+                type=AnnotationTypeChoices.NUMERIC.value,
+                organization=organization,
+                workspace=workspace,
+                settings={
+                    "min": 0,
+                    "max": 10,
+                    "step_size": 1,
+                    "display_type": "slider",
+                },
+            )
+
+        return _make
+
+    @pytest.mark.django_db
+    def test_metrics_returns_span_attached_annotation_label(
+        self,
+        auth_client,
+        organization,
+        observe_project,
+        user,
+        _annotation_label_factory,
+    ):
+        """Span-attached Score (trace=NULL) must surface its label in the metrics API."""
+        from model_hub.models.score import Score
+        from tracer.models.observation_span import ObservationSpan
+        from tracer.models.trace import Trace
+
+        trace = Trace.objects.create(project=observe_project, name="Span-Anno Trace")
+        span = ObservationSpan.objects.create(
+            id=f"span_{uuid.uuid4().hex[:16]}",
+            project=observe_project,
+            trace=trace,
+            name="Span With Annotation",
+            observation_type="llm",
+        )
+        label = _annotation_label_factory(name="Span Attached Label")
+        Score.objects.create(
+            source_type="observation_span",
+            observation_span=span,
+            label=label,
+            annotator=user,
+            value={"value": 5.0},
+            score_source="human",
+            organization=organization,
+        )
+
+        response = auth_client.get(
+            f"/tracer/dashboard/metrics/?project_ids={observe_project.id}"
+        )
+        assert response.status_code == 200
+        metrics = response.json()["result"]["metrics"]
+        annotation_ids = [
+            m["name"] for m in metrics if m.get("category") == "annotation_metric"
+        ]
+        assert str(label.id) in annotation_ids, (
+            "Span-attached annotation label was not returned — regression of TH-4914"
+        )
+
+    @pytest.mark.django_db
+    def test_metrics_returns_trace_attached_annotation_label(
+        self,
+        auth_client,
+        organization,
+        observe_project,
+        user,
+        _annotation_label_factory,
+    ):
+        """Trace-attached Score path keeps working alongside the span branch."""
+        from model_hub.models.score import Score
+        from tracer.models.trace import Trace
+
+        trace = Trace.objects.create(
+            project=observe_project,
+            name="Trace For Annotation",
+        )
+        label = _annotation_label_factory(name="Trace Attached Label")
+        Score.objects.create(
+            source_type="trace",
+            trace=trace,
+            label=label,
+            annotator=user,
+            value={"value": 7.0},
+            score_source="human",
+            organization=organization,
+        )
+
+        response = auth_client.get(
+            f"/tracer/dashboard/metrics/?project_ids={observe_project.id}"
+        )
+        assert response.status_code == 200
+        metrics = response.json()["result"]["metrics"]
+        annotation_ids = [
+            m["name"] for m in metrics if m.get("category") == "annotation_metric"
+        ]
+        assert str(label.id) in annotation_ids
+
+    @pytest.mark.django_db
+    def test_metrics_excludes_annotation_label_from_other_project(
+        self,
+        auth_client,
+        organization,
+        workspace,
+        observe_project,
+        user,
+        _annotation_label_factory,
+    ):
+        """A label used only in a different project must not leak into this one."""
+        from model_hub.models.ai_model import AIModel
+        from model_hub.models.score import Score
+        from tracer.models.observation_span import ObservationSpan
+        from tracer.models.project import Project
+        from tracer.models.trace import Trace
+
+        other_project = Project.objects.create(
+            name="Other Project",
+            organization=organization,
+            workspace=workspace,
+            model_type=AIModel.ModelTypes.GENERATIVE_LLM,
+            trace_type="observe",
+        )
+        other_trace = Trace.objects.create(project=other_project, name="Other Trace")
+        other_span = ObservationSpan.objects.create(
+            id=f"span_{uuid.uuid4().hex[:16]}",
+            project=other_project,
+            trace=other_trace,
+            name="Other Span",
+            observation_type="llm",
+        )
+        label = _annotation_label_factory(name="Other Project Label")
+        Score.objects.create(
+            source_type="observation_span",
+            observation_span=other_span,
+            label=label,
+            annotator=user,
+            value={"value": 1.0},
+            score_source="human",
+            organization=organization,
+        )
+
+        response = auth_client.get(
+            f"/tracer/dashboard/metrics/?project_ids={observe_project.id}"
+        )
+        assert response.status_code == 200
+        annotation_ids = [
+            m["name"]
+            for m in response.json()["result"]["metrics"]
+            if m.get("category") == "annotation_metric"
+        ]
+        assert str(label.id) not in annotation_ids
+
+    # ------------------------------------------------------------------
+    # /filter_values endpoint — name / span_name col_map coverage.
+    # The handler whitelists allowed system metric column ids; "name"
+    # and "span_name" were missing so the FE picker showed empty
+    # suggestions for Trace Name / Span Name filters.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("metric_name", ["name", "span_name", "service_name"])
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_accepts_name_aliases(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        metric_name,
+        auth_client,
+        observe_project,
+    ):
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "agent.handle_request"}, {"val": "chain.run"}]
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            f"?metric_name={metric_name}"
+            "&metric_type=system_metric"
+            f"&project_ids={observe_project.id}"
+            "&source=traces"
+        )
+        assert response.status_code == 200
+        values = response.json()["result"]["values"]
+        labels = [v["label"] for v in values]
+        assert labels == ["agent.handle_request", "chain.run"]
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_name_restricts_to_root_spans(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """`metric_name=name` (Trace Name) must scope to root spans.
+
+        CH25 v2 spans write '' (not NULL) on the non-nullable parent_span_id
+        for root spans, so the clause must match both forms or it returns 0 rows.
+        """
+        mock_result = MagicMock()
+        mock_result.data = []
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            f"?metric_name=name&metric_type=system_metric"
+            f"&project_ids={observe_project.id}&source=traces"
+        )
+
+        sql_arg = mock_analytics_cls.return_value.execute_ch_query.call_args[0][0]
+        assert "(parent_span_id IS NULL OR parent_span_id = '')" in sql_arg
+
+    @pytest.mark.parametrize("metric_name", ["span_name", "service_name"])
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_span_name_does_not_restrict_to_root(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        metric_name,
+        auth_client,
+        observe_project,
+    ):
+        """span_name / service_name should NOT add the root-span clause."""
+        mock_result = MagicMock()
+        mock_result.data = []
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            f"?metric_name={metric_name}&metric_type=system_metric"
+            f"&project_ids={observe_project.id}&source=traces"
+        )
+
+        sql_arg = mock_analytics_cls.return_value.execute_ch_query.call_args[0][0]
+        assert "parent_span_id" not in sql_arg
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_service_name_uses_service_name_col(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """service_name must select the real `service_name` column (OTel
+        service.name) — the same column _STRING_FILTER_COL filters on — not the
+        span `name`/`trace_name`, else the picker offers unmatchable values."""
+        mock_result = MagicMock()
+        mock_result.data = []
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            f"?metric_name=service_name&metric_type=system_metric"
+            f"&project_ids={observe_project.id}&source=traces"
+        )
+
+        sql_arg = mock_analytics_cls.return_value.execute_ch_query.call_args[0][0]
+        assert "SELECT DISTINCT service_name AS val" in sql_arg
+        assert "SELECT DISTINCT name AS val" not in sql_arg
+        assert "trace_name" not in sql_arg
+
+    # ------------------------------------------------------------------
+    # /filter_values — span-scan time bounds.
+    # `spans` is PARTITION BY toDate(start_time); without a start_time bound
+    # these DISTINCT scans read the project's whole history (measured: 19M
+    # rows / 51 GiB on the largest tenant, tripping the endpoint timeout).
+    # ------------------------------------------------------------------
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_custom_attribute_bounds_scan_by_default_lookback(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "checkout"}]
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=prompt_slug&metric_type=custom_attribute"
+            f"&project_ids={observe_project.id}&source=traces"
+        )
+
+        assert response.status_code == 200
+        calls = mock_analytics_cls.return_value.execute_ch_query.call_args_list
+        # A non-empty result must not trigger the widening retry.
+        assert len(calls) == 1
+        sql_arg, params = calls[0][0][0], calls[0][0][1]
+        assert "start_time >= now() - INTERVAL %(win_lookback_days)s DAY" in sql_arg
+        assert params["win_lookback_days"] == 7
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_custom_attribute_honors_search(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """Search must hit the SQL: case-insensitive, metacharacters
+        escaped, tighter limit."""
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "agent_100%_done"}]
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=prompt_slug&metric_type=custom_attribute"
+            f"&project_ids={observe_project.id}&source=traces"
+            "&search=100%25_d"  # url-encoded "100%_d" — % and _ are literals
+        )
+
+        assert response.status_code == 200
+        sql_arg, params = (
+            mock_analytics_cls.return_value.execute_ch_query.call_args[0][0],
+            mock_analytics_cls.return_value.execute_ch_query.call_args[0][1],
+        )
+        assert "ILIKE %(search_pattern)s" in sql_arg
+        assert "LIMIT 20" in sql_arg
+        assert params["search_pattern"] == "%100\\%\\_d%"
+        # The lowered companion must mirror idx_attrs_str_ngram's expression
+        # byte-for-byte (023) — that is what lets the ngram bloom prune; the
+        # ILIKE on the map element alone never engages it.
+        assert (
+            "AND arrayStringConcat(arrayMap(x -> lower(x), "
+            "mapValues(attrs_string))) LIKE %(search_pattern_lower)s" in sql_arg
+        )
+        assert params["search_pattern_lower"] == "%100\\%\\_d%"
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_search_of_ngram_size_scans_unbounded(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """A >=4-char search drops the lookback: the ngram index can prune it,
+        and old values stay findable via search."""
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "gpt-4o-mini"}]
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=model_name&metric_type=custom_attribute"
+            f"&project_ids={observe_project.id}&source=traces"
+            "&search=gpt-"
+        )
+
+        sql_arg, params = (
+            mock_analytics_cls.return_value.execute_ch_query.call_args[0][0],
+            mock_analytics_cls.return_value.execute_ch_query.call_args[0][1],
+        )
+        assert "start_time >=" not in sql_arg
+        assert "win_lookback_days" not in params
+        assert "ILIKE %(search_pattern)s" in sql_arg
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_short_search_stays_windowed(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """Under 4 chars the ngram index cannot prune, so the scan keeps the
+        lookback — an unbounded un-indexed scan would be all cost, no gain."""
+        mock_result = MagicMock()
+        mock_result.data = []
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=model_name&metric_type=custom_attribute"
+            f"&project_ids={observe_project.id}&source=traces"
+            "&search=gpt"
+        )
+
+        sql_arg, params = (
+            mock_analytics_cls.return_value.execute_ch_query.call_args[0][0],
+            mock_analytics_cls.return_value.execute_ch_query.call_args[0][1],
+        )
+        assert "start_time >= now() - INTERVAL %(win_lookback_days)s DAY" in sql_arg
+        assert params["win_lookback_days"] == 7
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_search_companion_lowercases_needle(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """The index stores lowered values — a non-lowered companion needle
+        silently kills the pruning."""
+        mock_result = MagicMock()
+        mock_result.data = []
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=prompt_slug&metric_type=custom_attribute"
+            f"&project_ids={observe_project.id}&source=traces"
+            "&search=AgEnT"
+        )
+
+        params = mock_analytics_cls.return_value.execute_ch_query.call_args[0][1]
+        assert params["search_pattern"] == "%AgEnT%"
+        assert params["search_pattern_lower"] == "%agent%"
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_span_scans_run_in_break_mode(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """Span scans attach break-mode: budget overruns return (empty)
+        instead of raising Code 159 -> 400."""
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "checkout"}]
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=prompt_slug&metric_type=custom_attribute"
+            f"&project_ids={observe_project.id}&source=traces"
+        )
+
+        kwargs = mock_analytics_cls.return_value.execute_ch_query.call_args[1]
+        assert kwargs["settings"] == {"timeout_overflow_mode": "break"}
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_empty_window_stays_a_single_bounded_call(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """No unbounded fallback: an empty window is one bounded call and
+        200-empty (an unbounded retry could still die on 241/307)."""
+        empty = MagicMock()
+        empty.data = []
+        mock_analytics_cls.return_value.execute_ch_query.return_value = empty
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=prompt_slug&metric_type=custom_attribute"
+            f"&project_ids={observe_project.id}&source=traces"
+        )
+
+        assert response.status_code == 200
+        assert response.json()["result"]["values"] == []
+        calls = mock_analytics_cls.return_value.execute_ch_query.call_args_list
+        assert len(calls) == 1
+        assert "win_lookback_days" in calls[0][0][0]
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_custom_attribute_ch_error_degrades_to_empty(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """Residual CH errors degrade to 200-empty, never a 400."""
+        mock_analytics_cls.return_value.execute_ch_query.side_effect = Exception(
+            "Code: 241. DB::Exception: Memory limit (total) exceeded"
+        )
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=prompt_slug&metric_type=custom_attribute"
+            f"&project_ids={observe_project.id}&source=traces"
+        )
+
+        assert response.status_code == 200
+        assert response.json()["result"]["values"] == []
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_ignores_caller_supplied_window(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """A caller-sent range must not override the fixed lookback."""
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "checkout"}]
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=prompt_slug&metric_type=custom_attribute"
+            f"&project_ids={observe_project.id}&source=traces"
+            "&start_time=2020-01-01T00:00:00Z&end_time=2030-01-01T00:00:00Z"
+        )
+
+        assert response.status_code == 200
+        sql_arg, params = (
+            mock_analytics_cls.return_value.execute_ch_query.call_args[0][0],
+            mock_analytics_cls.return_value.execute_ch_query.call_args[0][1],
+        )
+        assert "win_start" not in params
+        assert "start_time >= now() - INTERVAL %(win_lookback_days)s DAY" in sql_arg
+        assert params["win_lookback_days"] == 7
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_system_metric_bounds_scan(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "gpt-4o"}]
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=model&metric_type=system_metric"
+            f"&project_ids={observe_project.id}&source=traces"
+        )
+
+        sql_arg = mock_analytics_cls.return_value.execute_ch_query.call_args[0][0]
+        assert "start_time >= now() - INTERVAL %(win_lookback_days)s DAY" in sql_arg
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_filter_values_session_bounds_scan_on_aliased_column(
+        self,
+        mock_analytics_cls,
+        _mock_ch_enabled,
+        auth_client,
+        observe_project,
+    ):
+        """The session path aliases spans to `sp`, so the bound must be
+        qualified or ClickHouse cannot resolve it against the remap join."""
+        mock_result = MagicMock()
+        mock_result.data = [{"val": str(uuid.uuid4())}]
+        mock_analytics_cls.return_value.execute_ch_query.return_value = mock_result
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/"
+            "?metric_name=session&metric_type=system_metric"
+            f"&project_ids={observe_project.id}&source=traces"
+        )
+
+        sql_arg = mock_analytics_cls.return_value.execute_ch_query.call_args[0][0]
+        assert "sp.start_time >= now() - INTERVAL %(win_lookback_days)s DAY" in sql_arg
+
+
+class TestChartsView:
+    @pytest.mark.django_db
+    def test_generated_chart_crud_routes_return_method_guards(self, auth_client):
+        chart_id = uuid.uuid4()
+        payload = {
+            "project_id": str(uuid.uuid4()),
+            "interval": "day",
+            "property": "average",
+            "req_data_config": {"id": "latency", "type": "SYSTEM_METRIC"},
+        }
+        calls = [
+            auth_client.get("/tracer/charts/"),
+            auth_client.post("/tracer/charts/", payload, format="json"),
+            auth_client.get(f"/tracer/charts/{chart_id}/"),
+            auth_client.put(f"/tracer/charts/{chart_id}/", payload, format="json"),
+            auth_client.patch(
+                f"/tracer/charts/{chart_id}/", {"property": "p95"}, format="json"
+            ),
+            auth_client.delete(f"/tracer/charts/{chart_id}/"),
+        ]
+
+        for response in calls:
+            assert response.status_code == 405
+            assert "fetch_graph" in response.json()["detail"]
+
+    @pytest.mark.django_db
+    @patch("tracer.views.charts.get_system_metric_data")
+    def test_fetch_graph_supports_single_system_metric(
+        self, mock_system_metric_data, auth_client, observe_project
+    ):
+        mock_system_metric_data.return_value = {
+            "metric_name": "latency",
+            "data": [],
+        }
+
+        query = urlencode(
+            {
+                "project_id": str(observe_project.id),
+                "interval": "day",
+                "property": "average",
+                "req_data_config": json.dumps(
+                    {"id": "latency", "type": "SYSTEM_METRIC"}
+                ),
+            }
+        )
+
+        response = auth_client.get(f"/tracer/charts/fetch_graph/?{query}")
+
+        assert response.status_code == 200
+        assert response.json()["result"]["metric_name"] == "latency"
+        mock_system_metric_data.assert_called_once()
+        assert mock_system_metric_data.call_args.kwargs["system_metric_filters"] == {
+            "project_id": str(observe_project.id)
+        }
+
+    @pytest.mark.django_db
+    @pytest.mark.django_db
+    @patch("tracer.views.charts.get_system_metric_data")
+    def test_fetch_graph_rejects_same_org_other_workspace_project(
+        self, mock_system_metric_data, auth_client, organization, user
+    ):
+        other_workspace = Workspace.objects.create(
+            name="Other workspace",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+        other_project = Project.objects.create(
+            name="Other workspace observe project",
+            organization=organization,
+            workspace=other_workspace,
+            model_type=AIModel.ModelTypes.GENERATIVE_LLM,
+            trace_type="observe",
+            metadata={},
+        )
+
+        query = urlencode(
+            {
+                "project_id": str(other_project.id),
+                "interval": "day",
+                "property": "average",
+                "req_data_config": json.dumps(
+                    {"id": "latency", "type": "SYSTEM_METRIC"}
+                ),
+            }
+        )
+
+        response = auth_client.get(f"/tracer/charts/fetch_graph/?{query}")
+
+        assert response.status_code == 400
+        assert "Project does not exist" in str(response.json())
+        mock_system_metric_data.assert_not_called()
+
+
+# ===========================================================================
+# DashboardQueryBuilder
+# ===========================================================================
+
+
+class TestDashboardQueryBuilder:
+    def test_system_metric_query(self, sample_query_config):
+        builder = DashboardQueryBuilder(sample_query_config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 1
+        sql, params, metric_info = queries[0]
+        assert "latency_ms" in sql
+        assert "avg" in sql.lower()
+        assert "toStartOfDay" in sql
+        assert params["project_ids"] == sample_query_config["project_ids"]
+
+    def test_system_metric_query_prunes_partitions(self, sample_query_config):
+        """Spans-based queries must bound created_at (the partition key) so a
+        windowed query prunes old partitions instead of scanning all history."""
+        builder = DashboardQueryBuilder(sample_query_config)
+        sql, _, _ = builder.build_all_queries()[0]
+        # partition-prune bound on the partition key is present
+        assert "created_at >= %(start_date)s - INTERVAL 1 DAY" in sql
+        # and the precise event-time window is still enforced (correctness)
+        assert "start_time >= %(start_date)s" in sql
+        assert "start_time < %(end_date)s" in sql
+
+    def test_breakdown_query_prunes_partitions(self):
+        """A latency average broken down by a custom span attribute must emit
+        the created_at partition-prune bound while preserving the start_time
+        window."""
+        config = {
+            "project_ids": [str(uuid.uuid4())],
+            "granularity": "day",
+            "time_range": {"preset": "30D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [],
+            "breakdowns": [
+                {
+                    "name": "final_status",
+                    "type": "custom_attribute",
+                    "source": "traces",
+                    "display_name": "final_status",
+                    "attribute_type": "string",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        sql, _, _ = builder.build_all_queries()[0]
+        assert "created_at >= %(start_date)s - INTERVAL 1 DAY" in sql
+        assert "start_time >= %(start_date)s" in sql
+        # the breakdown is still applied (real call path intact)
+        assert "breakdown_value" in sql
+
+    def test_all_system_metrics(self):
+        for metric_name in SYSTEM_METRICS:
+            config = {
+                "project_ids": ["proj1"],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": metric_name,
+                        "name": metric_name,
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+            }
+            builder = DashboardQueryBuilder(config)
+            queries = builder.build_all_queries()
+            assert len(queries) == 1
+
+    def test_all_aggregations(self):
+        for agg_name in AGGREGATIONS:
+            config = {
+                "project_ids": ["proj1"],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": agg_name,
+                    }
+                ],
+            }
+            builder = DashboardQueryBuilder(config)
+            queries = builder.build_all_queries()
+            assert len(queries) == 1
+
+    def test_eval_metric_query(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "hour",
+            "time_range": {"preset": "today"},
+            "metrics": [
+                {
+                    "id": "e1",
+                    "name": "accuracy",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "output_type": "SCORE",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 1
+        sql, params, _ = queries[0]
+        assert "usage_apicalllog" in sql
+        assert "eval_score" in sql
+
+    def test_eval_metric_pass_fail(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "e2",
+                    "name": "pass_rate",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "output_type": "PASS_FAIL",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "eval_output_str" in sql
+        assert "eval_score" in sql
+
+    def test_eval_metric_sum_uses_output_string_fallback(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "e2",
+                    "name": "conversation_hallucination",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "aggregation": "sum",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "sum(if(e.eval_output_str = '', NULL" in sql
+        assert "lower(e.eval_output_str) IN ('passed', 'pass', 'true', '1')" in sql
+        assert "sum(e.eval_score)" not in sql
+
+    def test_eval_metric_avg_keeps_structured_score_rows(self):
+        """A structured output is not numeric text, so the numeric-detection
+        branch must accept the nested score or every such row is NULLed out.
+        """
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "e2",
+                    "name": "conversation_hallucination",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert (
+            "JSONType(e.eval_output_str, 'score') IN ('Double', 'Int64', 'UInt64')"
+            in sql
+        )
+
+    def test_pass_fail_paths_render_one_shared_predicate(self):
+        """The time-series predicate is unchanged to the byte, and the breakdown
+        label and the eval filter now render it instead of a 'Passed' literal.
+        """
+        eval_id = str(uuid.uuid4())
+        metric = {
+            "id": "e_pf",
+            "name": "pass_fail_eval",
+            "type": "eval_metric",
+            "config_id": eval_id,
+            "output_type": "PASS_FAIL",
+            "aggregation": "pass_rate",
+        }
+        builder = DashboardQueryBuilder(
+            {
+                "project_ids": ["proj1"],
+                "organization_id": str(uuid.uuid4()),
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [metric],
+                "breakdowns": [metric],
+            }
+        )
+
+        sql, _, _ = builder.build_all_queries()[0]
+        breakdown_expr = builder._resolve_all_breakdowns({})[0]["expr"]
+        filter_clauses, _ = builder._build_subquery_filters(
+            [
+                {
+                    "metric_type": "eval_metric",
+                    "metric_name": eval_id,
+                    "output_type": "PASS_FAIL",
+                    "operator": "equal_to",
+                    "value": 1.0,
+                }
+            ],
+            {},
+            "f_",
+        )
+
+        assert (
+            "(e.eval_score >= 1.0 OR lower(e.eval_output_str) IN "
+            "('passed', 'pass', 'true', '1'))" in sql
+        ), "the time-series pass predicate must render exactly as it did before"
+        assert (
+            "(ev0.eval_score >= 1.0 OR lower(ev0.eval_output_str) IN "
+            "('passed', 'pass', 'true', '1'))" in breakdown_expr
+        ), "the PASS_FAIL breakdown label must not read a structured row as Fail"
+        assert (
+            "(eval_score >= 1.0 OR lower(eval_output_str) IN "
+            "('passed', 'pass', 'true', '1'))" in filter_clauses[0]
+        ), "the PASS_FAIL eval filter must select what the widget labels Pass"
+
+    def test_eval_metric_combines_project_and_dataset_breakdowns(self):
+        config = {
+            "project_ids": ["proj1"],
+            "organization_id": str(uuid.uuid4()),
+            "workspace_id": str(uuid.uuid4()),
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "e2",
+                    "name": "conversation_hallucination",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "aggregation": "count",
+                }
+            ],
+            "breakdowns": [
+                {"name": "project", "type": "system_metric"},
+                {"name": "dataset", "type": "system_metric"},
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "concat(" in sql
+        assert "' / '" in sql
+        assert " AS breakdown_value" in sql
+        assert sql.count(" AS breakdown_value") == 1
+        assert "dictGet('trace_dict', 'project_id'" in sql
+        assert "e.eval_dataset_id" in sql
+
+    def test_eval_metric_dedups_reruns_by_argmax_and_lets_non_trace_rows_through(
+        self,
+    ):
+        """Trace-eval reruns share (source_id, eval_trace_id) — collapse to the
+        latest attempt via argMax; non-trace rows (playground/dataset/SDK, where
+        eval_trace_id is empty) must bypass the IN-set and pass through
+        unchanged.
+        """
+        config = {
+            "project_ids": ["proj1"],
+            "workspace_id": str(uuid.uuid4()),
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "e_dedup",
+                    "name": "conversation_hallucination",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "aggregation": "count",
+                }
+            ],
+        }
+        for builder_cls in (DashboardQueryBuilder, DashboardQueryBuilderV2):
+            sql, _, _ = builder_cls(config).build_all_queries()[0]
+            # argMax on (created_at, id) picks the latest attempt deterministically.
+            assert "argMax(d.id, tuple(d.created_at, d.id))" in sql
+            assert "GROUP BY d.eval_trace_id" in sql
+            # Non-trace rows short-circuit through the OR — dataset / playground
+            # / SDK runs are independent and must not be collapsed.
+            assert "(e.eval_trace_id = '' OR" in sql
+            # Subquery is scoped by workspace, filters CDC tombstones, and only
+            # looks at trace-eval rows.
+            assert "d.workspace_id = toUUID(%(workspace_id)s)" in sql
+            assert "d._peerdb_is_deleted = 0" in sql
+            assert "d.eval_trace_id != ''" in sql
+
+    def test_eval_metric_breakdown_buckets_all_eval_sources(self):
+        config = {
+            "project_ids": ["proj1"],
+            "organization_id": str(uuid.uuid4()),
+            "workspace_id": str(uuid.uuid4()),
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "e2",
+                    "name": "conversation_hallucination",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "aggregation": "count",
+                }
+            ],
+            "breakdowns": [
+                {"name": "project", "type": "system_metric"},
+                {"name": "dataset", "type": "system_metric"},
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        for source in (
+            "feedback",
+            "tracer_composite",
+            "prompt_template",
+            "simulate",
+            "simulate_tool_evaluation",
+            "voice_call",
+            "text_call",
+            "composite_eval",
+            "composite_eval_adhoc",
+            "composite_eval_dataset",
+        ):
+            assert f"e.source = '{source}'" in sql
+        assert "'(simulation)'" in sql
+
+    def test_eval_metric_project_breakdown_falls_through_to_source_bucket_labels(
+        self,
+    ):
+        """When the project breakdown can't resolve a project (playground /
+        dataset / SDK rows have no trace and can't feed ``trace_dict``), the
+        fallback must dispatch on ``e.source`` and surface user-facing bucket
+        labels — not lump everything under ``(no project)``.
+        """
+        config = {
+            "project_ids": ["proj1"],
+            "workspace_id": str(uuid.uuid4()),
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "e_src",
+                    "name": "conversation_hallucination",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "aggregation": "count",
+                }
+            ],
+            "breakdowns": [{"name": "project", "type": "system_metric"}],
+        }
+        for builder_cls in (DashboardQueryBuilder, DashboardQueryBuilderV2):
+            sql, _, _ = builder_cls(config).build_all_queries()[0]
+            # Trace resolution branch is still tried first.
+            assert "dictGet('trace_dict', 'project_id'" in sql
+            # Fallback dispatches on eval source with human-readable labels.
+            assert "e.source = 'eval_playground'" in sql
+            assert "'(playground)'" in sql
+            assert "e.source = 'dataset_evaluation'" in sql
+            assert "'(dataset)'" in sql
+            assert "e.source = 'standalone_v2'" in sql
+            assert "'(sdk)'" in sql
+            # The excluded-self rule keeps 'tracer' out of the project fallback.
+            assert "e.source = 'tracer'" not in sql
+
+    def test_system_metric_sum_aggregation(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "cost",
+                    "name": "cost",
+                    "type": "system_metric",
+                    "aggregation": "sum",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "sum(cost)" in sql
+
+    def test_system_metric_median_aggregation(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "median",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "quantile(0.5)(latency_ms)" in sql
+
+    def test_system_metric_count_distinct_aggregation(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "model",
+                    "name": "model",
+                    "type": "system_metric",
+                    "aggregation": "count_distinct",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "uniq(model)" in sql
+
+    def test_project_metric_count_uses_distinct_projects(self):
+        config = {
+            "project_ids": ["proj1", "proj2"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "project",
+                    "name": "project",
+                    "type": "system_metric",
+                    "aggregation": "count",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "uniq(project_id)" in sql
+
+    def test_user_count_forces_uniq_on_resolved_user_dict_regardless_of_agg(
+        self,
+    ):
+        """Even when the user picks ``count`` (or ``sum``, ``avg``), an
+        identity metric like ``user_count`` must run distinct-count on the
+        resolved user id — not row count of the containing table.
+        """
+        for agg in ("count", "avg", "sum"):
+            config = {
+                "project_ids": ["proj1"],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "user_count",
+                        "name": "user_count",
+                        "type": "system_metric",
+                        "aggregation": agg,
+                    }
+                ],
+            }
+            sql, _, _ = DashboardQueryBuilder(config).build_all_queries()[0]
+            assert "uniq(" in sql
+            assert "end_users_dict" in sql
+            # row-count fallbacks should never win here
+            assert "count(*)" not in sql
+
+    def test_latency_metric_uses_root_spans_only(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "min",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "(parent_span_id IS NULL OR parent_span_id = '')" in sql
+
+    def test_eval_metric_pass_rate_aggregation(self):
+        config = {
+            "project_ids": ["proj1"],
+            "organization_id": str(uuid.uuid4()),
+            "workspace_id": str(uuid.uuid4()),
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "e_pass_rate",
+                    "name": "accuracy",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "output_type": "PASS_FAIL",
+                    "aggregation": "pass_rate",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "countIf(" in sql
+        assert "/ nullIf(count(), 0)" in sql
+
+    def test_eval_metric_fail_count_aggregation(self):
+        config = {
+            "project_ids": ["proj1"],
+            "organization_id": str(uuid.uuid4()),
+            "workspace_id": str(uuid.uuid4()),
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "e_fail_count",
+                    "name": "accuracy",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "output_type": "PASS_FAIL",
+                    "aggregation": "fail_count",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "countIf(" in sql
+        assert "AS value" in sql
+
+    def test_annotation_metric_query(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "30D"},
+            "metrics": [
+                {
+                    "id": "a1",
+                    "name": "quality",
+                    "type": "annotation_metric",
+                    "label_id": str(uuid.uuid4()),
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, params, _ = queries[0]
+        assert "model_hub_score" in sql
+        assert "JSONExtract(a.value, 'value', 'Nullable(Float64)')" in sql
+        assert params["annotation_label_id"]
+
+    def test_annotation_star_metric_uses_rating_value(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "30D"},
+            "metrics": [
+                {
+                    "id": "a_star",
+                    "name": "quality_star",
+                    "type": "annotation_metric",
+                    "label_id": str(uuid.uuid4()),
+                    "aggregation": "avg",
+                    "output_type": "star",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "model_hub_score" in sql
+        assert "JSONExtract(a.value, 'rating', 'Nullable(Float64)')" in sql
+
+    def test_custom_attribute_query(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "c1",
+                    "name": "my_metric",
+                    "type": "custom_attribute",
+                    "attribute_key": "custom.score",
+                    "attribute_type": "number",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "span_attr_num" in sql
+        assert "custom.score" in sql
+
+    def test_multiple_metrics(self, sample_query_config):
+        sample_query_config["metrics"].append(
+            {
+                "id": "cost",
+                "name": "cost",
+                "type": "system_metric",
+                "aggregation": "sum",
+            }
+        )
+        builder = DashboardQueryBuilder(sample_query_config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 2
+
+    def test_breakdown_system(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "breakdowns": [{"type": "system_metric", "name": "model"}],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "breakdown_value" in sql
+        assert "model" in sql
+
+    def test_breakdown_custom_attribute(self):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "breakdowns": [
+                {"type": "custom_attribute", "name": "env", "attribute_type": "string"}
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "span_attr_str" in sql
+        assert "breakdown_value" in sql
+
+
+class TestDashboardAttrRollupRouting:
+    """Routing for the latency-avg × covered-attribute breakdown.
+
+    Drives the real build_all_queries() call-path. [FIX] tests go RED if the
+    routing branch is removed; [FALLBACK] tests prove the spans path is kept.
+
+    The rollup is fail-closed behind three gates: v2 schema only
+    (``_attr_rollup_available``), DASHBOARD_ATTR_ROLLUP_ENABLED, and the window
+    starting at/after DASHBOARD_ATTR_ROLLUP_COVERED_SINCE. ``_v2``+``_enable``
+    open all three so a [FALLBACK] test isolates the one condition it names.
+    """
+
+    # Far enough in the past that the 30D-preset window always starts after it.
+    _COVERED_SINCE = datetime(2000, 1, 1, tzinfo=UTC)
+
+    @staticmethod
+    def _config(
+        metric_name="latency",
+        aggregation="avg",
+        breakdowns=None,
+        metric_filters=None,
+        global_filters=None,
+        granularity="day",
+    ):
+        metric = {
+            "id": metric_name,
+            "name": metric_name,
+            "type": "system_metric",
+            "aggregation": aggregation,
+        }
+        if metric_filters is not None:
+            metric["filters"] = metric_filters
+        return {
+            "project_ids": [str(uuid.uuid4())],
+            "granularity": granularity,
+            "time_range": {"preset": "30D"},
+            "metrics": [metric],
+            "filters": global_filters or [],
+            "breakdowns": breakdowns if breakdowns is not None else [],
+        }
+
+    @staticmethod
+    def _bd(name):
+        return {
+            "type": "custom_attribute",
+            "name": name,
+            "source": "traces",
+            "display_name": name,
+            "attribute_type": "string",
+        }
+
+    @staticmethod
+    def _v2(config):
+        return DashboardQueryBuilderV2(config)
+
+    def _enable(self, settings, covered_since=None):
+        settings.DASHBOARD_ATTR_ROLLUP_ENABLED = True
+        settings.DASHBOARD_ATTR_ROLLUP_COVERED_SINCE = (
+            self._COVERED_SINCE if covered_since is None else covered_since
+        )
+
+    def test_covered_breakdown_final_status_routes_to_rollup(self, settings):
+        # [FIX] final_status → rollup. RED without the routing branch.
+        self._enable(settings)
+        config = self._config(breakdowns=[self._bd("final_status")])
+        sql, params, _ = self._v2(config).build_all_queries()[0]
+        # Targets the rollup, reads merged state, and does NOT scan the Map.
+        assert "dashboard_attr_rollup" in sql
+        assert "sumMerge(latency_sum)" in sql
+        assert "countMerge(n)" in sql
+        assert "span_attr_str" not in sql
+        assert "FROM spans" not in sql
+        # Output contract unchanged: time_bucket / breakdown_value / value.
+        assert "time_bucket" in sql
+        assert "breakdown_value" in sql
+        # attr_key is passed as a param, filtered on in the rollup.
+        assert params["attr_key"] == "final_status"
+        assert "attr_key = %(attr_key)s" in sql
+
+    def test_covered_breakdown_country_routes_to_rollup(self, settings):
+        # [FIX] country → rollup too.
+        self._enable(settings)
+        config = self._config(breakdowns=[self._bd("country")])
+        sql, params, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" in sql
+        assert "sumMerge(latency_sum) / countMerge(n)" in sql
+        assert "span_attr_str" not in sql
+        assert params["attr_key"] == "country"
+
+    def test_v1_builder_never_routes_to_rollup(self, settings):
+        # [FALLBACK] FIX 1 — base/v1 builder lacks the rollup table; even with
+        # the flag on and the window covered it must emit the spans scan.
+        self._enable(settings)
+        config = self._config(breakdowns=[self._bd("final_status")])
+        sql, _, _ = DashboardQueryBuilder(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "FROM spans" in sql
+
+    def test_flag_disabled_falls_back_to_spans(self, settings):
+        # [FALLBACK] FIX 2 — flag off (fresh deploy) → spans path.
+        settings.DASHBOARD_ATTR_ROLLUP_ENABLED = False
+        settings.DASHBOARD_ATTR_ROLLUP_COVERED_SINCE = self._COVERED_SINCE
+        config = self._config(breakdowns=[self._bd("final_status")])
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "FROM spans" in sql
+
+    def test_coverage_unset_falls_back_to_spans(self, settings):
+        # [FALLBACK] FIX 2 — flag on but no coverage date set → spans path.
+        settings.DASHBOARD_ATTR_ROLLUP_ENABLED = True
+        settings.DASHBOARD_ATTR_ROLLUP_COVERED_SINCE = None
+        config = self._config(breakdowns=[self._bd("final_status")])
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "FROM spans" in sql
+
+    def test_window_before_coverage_falls_back_to_spans(self, settings):
+        # [FALLBACK] boundary (a) — a window starting before COVERED_SINCE is
+        # not backfilled; route must fall back, never return a partial rollup.
+        self._enable(settings, covered_since=datetime.now(UTC) + timedelta(days=1))
+        config = self._config(breakdowns=[self._bd("final_status")])
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "FROM spans" in sql
+
+    def test_per_metric_filter_falls_back_to_spans(self, settings):
+        # [FALLBACK] per-metric filter → spans path.
+        self._enable(settings)
+        config = self._config(
+            breakdowns=[self._bd("final_status")],
+            metric_filters=[
+                {
+                    "metric_type": "system_metric",
+                    "metric_name": "status",
+                    "operator": "equal_to",
+                    "value": "OK",
+                }
+            ],
+        )
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "FROM spans" in sql
+
+    def test_global_filter_falls_back_to_spans(self, settings):
+        # [FALLBACK] a global filter present → spans path.
+        self._enable(settings)
+        config = self._config(
+            breakdowns=[self._bd("final_status")],
+            global_filters=[
+                {
+                    "metric_type": "custom_attribute",
+                    "metric_name": "env",
+                    "operator": "equal_to",
+                    "value": "prod",
+                    "attribute_type": "string",
+                }
+            ],
+        )
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "FROM spans" in sql
+
+    def test_uncovered_attribute_falls_back_to_spans(self, settings):
+        # [FALLBACK] an attribute outside the covered set (user_id) → spans path.
+        self._enable(settings)
+        config = self._config(breakdowns=[self._bd("user_id")])
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "FROM spans" in sql
+
+    def test_non_avg_aggregation_falls_back_to_spans(self, settings):
+        # [FALLBACK] non-avg (p95) → spans path.
+        self._enable(settings)
+        config = self._config(aggregation="p95", breakdowns=[self._bd("final_status")])
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "FROM spans" in sql
+
+    def test_non_latency_metric_falls_back_to_spans(self, settings):
+        # [FALLBACK] non-latency (cost) → spans path.
+        self._enable(settings)
+        config = self._config(metric_name="cost", breakdowns=[self._bd("final_status")])
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "cost" in sql.lower()
+        assert "breakdown_value" in sql
+
+    def test_two_breakdowns_fall_back_to_spans(self, settings):
+        # [FALLBACK] >1 breakdown → spans path.
+        self._enable(settings)
+        config = self._config(
+            breakdowns=[self._bd("final_status"), self._bd("country")]
+        )
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+
+    def test_no_breakdown_latency_avg_falls_back_to_spans(self, settings):
+        # [FALLBACK] plain latency avg with no breakdown → spans path unchanged.
+        self._enable(settings)
+        config = self._config(breakdowns=[])
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "latency_ms" in sql
+
+    def test_sub_hour_granularity_falls_back_to_spans(self, settings):
+        # [FALLBACK] sub-hour granularity → spans path (rollup is hourly).
+        self._enable(settings)
+        config = self._config(
+            breakdowns=[self._bd("final_status")], granularity="minute"
+        )
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" not in sql
+        assert "FROM spans" in sql
+
+    def test_hour_granularity_routes_to_rollup(self, settings):
+        # [FIX] hour granularity is covered (>= the rollup's hour resolution).
+        self._enable(settings)
+        config = self._config(breakdowns=[self._bd("final_status")], granularity="hour")
+        sql, _, _ = self._v2(config).build_all_queries()[0]
+        assert "dashboard_attr_rollup" in sql
+
+    def test_rollup_params_carry_window_bounds(self, settings):
+        # [FIX] rollup is window-bounded, never all-history.
+        self._enable(settings)
+        config = self._config(breakdowns=[self._bd("final_status")])
+        sql, params, _ = self._v2(config).build_all_queries()[0]
+        assert "hour >= %(start_date)s" in sql
+        assert "hour < %(end_date)s" in sql
+        assert "start_date" in params and "end_date" in params
+        assert "project_id IN %(project_ids)s" in sql
+
+    def test_rollup_window_snapped_to_hour(self, settings):
+        # [FIX] FIX 3 — the rollup window is floored to whole hours so no
+        # partial bucket is read.
+        self._enable(settings)
+        config = self._config(breakdowns=[self._bd("final_status")])
+        _, params, _ = self._v2(config).build_all_queries()[0]
+        for key in ("start_date", "end_date"):
+            dt = params[key]
+            assert dt.minute == 0 and dt.second == 0 and dt.microsecond == 0
+
+    def test_weighted_mean_equals_raw_avg(self):
+        # sumMerge/countMerge == flat avg of raw latencies; avg-of-avgs would not.
+        hour_a = [100, 200, 300]
+        hour_b = [1000]
+        raw = hour_a + hour_b
+        flat_avg = sum(raw) / len(raw)
+        states = [(sum(hour_a), len(hour_a)), (sum(hour_b), len(hour_b))]
+        weighted = sum(s for s, _ in states) / sum(c for _, c in states)
+        assert weighted == pytest.approx(flat_avg)
+        avg_of_avgs = ((sum(hour_a) / len(hour_a)) + (sum(hour_b) / len(hour_b))) / 2
+        assert avg_of_avgs != pytest.approx(flat_avg)
+
+
+class TestDashboardQueryBuilderTimeRanges:
+    def test_preset_7d(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        start, end = builder.parse_time_range()
+        assert (end - start).days <= 7
+
+    def test_preset_today(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "hour",
+            "time_range": {"preset": "today"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        start, end = builder.parse_time_range()
+        assert start.hour == 0 and start.minute == 0
+
+    def test_preset_yesterday(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "hour",
+            "time_range": {"preset": "yesterday"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        start, end = builder.parse_time_range()
+        assert start.date() == (datetime.utcnow() - timedelta(days=1)).date()
+
+    def test_custom_time_range(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "day",
+            "time_range": {
+                "custom_start": "2025-01-01T00:00:00",
+                "custom_end": "2025-01-31T23:59:59",
+            },
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        start, end = builder.parse_time_range()
+        assert start.year == 2025 and start.month == 1 and start.day == 1
+
+    def test_all_granularities(self):
+        for gran in ("minute", "hour", "day", "week", "month", "year"):
+            config = {
+                "project_ids": ["p1"],
+                "granularity": gran,
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+            }
+            builder = DashboardQueryBuilder(config)
+            queries = builder.build_all_queries()
+            assert len(queries) == 1
+
+
+class TestDashboardQueryBuilderFilters:
+    def test_global_system_filter(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [
+                {
+                    "metric_type": "system_metric",
+                    "metric_name": "cost",
+                    "operator": "greater_than",
+                    "value": 0.01,
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, params, _ = queries[0]
+        assert "cost" in sql
+        assert any("val" in k for k in params)
+
+    def test_custom_attr_key_injection_rejected(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "m",
+                    "name": "injected",
+                    "type": "custom_attribute",
+                    "attribute_key": "key'] OR 1=1 --",
+                    "attribute_type": "number",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        with pytest.raises(ValueError, match="Invalid attribute key"):
+            builder.build_all_queries()
+
+    def test_unknown_metric_type_raises(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {"id": "x", "name": "x", "type": "unknown_type", "aggregation": "avg"}
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        with pytest.raises(ValueError, match="Unknown metric type"):
+            builder.build_all_queries()
+
+
+class TestDashboardQueryBuilderFormatResults:
+    def test_format_empty_results(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "day",
+            "time_range": {
+                "custom_start": "2025-01-01T00:00:00",
+                "custom_end": "2025-01-03T23:59:59",
+            },
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        result = builder.format_results(
+            [({"id": "latency", "name": "latency", "aggregation": "avg"}, [])]
+        )
+        assert "metrics" in result
+        assert len(result["metrics"]) == 1
+        series = result["metrics"][0]["series"]
+        assert len(series) == 1
+        assert series[0]["name"] == "total"
+        # All buckets filled with null (Jan 1, 2, 3)
+        assert len(series[0]["data"]) == 3
+        assert all(d["value"] is None for d in series[0]["data"])
+
+    def test_format_with_data(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "day",
+            "time_range": {
+                "custom_start": "2025-01-01T00:00:00",
+                "custom_end": "2025-01-04T23:59:59",
+            },
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        result = builder.format_results(
+            [
+                (
+                    {"id": "latency", "name": "latency", "aggregation": "avg"},
+                    [
+                        {"time_bucket": datetime(2025, 1, 1), "value": 123.456789},
+                        {"time_bucket": datetime(2025, 1, 2), "value": 200.1},
+                    ],
+                )
+            ]
+        )
+        metrics = result["metrics"]
+        assert len(metrics) == 1
+        series = metrics[0]["series"]
+        assert len(series) == 1
+        assert series[0]["name"] == "total"
+        # 4 day buckets (Jan 1-4), 2 with data + 2 filled with null
+        assert len(series[0]["data"]) == 4
+        non_null = [d for d in series[0]["data"] if d["value"] is not None]
+        assert len(non_null) == 2
+        assert metrics[0]["unit"] == "ms"
+
+    def test_format_with_breakdown(self):
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "day",
+            "time_range": {
+                "custom_start": "2025-01-01T00:00:00",
+                "custom_end": "2025-01-02T23:59:59",
+            },
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "breakdowns": [{"type": "system_metric", "name": "model"}],
+        }
+        builder = DashboardQueryBuilder(config)
+        result = builder.format_results(
+            [
+                (
+                    {"id": "latency", "name": "latency", "aggregation": "avg"},
+                    [
+                        {
+                            "time_bucket": datetime(2025, 1, 1),
+                            "value": 100.0,
+                            "breakdown_value": "gpt-4",
+                        },
+                        {
+                            "time_bucket": datetime(2025, 1, 1),
+                            "value": 200.0,
+                            "breakdown_value": "gpt-3.5",
+                        },
+                    ],
+                )
+            ]
+        )
+        series = result["metrics"][0]["series"]
+        assert len(series) == 2
+        series_names = [s["name"] for s in series]
+        assert "gpt-4" in series_names
+        assert "gpt-3.5" in series_names
+
+    def test_format_results_resolves_unit_by_id_when_name_is_display_label(self):
+        """``get_metric_info`` sets ``name`` from ``display_name``, so a widget
+        with ``display_name: "Cost"`` used to look up ``METRIC_UNITS["Cost"] →
+        ""`` and drop the ``$`` prefix. The fallback must land on
+        ``METRIC_UNITS[id]`` so the unit still resolves.
+        """
+        config = {
+            "project_ids": ["p1"],
+            "granularity": "day",
+            "time_range": {
+                "custom_start": "2025-01-01T00:00:00",
+                "custom_end": "2025-01-01T23:59:59",
+            },
+            "metrics": [
+                {
+                    "id": "cost",
+                    "name": "cost",
+                    "type": "system_metric",
+                    "aggregation": "sum",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        result = builder.format_results(
+            [
+                (
+                    # display_name-derived name; id is the canonical key.
+                    {"id": "cost", "name": "Cost", "aggregation": "sum"},
+                    [{"time_bucket": datetime(2025, 1, 1), "value": 15.63}],
+                )
+            ]
+        )
+        assert result["metrics"][0]["unit"] == "$"
+
+
+# ===========================================================================
+# Serializer Validation
+# ===========================================================================
+
+
+class TestSerializerValidation:
+    def test_widget_serializer_width_too_large(self):
+        data = {
+            "name": "Test",
+            "position": 0,
+            "width": 20,
+            "height": 4,
+            "query_config": {},
+            "chart_config": {},
+        }
+        serializer = DashboardWidgetSerializer(data=data)
+        assert not serializer.is_valid()
+        assert "width" in serializer.errors
+
+    def test_widget_serializer_width_zero(self):
+        data = {
+            "name": "Test",
+            "position": 0,
+            "width": 0,
+            "height": 4,
+            "query_config": {},
+            "chart_config": {},
+        }
+        serializer = DashboardWidgetSerializer(data=data)
+        assert not serializer.is_valid()
+        assert "width" in serializer.errors
+
+    def test_widget_serializer_height_zero(self):
+        data = {
+            "name": "Test",
+            "position": 0,
+            "width": 6,
+            "height": 0,
+            "query_config": {},
+            "chart_config": {},
+        }
+        serializer = DashboardWidgetSerializer(data=data)
+        assert not serializer.is_valid()
+        assert "height" in serializer.errors
+
+    def test_widget_serializer_valid(self):
+        data = {
+            "name": "Test",
+            "position": 0,
+            "width": 6,
+            "height": 4,
+            "query_config": {"metrics": []},
+            "chart_config": {"chart_type": "line"},
+        }
+        serializer = DashboardWidgetSerializer(data=data)
+        assert serializer.is_valid(), serializer.errors
+
+    def test_widget_serializer_query_config_must_be_dict(self):
+        data = {
+            "name": "Test",
+            "position": 0,
+            "width": 6,
+            "height": 4,
+            "query_config": "not a dict",
+            "chart_config": {},
+        }
+        serializer = DashboardWidgetSerializer(data=data)
+        assert not serializer.is_valid()
+        assert "query_config" in serializer.errors
+
+    def test_dashboard_create_serializer_strips_name(self):
+        data = {"name": "  My Dashboard  ", "description": "test"}
+        serializer = DashboardCreateUpdateSerializer(data=data)
+        assert serializer.is_valid()
+        assert serializer.validated_data["name"] == "My Dashboard"
+
+    def test_dashboard_create_serializer_blank_name(self):
+        data = {"name": "   ", "description": "test"}
+        serializer = DashboardCreateUpdateSerializer(data=data)
+        assert not serializer.is_valid()
+        assert "name" in serializer.errors
+
+
+# ===========================================================================
+# Query Execution (mocked ClickHouse) via Dashboard query action
+# ===========================================================================
+
+
+class TestDashboardQueryExecution:
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_query_action(self, mock_analytics_cls, auth_client, observe_project):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"time_bucket": "2025-01-01T00:00:00", "value": 123.45}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "project_ids": [str(observe_project.id)],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_query_action_missing_project_ids_still_works(
+        self, mock_analytics_cls, auth_client, observe_project
+    ):
+        """Query endpoint accepts requests without project_ids (unified picker)."""
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"time_bucket": "2025-01-01T00:00:00", "value": 123.45}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                        "source": "traces",
+                    }
+                ],
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_query_action_project_breakdown_uses_longer_timeout(
+        self, mock_analytics_cls, auth_client, observe_project
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [
+            {
+                "time_bucket": "2025-01-01T00:00:00",
+                "breakdown_value": str(observe_project.id),
+                "value": 123.45,
+            }
+        ]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "project_ids": [str(observe_project.id)],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+                "breakdowns": [{"type": "system_metric", "name": "project"}],
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+        _, kwargs = mock_service.execute_ch_query.call_args
+        assert kwargs["timeout_ms"] == 30000
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_query_action_simulation_custom_attribute_routes_to_trace_builder(
+        self, mock_analytics_cls, auth_client, observe_project
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"time_bucket": "2025-01-01T00:00:00", "value": 0.01}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "project_ids": [str(observe_project.id)],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "cost_breakdown.stt",
+                        "name": "cost_breakdown.stt",
+                        "type": "custom_attribute",
+                        "attribute_key": "cost_breakdown.stt",
+                        "attribute_type": "number",
+                        "aggregation": "avg",
+                        "source": "simulation",
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        sql = mock_service.execute_ch_query.call_args.args[0]
+        # v1 emits `span_attr_num`, v2 `attrs_number`; neither may hit the
+        # simulation call table.
+        assert ("span_attr_num[" in sql) or ("attrs_number[" in sql)
+        assert "FROM spans" in sql
+        assert "simulate_call_execution" not in sql
+
+    def test_query_action_simulation_metric_failure_does_not_blank_other_metrics(
+        self,
+    ):
+        viewset = DashboardViewSet()
+        mock_service = MagicMock()
+        success_result = MagicMock()
+        success_result.data = [
+            {"time_bucket": "2025-01-01T00:00:00", "value": 1.0},
+        ]
+        mock_service.execute_ch_query.side_effect = [
+            Exception("Code: 47 unknown column"),
+            success_result,
+        ]
+
+        sim_config = {
+            "workflow": "simulation",
+            "workspace_id": str(uuid.uuid4()),
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "duration",
+                    "name": "duration",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                    "source": "simulation",
+                },
+                {
+                    "id": "success_rate",
+                    "name": "success_rate",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                    "source": "simulation",
+                },
+            ],
+        }
+
+        results = viewset._run_simulation_analytics_queries(
+            mock_service,
+            sim_config,
+        )
+
+        assert mock_service.execute_ch_query.call_count == 2
+        assert results[0][0]["name"] == "duration"
+        assert results[0][1] == []
+        assert results[1][0]["name"] == "success_rate"
+        assert results[1][1] == success_result.data
+
+    @pytest.mark.django_db
+    def test_query_action_eval_metric_runs_against_real_ch(
+        self, auth_client, observe_project
+    ):
+        """Eval metrics read usage_apicalllog (a non-migrated legacy table).
+
+        The v2 column rewrite must NOT rename `_peerdb_is_deleted` → `is_deleted`
+        there; pre-fix this 500'd with "Identifier 'e.is_deleted' cannot be
+        resolved". Hits real ClickHouse (no mock) so the SQL is actually parsed.
+        """
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "project_ids": [str(observe_project.id)],
+                "granularity": "month",
+                "time_range": {"preset": "6M"},
+                "metrics": [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "name": "conversation_hallucination",
+                        "type": "eval_metric",
+                        "source": "all",
+                        "config_id": str(uuid.uuid4()),  # UUID → no DB lookup
+                        "output_type": "SCORE",
+                        "aggregation": "count",
+                    }
+                ],
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+        metrics = response.json()["result"]["metrics"]
+        assert len(metrics) == 1
+        # Query parsed + executed cleanly; no per-widget error attached.
+        assert "error" not in metrics[0]
+
+    @pytest.mark.django_db
+    def test_query_action_invalid_combo_isolated_from_valid_metric(
+        self, auth_client, observe_project
+    ):
+        """Averaging a text attribute is invalid; the widget reports an error
+        while a valid metric in the same request still renders. Hits real CH.
+        """
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "project_ids": [str(observe_project.id)],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "bot_wpm",
+                        "name": "bot_wpm",
+                        "type": "custom_attribute",
+                        "source": "traces",
+                        "aggregation": "avg",
+                        "attribute_key": "bot_wpm",
+                        "attribute_type": "string",
+                    },
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "source": "traces",
+                        "aggregation": "avg",
+                    },
+                ],
+            },
+            format="json",
+        )
+        # Whole dashboard does NOT 500 on the invalid combo.
+        assert response.status_code == 200
+        metrics = {m["name"]: m for m in response.json()["result"]["metrics"]}
+        assert "bot_wpm" in metrics and "latency" in metrics
+        # The invalid metric carries an explanatory error; the valid one does not.
+        assert "can't be applied" in metrics["bot_wpm"]["error"]
+        assert "error" not in metrics["latency"]
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_query_action_simulation_metric_preserves_simulation_units(
+        self, mock_analytics_cls, auth_client
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"time_bucket": "2025-01-01T00:00:00", "value": 12.5}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "workflow": "simulation",
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "duration",
+                        "name": "duration",
+                        "display_name": "Duration",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                        "source": "simulation",
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        metric = response.json()["result"]["metrics"][0]
+        assert metric["unit"] == "s"
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_query_action_dataset_string_metric_is_queryable(
+        self, mock_analytics_cls, auth_client
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"time_bucket": "2025-01-01T00:00:00", "value": 3}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "workflow": "observability",
+                "project_ids": [],
+                "time_range": {"preset": "12M"},
+                "granularity": "month",
+                "metrics": [
+                    {
+                        "id": "dataset",
+                        "name": "dataset",
+                        "display_name": "Dataset",
+                        "type": "system_metric",
+                        "source": "datasets",
+                        "aggregation": "avg",
+                        "attribute_type": "string",
+                        "data_type": "string",
+                        "filters": [],
+                    }
+                ],
+                "filters": [],
+                "breakdowns": [],
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        metric = response.json()["result"]["metrics"][0]
+        assert metric["id"] == "dataset"
+        assert metric["aggregation"] == "count_distinct"
+        sql = mock_service.execute_ch_query.call_args.args[0]
+        assert "uniqIf(" in sql
+        assert "dataset_dict" in sql
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    def test_filter_values_simulation_excludes_deleted_rows_and_handles_numeric_columns(
+        self, _mock_enabled, mock_analytics_cls, auth_client
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = []
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/?source=simulation&metric_name=duration&metric_type=system_metric"
+        )
+
+        assert response.status_code == 200
+        sql = mock_service.execute_ch_query.call_args.args[0]
+        assert "c.deleted = 0" in sql
+        assert "c.duration_seconds IS NOT NULL" in sql
+        assert "c.duration_seconds != ''" not in sql
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    def test_filter_values_dataset_picker_keeps_active_dataset_scope(
+        self, _mock_enabled, mock_analytics_cls, auth_client
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = []
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/?source=datasets&metric_name=dataset&metric_type=system_metric"
+        )
+
+        assert response.status_code == 200
+        sql = mock_service.execute_ch_query.call_args.args[0]
+        assert "FROM model_hub_dataset FINAL" in sql
+        assert "AND deleted = 0" in sql
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    def test_filter_values_session_uses_remap_survivor_values(
+        self, _mock_enabled, mock_analytics_cls, auth_client, observe_project
+    ):
+        survivor_id = str(uuid.uuid4())
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"val": survivor_id}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/",
+            {
+                "source": "traces",
+                "metric_name": "session",
+                "metric_type": "system_metric",
+                "project_ids": str(observe_project.id),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["result"]["values"] == [
+            {"value": survivor_id, "label": survivor_id}
+        ]
+        sql = mock_service.execute_ch_query.call_args.args[0]
+        assert "FROM spans AS sp" in sql
+        assert "trace_session_id_remap" in sql
+        assert "ts_remap.survivor_id" in sql
+        assert "sp.trace_session_id" in sql
+
+    @pytest.mark.django_db
+    @patch(
+        "tracer.services.clickhouse.v2.trace_session_dict_reader.resolve_session_fields"
+    )
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    def test_filter_values_sessions_source_labels_session_ids(
+        self,
+        _mock_enabled,
+        mock_analytics_cls,
+        mock_resolve_session_fields,
+        auth_client,
+        observe_project,
+    ):
+        session_id = str(uuid.uuid4())
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"val": session_id}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+        mock_resolve_session_fields.return_value = {
+            session_id: {
+                "external_session_id": "session-alpha",
+                "display_name": None,
+            }
+        }
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/",
+            {
+                "source": "sessions",
+                "metric_name": "session",
+                "metric_type": "system_metric",
+                "project_ids": str(observe_project.id),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["result"]["values"] == [
+            {"value": session_id, "label": "session-alpha"}
+        ]
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    def test_filter_values_sessions_source_uses_span_backed_values(
+        self, _mock_enabled, mock_analytics_cls, auth_client, observe_project
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "gpt-4o-mini"}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.get(
+            "/tracer/dashboard/filter_values/",
+            {
+                "source": "sessions",
+                "metric_name": "model",
+                "metric_type": "system_metric",
+                "project_ids": str(observe_project.id),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["result"]["values"] == [
+            {"value": "gpt-4o-mini", "label": "gpt-4o-mini"}
+        ]
+        sql = mock_service.execute_ch_query.call_args.args[0]
+        assert "SELECT DISTINCT model AS val FROM spans" in sql
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    def test_filter_values_session_search_adds_ilike_and_limits_to_20(
+        self, _mock_enabled, mock_analytics_cls, auth_client, observe_project
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = []
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/",
+            {
+                "source": "traces",
+                "metric_name": "session",
+                "metric_type": "system_metric",
+                "project_ids": str(observe_project.id),
+                "search": "abc123",
+            },
+        )
+
+        sql, params = mock_service.execute_ch_query.call_args.args[:2]
+        assert "ILIKE %(search_pattern)s" in sql
+        assert params["search_pattern"] == "%abc123%"
+        assert "LIMIT 20" in sql
+        assert "LIMIT 500" not in sql
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    def test_filter_values_session_no_search_uses_limit_500_without_ilike(
+        self, _mock_enabled, mock_analytics_cls, auth_client, observe_project
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = []
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        auth_client.get(
+            "/tracer/dashboard/filter_values/",
+            {
+                "source": "traces",
+                "metric_name": "session",
+                "metric_type": "system_metric",
+                "project_ids": str(observe_project.id),
+            },
+        )
+
+        sql, params = mock_service.execute_ch_query.call_args.args[:2]
+        assert "ILIKE" not in sql
+        assert "search_pattern" not in params
+        assert "LIMIT 500" in sql
+
+    @pytest.mark.django_db
+    def test_filter_values_annotation_annotator_returns_project_annotators(
+        self, auth_client, project, user, organization, workspace
+    ):
+        from tracer.services.annotation_label_source import AnnotationLabelScoresCH
+
+        with patch.object(
+            AnnotationLabelScoresCH,
+            "annotator_ids_for_projects",
+            return_value=[str(user.id)],
+        ):
+            response = auth_client.get(
+                "/tracer/dashboard/filter_values/",
+                {
+                    "source": "traces",
+                    "metric_name": "annotator",
+                    "metric_type": "annotation_metric",
+                    "project_ids": str(project.id),
+                },
+            )
+
+        assert response.status_code == 200
+        values = response.json()["result"]["values"]
+        assert values == [
+            {
+                "value": str(user.id),
+                "label": user.name,
+                "name": user.name,
+                "email": user.email,
+                "description": user.email,
+            }
+        ]
+
+    @pytest.mark.django_db
+    def test_filter_values_annotation_categorical_uses_stored_score_values(
+        self, auth_client, project, user, organization, workspace
+    ):
+        import json
+
+        from model_hub.models.choices import AnnotationTypeChoices
+        from model_hub.models.develop_annotations import AnnotationsLabels
+        from tracer.services.annotation_label_source import AnnotationLabelScoresCH
+
+        label = AnnotationsLabels.objects.create(
+            name="Matrix",
+            type=AnnotationTypeChoices.CATEGORICAL.value,
+            organization=organization,
+            workspace=workspace,
+            project=project,
+            settings={
+                "options": [{"label": "accuracy"}, {"label": "coverage"}],
+                "strategy": None,
+                "auto_annotate": False,
+                "multi_choice": True,
+                "rule_prompt": "",
+            },
+        )
+
+        with patch.object(
+            AnnotationLabelScoresCH,
+            "categorical_values_for_label",
+            return_value=[json.dumps({"selected": ["matrix"]})],
+        ):
+            response = auth_client.get(
+                "/tracer/dashboard/filter_values/",
+                {
+                    "source": "traces",
+                    "metric_name": str(label.id),
+                    "metric_type": "annotation_metric",
+                    "project_ids": str(project.id),
+                },
+            )
+
+        assert response.status_code == 200
+        values = response.json()["result"]["values"]
+        assert values == [
+            {"value": "accuracy", "label": "accuracy"},
+            {"value": "coverage", "label": "coverage"},
+            {"value": "matrix", "label": "matrix"},
+        ]
+
+
+class TestAnnotationLabelScoresCH:
+    """Unit tests for the CH readers in AnnotationLabelScoresCH."""
+
+    def _make_ch_client(self, captured: dict):
+        mock_client = MagicMock()
+        mock_client.execute_read.side_effect = lambda q, p, **kw: (
+            captured.update({"query": q, "params": p}) or ([], [], 0)
+        )
+        return mock_client
+
+    def test_annotator_ids_empty_returns_empty_without_ch(self):
+        from tracer.services.annotation_label_source import AnnotationLabelScoresCH
+
+        with patch(
+            "tracer.services.clickhouse.client.get_clickhouse_client"
+        ) as mock_get:
+            result = AnnotationLabelScoresCH().annotator_ids_for_projects([])
+        mock_get.assert_not_called()
+        assert result == []
+
+    def test_annotator_ids_query_uses_ch_not_dropped_tables(self):
+        from tracer.services.annotation_label_source import AnnotationLabelScoresCH
+
+        captured: dict = {}
+        mock_client = self._make_ch_client(captured)
+
+        with patch(
+            "tracer.services.clickhouse.client.get_clickhouse_client",
+            return_value=mock_client,
+        ):
+            AnnotationLabelScoresCH().annotator_ids_for_projects(["proj-1"])
+
+        sql = captured["query"]
+        assert "FROM model_hub_score" in sql
+        assert "FROM spans" in sql
+        assert "project_id IN %(project_ids)s" in sql
+        assert "tracer_observation_span" not in sql
+        assert "tracer_trace" not in sql
+        assert "tracer_trace_session" not in sql
+
+    def test_categorical_values_empty_returns_empty_without_ch(self):
+        from tracer.services.annotation_label_source import AnnotationLabelScoresCH
+
+        with patch(
+            "tracer.services.clickhouse.client.get_clickhouse_client"
+        ) as mock_get:
+            result = AnnotationLabelScoresCH().categorical_values_for_label("lbl-1", [])
+        mock_get.assert_not_called()
+        assert result == []
+
+    def test_categorical_values_query_uses_ch_not_dropped_tables(self):
+        from tracer.services.annotation_label_source import AnnotationLabelScoresCH
+
+        captured: dict = {}
+        mock_client = self._make_ch_client(captured)
+
+        with patch(
+            "tracer.services.clickhouse.client.get_clickhouse_client",
+            return_value=mock_client,
+        ):
+            AnnotationLabelScoresCH().categorical_values_for_label("lbl-1", ["proj-1"])
+
+        sql = captured["query"]
+        assert "FROM model_hub_score" in sql
+        assert "FROM spans" in sql
+        assert "project_id IN %(project_ids)s" in sql
+        assert "tracer_observation_span" not in sql
+        assert "tracer_trace" not in sql
+        assert "tracer_trace_session" not in sql
+
+
+class TestDashboardTraceTimeoutSelection:
+    def test_default_trace_timeout_is_short(self):
+        viewset = DashboardViewSet()
+        timeout = viewset._get_trace_query_timeout_ms(
+            {
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+                "breakdowns": [],
+            }
+        )
+        assert timeout == 10000
+
+    def test_project_breakdown_uses_longer_timeout(self):
+        viewset = DashboardViewSet()
+        timeout = viewset._get_trace_query_timeout_ms(
+            {
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+                "breakdowns": [{"type": "system_metric", "name": "project"}],
+            }
+        )
+        assert timeout == 30000
+
+    def test_eval_metric_uses_longer_timeout(self):
+        viewset = DashboardViewSet()
+        timeout = viewset._get_trace_query_timeout_ms(
+            {
+                "metrics": [
+                    {
+                        "id": "eval1",
+                        "name": "accuracy",
+                        "type": "eval_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+                "breakdowns": [],
+            }
+        )
+        assert timeout == 30000
+
+
+class TestDashboardMetricSourceNormalization:
+    def test_simulation_custom_attribute_is_rerouted_to_traces(self):
+        viewset = DashboardViewSet()
+        normalized = viewset._normalize_metric_sources(
+            [
+                {
+                    "id": "cost_breakdown.stt",
+                    "type": "custom_attribute",
+                    "source": "simulation",
+                }
+            ]
+        )
+
+        assert normalized[0]["source"] == "traces"
+
+    def test_non_custom_simulation_metric_keeps_simulation_source(self):
+        viewset = DashboardViewSet()
+        normalized = viewset._normalize_metric_sources(
+            [{"id": "stt_cost", "type": "system_metric", "source": "simulation"}]
+        )
+
+        assert normalized[0]["source"] == "simulation"
+
+
+# ===========================================================================
+# Widget Query Execution (mocked ClickHouse)
+# ===========================================================================
+
+
+class TestWidgetQueryExecution:
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.get_clickhouse_client")
+    def test_execute_query(
+        self,
+        mock_get_client,
+        mock_enabled,
+        auth_client,
+        dashboard,
+        dashboard_widget,
+        observe_project,
+    ):
+        # Update widget to use a real project_id so validation passes
+        dashboard_widget.query_config["project_ids"] = [str(observe_project.id)]
+        dashboard_widget.save()
+
+        mock_client = MagicMock()
+        mock_client.execute_read.return_value = (
+            [(datetime(2025, 1, 1), 123.45)],
+            [("time_bucket", "DateTime"), ("value", "Float64")],
+            5.0,
+        )
+        mock_get_client.return_value = mock_client
+
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/query/"
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert "metrics" in data
+        assert "time_range" in data
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.get_clickhouse_client")
+    def test_execute_query_eval_widget_threads_workspace_scope(
+        self,
+        mock_get_client,
+        mock_enabled,
+        auth_client,
+        workspace,
+        dashboard,
+        dashboard_widget,
+        observe_project,
+    ):
+        """Widget-endpoint eval queries never got workspace/org attached to
+        trace_config before the fix, so the eval builder scoped the SQL to
+        ``organization_id = toUUID('')`` and CH 500'd. Locks the fix by
+        asserting the executed params include the real workspace UUIDs.
+        """
+        dashboard_widget.query_config = {
+            "project_ids": [str(observe_project.id)],
+            "granularity": "month",
+            "time_range": {"preset": "6M"},
+            "metrics": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "conversation_hallucination",
+                    "type": "eval_metric",
+                    "config_id": str(uuid.uuid4()),
+                    "output_type": "SCORE",
+                    "aggregation": "count",
+                    "source": "all",
+                }
+            ],
+        }
+        dashboard_widget.save(update_fields=["query_config"])
+
+        mock_client = MagicMock()
+        mock_client.execute_read.return_value = (
+            [(datetime(2026, 1, 1), 12)],
+            [("time_bucket", "DateTime"), ("value", "Float64")],
+            5.0,
+        )
+        mock_get_client.return_value = mock_client
+
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/query/"
+        )
+        assert response.status_code == 200
+        args = mock_client.execute_read.call_args.args
+        sql, params = args[0], args[1]
+        assert params.get("workspace_id") == str(workspace.id)
+        assert params.get("organization_id") == str(workspace.organization_id)
+        # Sanity: the executed SQL was scoped, not empty-UUID'd.
+        assert "toUUID('')" not in sql
+        assert "e.workspace_id = toUUID(%(workspace_id)s)" in sql
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=False)
+    def test_execute_query_clickhouse_disabled(
+        self, mock_enabled, auth_client, dashboard, dashboard_widget
+    ):
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/query/"
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.get_clickhouse_client")
+    def test_execute_query_simulation_custom_attribute_routes_to_trace_builder(
+        self,
+        mock_get_client,
+        mock_enabled,
+        auth_client,
+        dashboard,
+        dashboard_widget,
+        observe_project,
+    ):
+        dashboard_widget.query_config = {
+            "workflow": "simulation",
+            "project_ids": [str(observe_project.id)],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "cost_breakdown.stt",
+                    "name": "cost_breakdown.stt",
+                    "type": "custom_attribute",
+                    "attribute_key": "cost_breakdown.stt",
+                    "attribute_type": "number",
+                    "aggregation": "avg",
+                    "source": "simulation",
+                }
+            ],
+        }
+        dashboard_widget.save(update_fields=["query_config"])
+
+        mock_client = MagicMock()
+        mock_client.execute_read.return_value = (
+            [(datetime(2025, 1, 1), 0.01)],
+            [("time_bucket", "DateTime"), ("value", "Float64")],
+            5.0,
+        )
+        mock_get_client.return_value = mock_client
+
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/query/"
+        )
+
+        assert response.status_code == 200
+        sql = mock_client.execute_read.call_args.args[0]
+        # v1 emits `span_attr_num`, v2 `attrs_number`; neither may hit the
+        # simulation call table.
+        assert ("span_attr_num[" in sql) or ("attrs_number[" in sql)
+        assert "FROM spans" in sql
+        assert "simulate_call_execution" not in sql
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.get_clickhouse_client")
+    def test_preview_query(
+        self, mock_get_client, mock_enabled, auth_client, dashboard, observe_project
+    ):
+        mock_client = MagicMock()
+        mock_client.execute_read.return_value = (
+            [(datetime(2025, 1, 1), 50.0)],
+            [("time_bucket", "DateTime"), ("value", "Float64")],
+            3.0,
+        )
+        mock_get_client.return_value = mock_client
+
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/preview/",
+            {
+                "query_config": {
+                    "project_ids": [str(observe_project.id)],
+                    "granularity": "day",
+                    "time_range": {"preset": "7D"},
+                    "metrics": [
+                        {
+                            "id": "cost",
+                            "name": "cost",
+                            "type": "system_metric",
+                            "aggregation": "sum",
+                        }
+                    ],
+                }
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.get_clickhouse_client")
+    def test_preview_query_project_breakdown_uses_longer_timeout(
+        self, mock_get_client, mock_enabled, auth_client, dashboard, observe_project
+    ):
+        mock_client = MagicMock()
+        mock_client.execute_read.return_value = (
+            [(datetime(2025, 1, 1), str(observe_project.id), 50.0)],
+            [
+                ("time_bucket", "DateTime"),
+                ("breakdown_value", "String"),
+                ("value", "Float64"),
+            ],
+            3.0,
+        )
+        mock_get_client.return_value = mock_client
+
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/preview/",
+            {
+                "query_config": {
+                    "project_ids": [str(observe_project.id)],
+                    "granularity": "day",
+                    "time_range": {"preset": "7D"},
+                    "metrics": [
+                        {
+                            "id": "latency",
+                            "name": "latency",
+                            "type": "system_metric",
+                            "aggregation": "avg",
+                        }
+                    ],
+                    "breakdowns": [{"type": "system_metric", "name": "project"}],
+                }
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+        _, kwargs = mock_client.execute_read.call_args
+        assert kwargs["timeout_ms"] == 30000
+        data = response.json()["result"]
+        assert "metrics" in data
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    def test_preview_query_missing_config(self, mock_enabled, auth_client, dashboard):
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/preview/",
+            {"query_config": {}},
+            format="json",
+        )
+        assert response.status_code == 400
+
+
+# ===========================================================================
+# Model tests
+# ===========================================================================
+
+
+class TestDashboardModel:
+    @pytest.mark.django_db
+    def test_dashboard_str(self, dashboard):
+        assert str(dashboard) == "Test Dashboard"
+
+    @pytest.mark.django_db
+    def test_widget_str(self, dashboard_widget):
+        assert "Test Dashboard" in str(dashboard_widget)
+        assert "Latency Chart" in str(dashboard_widget)
+
+    @pytest.mark.django_db
+    def test_dashboard_soft_delete(self, dashboard):
+        dashboard.delete()
+        dashboard.refresh_from_db()
+        assert dashboard.deleted is True
+        assert dashboard.deleted_at is not None
+
+    @pytest.mark.django_db
+    def test_widget_cascade_visibility(self, dashboard, dashboard_widget):
+        """Widgets should be filtered by deleted=False in queryset."""
+        dashboard_widget.deleted = True
+        dashboard_widget.save()
+        active_widgets = DashboardWidget.objects.filter(
+            dashboard=dashboard, deleted=False
+        )
+        assert active_widgets.count() == 0
+
+    @pytest.mark.django_db
+    def test_widget_default_values(self, dashboard, user):
+        widget = DashboardWidget.objects.create(
+            dashboard=dashboard,
+            created_by=user,
+        )
+        assert widget.name == "Untitled"
+        assert widget.width == 12
+        assert widget.height == 4
+        assert widget.position == 0
+        assert widget.query_config == {}
+        assert widget.chart_config == {}
+
+
+# ===========================================================================
+# Frontend Payload Simulation Tests
+# ===========================================================================
+# These tests simulate the exact payloads the React frontend sends
+# to ensure the full round-trip works without errors.
+
+
+class TestFrontendPayloadSimulation:
+    """Test DashboardQueryBuilder with payloads matching what the frontend sends."""
+
+    # --- System metrics (all aggregations) ---
+
+    @pytest.mark.parametrize("metric_name", list(SYSTEM_METRICS.keys()))
+    def test_all_system_metrics(self, metric_name):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "30D"},
+            "metrics": [
+                {
+                    "id": metric_name,
+                    "name": metric_name,
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 1
+        sql, params, info = queries[0]
+        assert "project_id IN" in sql
+        assert "start_time >=" in sql
+        assert info["type"] == "system_metric"
+
+    @pytest.mark.parametrize("agg", list(AGGREGATIONS.keys()))
+    def test_all_aggregations_with_latency(self, agg):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": agg,
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 1
+
+    # --- Eval metrics (frontend sends config_id as the UUID) ---
+
+    def test_eval_metric_frontend_payload(self):
+        eval_uuid = str(uuid.uuid4())
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "30D"},
+            "metrics": [
+                {
+                    "id": eval_uuid,
+                    "name": "Coherence",
+                    "type": "eval_metric",
+                    "config_id": eval_uuid,
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 1
+        sql, params, _ = queries[0]
+        assert "usage_apicalllog" in sql
+        assert params["eval_template_id"] == eval_uuid
+
+    # --- Annotation metrics ---
+
+    def test_annotation_metric_frontend_payload(self):
+        label_uuid = str(uuid.uuid4())
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": label_uuid,
+                    "name": "Quality",
+                    "type": "annotation_metric",
+                    "label_id": label_uuid,
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 1
+        sql, params, _ = queries[0]
+        assert "model_hub_score" in sql
+        assert params["annotation_label_id"] == label_uuid
+
+    # --- Custom attribute metrics ---
+
+    def test_custom_attr_number_frontend_payload(self):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "30D"},
+            "metrics": [
+                {
+                    "id": "llm.token_count.prompt",
+                    "name": "llm.token_count.prompt",
+                    "type": "custom_attribute",
+                    "attribute_key": "llm.token_count.prompt",
+                    "attribute_type": "number",
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "span_attr_num" in sql
+        assert "llm.token_count.prompt" in sql
+
+    def test_custom_attr_string_frontend_payload(self):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "hour",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "llm.model",
+                    "name": "llm.model",
+                    "type": "custom_attribute",
+                    "attribute_key": "llm.model",
+                    "attribute_type": "string",
+                    "aggregation": "count",
+                }
+            ],
+            "filters": [],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        # count() aggregation doesn't reference the column, just verify query builds
+        assert "FROM spans" in sql
+        assert "count()" in sql
+
+    # --- Multiple metrics at once ---
+
+    def test_mixed_metrics_frontend_payload(self):
+        eval_uuid = str(uuid.uuid4())
+        config = {
+            "project_ids": ["proj-1", "proj-2"],
+            "granularity": "day",
+            "time_range": {"preset": "30D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                },
+                {
+                    "id": "cost",
+                    "name": "cost",
+                    "type": "system_metric",
+                    "aggregation": "sum",
+                },
+                {
+                    "id": eval_uuid,
+                    "name": "Coherence",
+                    "type": "eval_metric",
+                    "config_id": eval_uuid,
+                    "aggregation": "avg",
+                },
+            ],
+            "filters": [],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 3
+
+    # --- Filters ---
+
+    def test_system_filter_frontend_payload(self):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [
+                {
+                    "metric_type": "system_metric",
+                    "metric_name": "cost",
+                    "operator": "greater_than",
+                    "value": "0.01",
+                }
+            ],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, params, _ = queries[0]
+        assert "cost" in sql
+        assert params["f_0_val"] == 0.01
+
+    def test_custom_attr_filter_frontend_payload(self):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [
+                {
+                    "metric_type": "custom_attribute",
+                    "metric_name": "llm.model",
+                    "operator": "contains",
+                    "value": "gpt-4",
+                    "attribute_type": "string",
+                }
+            ],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, params, _ = queries[0]
+        assert "span_attr_str" in sql
+        assert "llm.model" in sql
+
+    def test_eval_filter_frontend_payload(self):
+        eval_uuid = str(uuid.uuid4())
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [
+                {
+                    "metric_type": "eval_metric",
+                    "metric_name": eval_uuid,
+                    "operator": "greater_than",
+                    "value": "0.5",
+                    "output_type": "SCORE",
+                }
+            ],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, params, _ = queries[0]
+        assert "eval_score" in sql
+        assert "trace_id IN" in sql
+
+    # --- Breakdowns ---
+
+    def test_breakdown_model_frontend_payload(self):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "breakdowns": [{"name": "model", "type": "system_metric"}],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "breakdown_value" in sql
+        assert "model" in sql
+
+    def test_breakdown_custom_attr_frontend_payload(self):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "breakdowns": [
+                {
+                    "name": "llm.model",
+                    "type": "custom_attribute",
+                    "attribute_type": "string",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        sql, _, _ = queries[0]
+        assert "span_attr_str" in sql
+        assert "breakdown_value" in sql
+
+    # --- Time ranges ---
+
+    @pytest.mark.parametrize(
+        "preset", ["30m", "6h", "today", "yesterday", "7D", "30D", "3M", "6M", "12M"]
+    )
+    def test_all_time_presets(self, preset):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": preset},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 1
+
+    # --- Edge cases ---
+
+    def test_empty_filters_and_breakdowns(self):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+            "filters": [],
+            "breakdowns": [],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 1
+
+    def test_five_metrics_max(self):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {"preset": "7D"},
+            "metrics": [
+                {
+                    "id": name,
+                    "name": name,
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+                for name in ["latency", "cost", "tokens", "error_rate", "input_tokens"]
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 5
+
+    def test_format_results_full_roundtrip(self):
+        config = {
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "time_range": {
+                "custom_start": "2025-01-01T00:00:00",
+                "custom_end": "2025-01-03T23:59:59",
+            },
+            "metrics": [
+                {
+                    "id": "latency",
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                },
+                {
+                    "id": "cost",
+                    "name": "cost",
+                    "type": "system_metric",
+                    "aggregation": "sum",
+                },
+            ],
+        }
+        builder = DashboardQueryBuilder(config)
+        queries = builder.build_all_queries()
+        assert len(queries) == 2
+
+        # Simulate ClickHouse returning data
+        mock_results = [
+            (
+                queries[0][2],  # metric_info
+                [
+                    {"time_bucket": datetime(2025, 1, 1), "value": 100.5},
+                    {"time_bucket": datetime(2025, 1, 2), "value": 120.3},
+                ],
+            ),
+            (
+                queries[1][2],
+                [
+                    {"time_bucket": datetime(2025, 1, 1), "value": 0.05},
+                    {"time_bucket": datetime(2025, 1, 2), "value": 0.08},
+                ],
+            ),
+        ]
+        result = builder.format_results(mock_results)
+
+        assert "metrics" in result
+        assert len(result["metrics"]) == 2
+        assert result["granularity"] == "day"
+        assert result["metrics"][0]["name"] == "latency"
+        assert result["metrics"][0]["unit"] == "ms"
+        assert result["metrics"][1]["name"] == "cost"
+        assert result["metrics"][1]["unit"] == "$"
+        # 3 day buckets (Jan 1-3), 2 with data + 1 filled with null
+        data = result["metrics"][0]["series"][0]["data"]
+        assert len(data) == 3
+        non_null = [d for d in data if d["value"] is not None]
+        assert len(non_null) == 2
+
+
+# ===========================================================================
+# Security and Edge Case Tests
+# ===========================================================================
+
+
+class TestQueryBuilderSecurity:
+    """Security tests for DashboardQueryBuilder to prevent injection and misuse."""
+
+    def test_unknown_metric_name_falls_back_to_custom_attribute(
+        self, sample_query_config
+    ):
+        """Verify that passing an unknown metric_name falls back to custom attribute query."""
+        sample_query_config["metrics"] = [
+            {
+                "name": "nonexistent_metric",
+                "type": "system_metric",
+                "aggregation": "avg",
+            }
+        ]
+        builder = DashboardQueryBuilder(sample_query_config)
+        sql, params = builder.build_metric_query(sample_query_config["metrics"][0])
+        # Falls back to custom attribute — queries span_attr_num map
+        assert "span_attr_num" in sql or "span_attr_str" in sql
+
+    def test_sql_injection_in_metric_name_blocked(self, sample_query_config):
+        """Verify that a SQL injection attempt in metric_name is safely handled."""
+        sample_query_config["metrics"] = [
+            {
+                "name": "1; DROP TABLE spans--",
+                "type": "system_metric",
+                "aggregation": "avg",
+            }
+        ]
+        builder = DashboardQueryBuilder(sample_query_config)
+        # Falls back to custom attribute, which rejects unsafe attribute keys
+        with pytest.raises(ValueError, match="Invalid attribute key"):
+            builder.build_metric_query(sample_query_config["metrics"][0])
+
+    def test_like_metacharacters_escaped(self):
+        """Verify that _coerce_filter_value escapes % in LIKE patterns."""
+        result = _coerce_filter_value("100%", "str_contains")
+        assert result == "%100\\%%"
+
+    def test_like_underscore_escaped(self):
+        """Verify that _coerce_filter_value escapes underscore in LIKE patterns."""
+        result = _coerce_filter_value("test_val", "str_contains")
+        assert "\\_" in result
+        assert result == "%test\\_val%"
+
+    def test_filter_value_parameterized_not_interpolated(self, sample_query_config):
+        """Verify filter values go through %(param)s placeholders, not f-string interpolation."""
+        sample_query_config["filters"] = [
+            {
+                "metric_type": "system_metric",
+                "metric_name": "latency",
+                "operator": "greater_than",
+                "value": 100,
+            }
+        ]
+        builder = DashboardQueryBuilder(sample_query_config)
+        sql, params = builder.build_metric_query(sample_query_config["metrics"][0])
+        # The SQL should use %(f_0_val)s placeholder, not the raw value
+        assert "%(f_0_val)s" in sql
+        assert "f_0_val" in params
+
+    def test_aggregation_fallback_uses_avg(self, sample_query_config):
+        """Verify unknown aggregation falls back to avg safely."""
+        sample_query_config["metrics"] = [
+            {
+                "name": "latency",
+                "type": "system_metric",
+                "aggregation": "unknown_agg_xyz",
+            }
+        ]
+        builder = DashboardQueryBuilder(sample_query_config)
+        sql, _ = builder.build_metric_query(sample_query_config["metrics"][0])
+        # AGGREGATIONS.get("unknown_agg_xyz", "avg({col})") falls back to avg
+        assert "avg(" in sql
+
+
+class TestQueryBuilderEdgeCases:
+    """Edge case tests for DashboardQueryBuilder."""
+
+    def test_empty_metrics_list(self, sample_query_config):
+        """Verify build_all_queries handles empty metrics gracefully."""
+        sample_query_config["metrics"] = []
+        builder = DashboardQueryBuilder(sample_query_config)
+        results = builder.build_all_queries()
+        assert results == []
+
+    def test_single_metric_no_breakdown(self, sample_query_config):
+        """Basic case with one metric, no filters, no breakdowns."""
+        sample_query_config["filters"] = []
+        sample_query_config["breakdowns"] = []
+        builder = DashboardQueryBuilder(sample_query_config)
+        results = builder.build_all_queries()
+        assert len(results) == 1
+        sql, params, info = results[0]
+        assert "time_bucket" in sql
+        assert "breakdown_value" not in sql
+        assert info["name"] == "latency"
+
+    def test_max_series_cap(self, sample_query_config):
+        """Verify format_results caps at MAX_SERIES (100)."""
+        sample_query_config["time_range"] = {
+            "custom_start": "2025-01-01T00:00:00",
+            "custom_end": "2025-01-02T00:00:00",
+        }
+        sample_query_config["breakdowns"] = [{"name": "model", "type": "system_metric"}]
+        builder = DashboardQueryBuilder(sample_query_config)
+        # Generate 150 breakdown values
+        rows = [
+            {
+                "time_bucket": datetime(2025, 1, 1),
+                "value": float(i),
+                "breakdown_value": f"model-{i}",
+            }
+            for i in range(150)
+        ]
+        result = builder.format_results(
+            [({"id": "latency", "name": "latency", "aggregation": "avg"}, rows)]
+        )
+        series = result["metrics"][0]["series"]
+        assert len(series) <= 100
+
+    def test_zero_total_in_pie_data(self, sample_query_config):
+        """Verify no division by zero when all values are zero."""
+        sample_query_config["time_range"] = {
+            "custom_start": "2025-01-01T00:00:00",
+            "custom_end": "2025-01-02T00:00:00",
+        }
+        builder = DashboardQueryBuilder(sample_query_config)
+        rows = [
+            {"time_bucket": datetime(2025, 1, 1), "value": 0},
+        ]
+        result = builder.format_results(
+            [({"id": "latency", "name": "latency", "aggregation": "avg"}, rows)]
+        )
+        # Should complete without error
+        assert result["metrics"][0]["series"][0]["data"][0]["value"] == 0
+
+    def test_custom_date_range_parsing(self, sample_query_config):
+        """Verify custom start/end dates are parsed correctly."""
+        sample_query_config["time_range"] = {
+            "custom_start": "2024-06-15T10:30:00",
+            "custom_end": "2024-06-20T18:00:00",
+        }
+        builder = DashboardQueryBuilder(sample_query_config)
+        start, end = builder.parse_time_range()
+        assert start.year == 2024
+        assert start.month == 6
+        assert start.day == 15
+        assert start.hour == 10
+        assert end.day == 20
+        assert end.hour == 18
+
+    def test_minute_granularity_generates_correct_buckets(self):
+        """Verify bucket count for 1-hour range with minute granularity."""
+        start = datetime(2025, 1, 1, 0, 0, 0)
+        end = datetime(2025, 1, 1, 1, 0, 0)
+        buckets = _generate_time_buckets(start, end, "minute")
+        # 0:00 through 1:00 inclusive = 61 buckets
+        assert len(buckets) == 61
+
+    def test_very_large_time_range_buckets(self):
+        """Verify 12M with minute granularity produces output (potentially large but bounded)."""
+        start = datetime(2024, 1, 1, 0, 0, 0)
+        end = datetime(2024, 1, 2, 0, 0, 0)  # 1 day at minute granularity
+        buckets = _generate_time_buckets(start, end, "minute")
+        # 1440 minutes in a day + 1 for inclusive end
+        assert len(buckets) == 1441
+
+    def test_preset_ranges_all_valid(self):
+        """Verify all PRESET_RANGES produce valid (start, end) tuples."""
+        for preset_key in PRESET_RANGES:
+            config = {
+                "project_ids": ["test-project"],
+                "granularity": "day",
+                "time_range": {"preset": preset_key},
+                "metrics": [],
+            }
+            builder = DashboardQueryBuilder(config)
+            start, end = builder.parse_time_range()
+            assert isinstance(start, datetime)
+            assert isinstance(end, datetime)
+            assert start <= end, f"Preset {preset_key}: start > end"
+
+    def test_granularity_to_ch_mapping(self):
+        """Verify all granularities map to valid ClickHouse functions."""
+        expected_functions = {
+            "minute": "toStartOfMinute",
+            "hour": "toStartOfHour",
+            "day": "toStartOfDay",
+            "week": "toMonday",
+            "month": "toStartOfMonth",
+            "year": "toStartOfYear",
+        }
+        for gran, expected_fn in expected_functions.items():
+            assert GRANULARITY_TO_CH[gran] == expected_fn
+
+
+class TestDashboardQuerySerializer:
+    """Tests for the DashboardQuerySerializer validation."""
+
+    def test_valid_query_config_passes(self):
+        """Verify a fully valid query config passes serializer validation."""
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "day",
+            "metrics": [
+                {"name": "latency", "type": "system_metric", "aggregation": "avg"}
+            ],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+        assert serializer.is_valid(), serializer.errors
+
+    def test_canonical_filters_with_source_metadata_pass(self):
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "day",
+            "metrics": [
+                {
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                    "filters": [
+                        {
+                            "column_id": "status",
+                            "source": "traces",
+                            "filter_config": {
+                                "filter_type": "text",
+                                "filter_op": "in",
+                                "filter_value": ["OK"],
+                                "col_type": "SYSTEM_METRIC",
+                            },
+                        }
+                    ],
+                }
+            ],
+            "filters": [
+                {
+                    "column_id": "latency",
+                    "source": "traces",
+                    "filter_config": {
+                        "filter_type": "number",
+                        "filter_op": "greater_than",
+                        "filter_value": 100,
+                        "col_type": "SYSTEM_METRIC",
+                    },
+                }
+            ],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+
+        assert serializer.is_valid(), serializer.errors
+        normalized = _normalize_dashboard_query_filters(serializer.validated_data)
+        assert normalized["filters"][0] == {
+            "metric_type": "system_metric",
+            "metric_name": "latency",
+            "operator": "greater_than",
+            "value": 100,
+            "source": "traces",
+        }
+        assert normalized["metrics"][0]["filters"][0]["operator"] == "contains"
+
+    def test_legacy_dashboard_filter_shape_fails_global_serializer(self):
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "day",
+            "metrics": [
+                {"name": "latency", "type": "system_metric", "aggregation": "avg"}
+            ],
+            "filters": [
+                {
+                    "metric_type": "system_metric",
+                    "metric_name": "latency",
+                    "operator": "greater_than",
+                    "value": 100,
+                }
+            ],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+
+        assert not serializer.is_valid()
+        assert "filters" in serializer.errors
+
+    def test_legacy_dashboard_filter_shape_fails_metric_serializer(self):
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "day",
+            "metrics": [
+                {
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                    "source": "traces",
+                    "filters": [
+                        {
+                            "metric_type": "system_metric",
+                            "metric_name": "latency",
+                            "operator": "greater_than",
+                            "value": 100,
+                        }
+                    ],
+                }
+            ],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+
+        assert not serializer.is_valid()
+        assert "metrics" in serializer.errors
+
+    def test_metric_rejects_camel_case_display_name(self):
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "day",
+            "metrics": [
+                {
+                    "name": "latency",
+                    "displayName": "Latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                    "source": "traces",
+                }
+            ],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+
+        assert not serializer.is_valid()
+        assert "metrics" in serializer.errors
+
+    def test_breakdown_rejects_camel_case_output_type(self):
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "day",
+            "metrics": [
+                {
+                    "name": "latency",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                    "source": "traces",
+                }
+            ],
+            "breakdowns": [
+                {
+                    "name": "quality",
+                    "type": "eval_metric",
+                    "source": "traces",
+                    "outputType": "CHOICE",
+                }
+            ],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+
+        assert not serializer.is_valid()
+        assert "breakdowns" in serializer.errors
+
+    def test_missing_metrics_fails(self):
+        """Verify missing metrics field fails validation."""
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "day",
+        }
+        serializer = DashboardQuerySerializer(data=data)
+        assert not serializer.is_valid()
+        assert "metrics" in serializer.errors
+
+    def test_empty_metrics_list_fails(self):
+        """Verify empty metrics list fails validation (min_length=1)."""
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "day",
+            "metrics": [],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+        assert not serializer.is_valid()
+        assert "metrics" in serializer.errors
+
+    def test_too_many_metrics_fails(self):
+        """Verify >5 metrics fails validation (max_length=5)."""
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "day",
+            "metrics": [
+                {"name": f"m{i}", "type": "system_metric", "aggregation": "avg"}
+                for i in range(6)
+            ],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+        assert not serializer.is_valid()
+        assert "metrics" in serializer.errors
+
+    def test_invalid_granularity_fails(self):
+        """Verify an invalid granularity value fails validation."""
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "time_range": {"preset": "7D"},
+            "granularity": "microsecond",
+            "metrics": [
+                {"name": "latency", "type": "system_metric", "aggregation": "avg"}
+            ],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+        assert not serializer.is_valid()
+        assert "granularity" in serializer.errors
+
+    def test_missing_time_range_uses_default(self):
+        """Verify missing time_range fails validation (required=True)."""
+        data = {
+            "workflow": "observability",
+            "project_ids": ["proj-1"],
+            "granularity": "day",
+            "metrics": [
+                {"name": "latency", "type": "system_metric", "aggregation": "avg"}
+            ],
+        }
+        serializer = DashboardQuerySerializer(data=data)
+        assert not serializer.is_valid()
+        assert "time_range" in serializer.errors
+
+
+class TestFilterOperators:
+    """Tests for FILTER_OPERATORS templates producing valid SQL patterns."""
+
+    def test_all_filter_operators_produce_valid_sql(self):
+        """Iterate FILTER_OPERATORS dict, verify each template produces valid SQL."""
+        for op_name, template in FILTER_OPERATORS.items():
+            # Templates with format placeholders need prefix and idx
+            if "{prefix}" in template and "{idx}" in template:
+                result = template.format(prefix="f_", idx=0)
+            else:
+                result = template
+            # Should produce a non-empty string
+            assert len(result) > 0, f"Operator {op_name} produced empty SQL"
+            # Should not contain un-replaced format placeholders
+            assert "{" not in result, (
+                f"Operator {op_name} has unresolved placeholder: {result}"
+            )
+
+    def test_between_operator_requires_two_values(self, sample_query_config):
+        """Verify between operator with non-list value is skipped."""
+        sample_query_config["filters"] = [
+            {
+                "metric_type": "system_metric",
+                "metric_name": "latency",
+                "operator": "between",
+                "value": "single_value",  # Should be a list of 2
+            }
+        ]
+        builder = DashboardQueryBuilder(sample_query_config)
+        sql, params = builder.build_metric_query(sample_query_config["metrics"][0])
+        # Should not have BETWEEN since value is not a list of 2
+        assert "BETWEEN" not in sql
+
+    def test_string_contains_case_insensitive(self):
+        """Verify str_contains uses LIKE (case-insensitive matching via _coerce_filter_value)."""
+        assert "LIKE" in FILTER_OPERATORS["str_contains"]
+
+    def test_is_set_operator_generates_not_null(self):
+        """Verify is_set produces != '' (NOT NULL equivalent for strings)."""
+        assert FILTER_OPERATORS["is_set"] == "!= ''"
+
+    def test_is_not_set_operator_generates_null(self):
+        """Verify is_not_set produces = '' (NULL equivalent for strings)."""
+        assert FILTER_OPERATORS["is_not_set"] == "= ''"
+
+
+class TestDashboardQueryBuilderBase:
+    """Tests for the DashboardQueryBuilderBase shared base class."""
+
+    def test_base_class_build_metric_query_raises_not_implemented(self):
+        """Verify that calling build_metric_query on the base class raises NotImplementedError."""
+        config = {
+            "granularity": "day",
+            "metrics": [
+                {"name": "test", "type": "system_metric", "aggregation": "avg"}
+            ],
+        }
+        base = DashboardQueryBuilderBase(config)
+        with pytest.raises(NotImplementedError):
+            base.build_metric_query(config["metrics"][0])
+
+    def test_base_class_build_all_queries_dispatches_to_subclass(self):
+        """Verify build_all_queries calls build_metric_query for each metric."""
+
+        class TestSubclass(DashboardQueryBuilderBase):
+            def build_metric_query(self, metric):
+                return f"SELECT 1 -- {metric['name']}", {"key": "val"}
+
+            def parse_time_range(self):
+                return datetime(2025, 1, 1), datetime(2025, 1, 2)
+
+        config = {
+            "granularity": "day",
+            "metrics": [
+                {"name": "metric_a", "type": "system_metric", "aggregation": "avg"},
+                {"name": "metric_b", "type": "system_metric", "aggregation": "sum"},
+            ],
+        }
+        builder = TestSubclass(config)
+        results = builder.build_all_queries()
+        assert len(results) == 2
+        assert "metric_a" in results[0][0]
+        assert "metric_b" in results[1][0]
+        assert results[0][2]["name"] == "metric_a"
+        assert results[1][2]["name"] == "metric_b"
+
+    def test_format_metric_result_basic(self):
+        """Verify _format_metric_result produces correct structure with basic data."""
+        config = {
+            "granularity": "day",
+            "metrics": [],
+            "breakdowns": [],
+        }
+
+        base = DashboardQueryBuilderBase(config)
+        # Buckets must use UTC-aware ISO format to match _build_series_data output
+        all_buckets = [
+            datetime(2025, 1, 1, tzinfo=UTC).isoformat(),
+            datetime(2025, 1, 2, tzinfo=UTC).isoformat(),
+        ]
+        metric_info = {"id": "latency", "name": "latency", "aggregation": "avg"}
+        rows = [
+            {"time_bucket": datetime(2025, 1, 1), "value": 42.5},
+        ]
+        result = base._format_metric_result(
+            metric_info, rows, all_buckets, {"latency": "ms"}
+        )
+        assert result["name"] == "latency"
+        assert result["unit"] == "ms"
+        assert len(result["series"]) == 1
+        assert result["series"][0]["name"] == "total"
+        assert len(result["series"][0]["data"]) == 2
+        assert result["series"][0]["data"][0]["value"] == 42.5
+
+    def test_format_metric_result_with_name_map(self):
+        """Verify _format_metric_result resolves breakdown values via name_map."""
+        config = {
+            "granularity": "day",
+            "metrics": [],
+            "breakdowns": [{"name": "project"}],
+        }
+        base = DashboardQueryBuilderBase(config)
+        all_buckets = [datetime(2025, 1, 1).isoformat()]
+        metric_info = {"id": "latency", "name": "latency", "aggregation": "avg"}
+        rows = [
+            {
+                "time_bucket": datetime(2025, 1, 1),
+                "value": 50.0,
+                "breakdown_value": "uuid-123",
+            },
+        ]
+        name_map = {"uuid-123": "My Project"}
+        result = base._format_metric_result(
+            metric_info,
+            rows,
+            all_buckets,
+            {"latency": "ms"},
+            name_map=name_map,
+            name_map_breakdown="project",
+        )
+        series_names = [s["name"] for s in result["series"]]
+        assert "My Project" in series_names
+
+    def test_format_metric_result_uses_metric_id_for_unit_lookup(self):
+        config = {
+            "granularity": "day",
+            "metrics": [],
+            "breakdowns": [],
+        }
+        base = DashboardQueryBuilderBase(config)
+        all_buckets = [datetime(2025, 1, 1).isoformat()]
+        metric_info = {"id": "duration", "name": "Duration", "aggregation": "avg"}
+        rows = [{"time_bucket": datetime(2025, 1, 1), "value": 42.5}]
+        result = base._format_metric_result(
+            metric_info, rows, all_buckets, {"duration": "s"}
+        )
+        assert result["name"] == "Duration"
+        assert result["unit"] == "s"
+
+
+# ===========================================================================
+# v2 rewrite routing + invalid-combination handling
+# ===========================================================================
+
+
+def _single_metric_config(metric, breakdowns=None):
+    return {
+        "project_ids": ["11111111-1111-1111-1111-111111111111"],
+        "organization_id": "22222222-2222-2222-2222-222222222222",
+        "workspace_id": "33333333-3333-3333-3333-333333333333",
+        "granularity": "day",
+        "time_range": {"preset": "7D"},
+        "metrics": [metric],
+        "filters": [],
+        "breakdowns": breakdowns or [],
+    }
+
+
+class TestDashboardV2RewriteRouting:
+    def test_system_metric_rewritten_to_v2_columns(self):
+        config = _single_metric_config(
+            {
+                "id": "latency",
+                "name": "latency",
+                "type": "system_metric",
+                "aggregation": "avg",
+            }
+        )
+        sql, _, _ = DashboardQueryBuilderV2(config).build_all_queries()[0]
+        assert "is_deleted" in sql
+        assert "_peerdb_is_deleted" not in sql
+        assert "use_skip_indexes_if_final" in sql
+
+    def test_settings_appended_exactly_once(self):
+        config = _single_metric_config(
+            {
+                "id": "latency",
+                "name": "latency",
+                "type": "system_metric",
+                "aggregation": "avg",
+            }
+        )
+        sql, _, _ = DashboardQueryBuilderV2(config).build_all_queries()[0]
+        assert sql.count("use_skip_indexes_if_final") == 1
+        assert sql.count("SETTINGS") == 1
+
+    def test_eval_metric_keeps_legacy_columns(self):
+        config = _single_metric_config(
+            {
+                "id": str(uuid.uuid4()),
+                "name": "hallucination",
+                "type": "eval_metric",
+                "config_id": str(uuid.uuid4()),  # UUID → no DB lookup
+                "output_type": "SCORE",
+                "aggregation": "count",
+            }
+        )
+        sql, _, _ = DashboardQueryBuilderV2(config).build_all_queries()[0]
+        assert "usage_apicalllog" in sql
+        assert "e._peerdb_is_deleted" in sql
+        assert "e.is_deleted" not in sql
+        assert "argMax(d.id, tuple(d.created_at, d.id))" in sql
+        assert "d._peerdb_is_deleted" in sql
+        assert "d.is_deleted" not in sql
+
+    def test_eval_metric_with_spans_breakdown_rewrites_spans_refs(self):
+        config = _single_metric_config(
+            {
+                "id": str(uuid.uuid4()),
+                "name": "hallucination",
+                "type": "eval_metric",
+                "config_id": str(uuid.uuid4()),
+                "output_type": "SCORE",
+                "aggregation": "count",
+            },
+            breakdowns=[{"name": "provider", "type": "system_metric"}],
+        )
+        sql, _, _ = DashboardQueryBuilderV2(config).build_all_queries()[0]
+        # Spans JOIN present, its _peerdb_is_deleted rewritten to is_deleted
+        assert "s.is_deleted" in sql or "is_deleted = 0" in sql
+        assert "s._peerdb_is_deleted" not in sql
+        # Legacy alias untouched
+        assert "e._peerdb_is_deleted" in sql
+        assert "e.is_deleted" not in sql
+
+
+class TestInvalidMetricCombination:
+    def test_avg_of_text_attribute_raises(self):
+        config = _single_metric_config(
+            {
+                "id": "bot_wpm",
+                "name": "bot_wpm",
+                "type": "custom_attribute",
+                "aggregation": "avg",
+                "attribute_key": "bot_wpm",
+                "attribute_type": "string",
+            }
+        )
+        with pytest.raises(InvalidMetricCombinationError):
+            DashboardQueryBuilder(config).build_all_queries()
+
+    def test_count_of_text_attribute_is_allowed(self):
+        config = _single_metric_config(
+            {
+                "id": "bot_wpm",
+                "name": "bot_wpm",
+                "type": "custom_attribute",
+                "aggregation": "count_distinct",
+                "attribute_key": "bot_wpm",
+                "attribute_type": "string",
+            }
+        )
+        sql, _, _ = DashboardQueryBuilder(config).build_all_queries()[0]
+        assert "span_attr_str['bot_wpm']" in sql
+
+    def test_avg_of_numeric_attribute_is_allowed(self):
+        config = _single_metric_config(
+            {
+                "id": "bot_wpm",
+                "name": "bot_wpm",
+                "type": "custom_attribute",
+                "aggregation": "avg",
+                "attribute_key": "bot_wpm",
+                "attribute_type": "number",
+            }
+        )
+        sql, _, _ = DashboardQueryBuilder(config).build_all_queries()[0]
+        assert "avg(span_attr_num['bot_wpm'])" in sql
+
+    def test_format_metric_result_surfaces_error(self):
+        base = DashboardQueryBuilderBase(
+            {"granularity": "day", "metrics": [], "breakdowns": []}
+        )
+        all_buckets = [datetime(2025, 1, 1).isoformat()]
+        metric_info = {
+            "id": "bot_wpm",
+            "name": "bot_wpm",
+            "aggregation": "avg",
+            "error": "'avg' can't be applied to the text attribute 'bot_wpm'.",
+        }
+        result = base._format_metric_result(metric_info, [], all_buckets, {})
+        assert result["error"].startswith("'avg' can't be applied")
+
+
+class TestWidgetReorder:
+    """POST /dashboard/<pk>/widgets/reorder/ — previously untested endpoint."""
+
+    def _make_widget(self, dashboard, user, name, position):
+        return DashboardWidget.objects.create(
+            dashboard=dashboard,
+            name=name,
+            position=position,
+            width=6,
+            height=4,
+            query_config={},
+            chart_config={},
+            created_by=user,
+        )
+
+    @pytest.mark.django_db
+    def test_reorder_persists_new_positions(self, auth_client, dashboard, user):
+        w0 = self._make_widget(dashboard, user, "A", 0)
+        w1 = self._make_widget(dashboard, user, "B", 1)
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/reorder/",
+            {"order": [str(w1.id), str(w0.id)]},
+            format="json",
+        )
+        assert response.status_code == 200
+        w0.refresh_from_db()
+        w1.refresh_from_db()
+        assert w1.position == 0
+        assert w0.position == 1
+
+    @pytest.mark.django_db
+    def test_reorder_clamps_width_to_1_12(self, auth_client, dashboard, user):
+        wide = self._make_widget(dashboard, user, "Wide", 0)
+        narrow = self._make_widget(dashboard, user, "Narrow", 1)
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/reorder/",
+            {
+                "order": [
+                    {"id": str(wide.id), "width": 99},
+                    {"id": str(narrow.id), "width": 0},
+                ]
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+        wide.refresh_from_db()
+        narrow.refresh_from_db()
+        assert wide.width == 12
+        assert narrow.width == 1
+
+    @pytest.mark.django_db
+    def test_reorder_non_list_order_returns_400(self, auth_client, dashboard):
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/reorder/",
+            {"order": "not-a-list"},
+            format="json",
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    def test_reorder_ignores_foreign_widget_ids(self, auth_client, dashboard, user):
+        w0 = self._make_widget(dashboard, user, "A", 0)
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/reorder/",
+            {"order": [str(uuid.uuid4()), str(w0.id)]},
+            format="json",
+        )
+        assert response.status_code == 200
+        w0.refresh_from_db()
+        # foreign id occupies index 0 and is skipped; own widget takes index 1
+        assert w0.position == 1
+
+
+class TestWidgetDuplicate:
+    """POST /dashboard/<pk>/widgets/<pk>/duplicate/ — previously untested endpoint."""
+
+    @pytest.mark.django_db
+    def test_duplicate_copies_config_name_and_position(
+        self, auth_client, dashboard, dashboard_widget
+    ):
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/duplicate/",
+            {},
+            format="json",
+        )
+        assert response.status_code == 200
+        data = response.json()["result"]
+        assert data["name"] == f"{dashboard_widget.name} (Copy)"
+        assert data["position"] == dashboard_widget.position + 1
+        assert data["width"] == dashboard_widget.width
+        assert data["query_config"] == dashboard_widget.query_config
+        assert (
+            DashboardWidget.objects.filter(dashboard=dashboard, deleted=False).count()
+            == 2
+        )
+
+
+class TestDashboardWorkspaceIsolation:
+    """A dashboard in another workspace must be invisible (404) to this workspace."""
+
+    def _other_ws_dashboard(self, organization, user):
+        other_ws = Workspace.objects.create(
+            name="Other workspace",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+        return Dashboard.objects.create(
+            workspace=other_ws,
+            name="Other WS Dashboard",
+            created_by=user,
+            updated_by=user,
+        )
+
+    @pytest.mark.django_db
+    def test_retrieve_other_workspace_dashboard_is_blocked(
+        self, auth_client, organization, user
+    ):
+        other = self._other_ws_dashboard(organization, user)
+        response = auth_client.get(f"/tracer/dashboard/{other.id}/")
+        assert response.status_code == 400
+        assert "Other WS Dashboard" not in response.content.decode()
+
+    @pytest.mark.django_db
+    def test_update_other_workspace_dashboard_is_blocked(
+        self, auth_client, organization, user
+    ):
+        other = self._other_ws_dashboard(organization, user)
+        response = auth_client.put(
+            f"/tracer/dashboard/{other.id}/",
+            {"name": "Hijacked"},
+            format="json",
+        )
+        assert response.status_code == 400
+        other.refresh_from_db()
+        assert other.name == "Other WS Dashboard"
+
+    @pytest.mark.django_db
+    def test_delete_other_workspace_dashboard_is_blocked(
+        self, auth_client, organization, user
+    ):
+        other = self._other_ws_dashboard(organization, user)
+        response = auth_client.delete(f"/tracer/dashboard/{other.id}/")
+        assert response.status_code == 400
+        other.refresh_from_db()
+        assert other.deleted is False
+
+
+class TestWidgetConfigPersistence:
+    """A saved widget must keep its query_config."""
+
+    @pytest.mark.django_db
+    def test_widget_update_persists_query_config(
+        self, auth_client, dashboard, dashboard_widget
+    ):
+        new_config = {
+            "project_ids": [str(uuid.uuid4())],
+            "granularity": "hour",
+            "time_range": {"preset": "30D"},
+            "metrics": [
+                {
+                    "id": "error_rate",
+                    "name": "error_rate",
+                    "type": "system_metric",
+                    "aggregation": "avg",
+                }
+            ],
+        }
+        response = auth_client.put(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/",
+            {
+                "name": dashboard_widget.name,
+                "position": dashboard_widget.position,
+                "width": dashboard_widget.width,
+                "height": dashboard_widget.height,
+                "query_config": new_config,
+                "chart_config": dashboard_widget.chart_config,
+            },
+            format="json",
+        )
+        assert response.status_code == 200
+        dashboard_widget.refresh_from_db()
+        assert dashboard_widget.query_config["granularity"] == "hour"
+        assert dashboard_widget.query_config["metrics"][0]["name"] == "error_rate"
+
+
+class TestDashboardTimeRangeValidation:
+    def test_custom_start_without_custom_end_rejected(self):
+        from tracer.serializers.dashboard import DashboardTimeRangeSerializer
+
+        serializer = DashboardTimeRangeSerializer(
+            data={"custom_start": "2026-01-01T00:00:00Z"}
+        )
+        assert not serializer.is_valid()
+
+    def test_neither_preset_nor_custom_rejected(self):
+        from tracer.serializers.dashboard import DashboardTimeRangeSerializer
+
+        serializer = DashboardTimeRangeSerializer(data={})
+        assert not serializer.is_valid()
+
+
+class TestMetricsCatalogPagination:
+    @pytest.mark.django_db
+    def test_pagination_returns_page_metadata(self, auth_client):
+        response = auth_client.get("/tracer/dashboard/metrics/?page=1&page_size=5")
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["page"] == 1
+        assert result["page_size"] == 5
+        assert "total" in result
+        assert "has_more" in result
+        assert len(result["metrics"]) <= 5
+
+    @pytest.mark.django_db
+    def test_page_size_clamped_to_200(self, auth_client):
+        response = auth_client.get("/tracer/dashboard/metrics/?page=1&page_size=999")
+        assert response.status_code == 200
+        assert response.json()["result"]["page_size"] == 200
+
+    @pytest.mark.django_db
+    def test_garbage_page_falls_back_to_defaults(self, auth_client):
+        response = auth_client.get("/tracer/dashboard/metrics/?page=abc&page_size=5")
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["page"] == 1
+        assert result["page_size"] == 50
+
+
+class TestDashboardAuthRequired:
+    @pytest.mark.django_db
+    def test_unauthenticated_list_is_blocked(self, api_client):
+        response = api_client.get("/tracer/dashboard/")
+        assert response.status_code == 401
+
+    @pytest.mark.django_db
+    def test_unauthenticated_metrics_is_blocked(self, api_client):
+        response = api_client.get("/tracer/dashboard/metrics/")
+        assert response.status_code == 401
+
+
+class TestAnnotationMetricAggregation:
+    def _annotation_sql(self, output_type):
+        config = {
+            "project_ids": ["proj1"],
+            "granularity": "day",
+            "time_range": {"preset": "30D"},
+            "metrics": [
+                {
+                    "id": "a1",
+                    "name": "quality",
+                    "type": "annotation_metric",
+                    "label_id": str(uuid.uuid4()),
+                    "aggregation": "avg",
+                    "output_type": output_type,
+                }
+            ],
+        }
+        sql, _, _ = DashboardQueryBuilder(config).build_all_queries()[0]
+        return sql
+
+    def test_thumbs_up_down_uses_up_percentage(self):
+        sql = self._annotation_sql("thumbs_up_down")
+        assert "JSONExtract(a.value, 'value', 'Nullable(String)')" in sql
+        assert "= 'up') * 100.0 /" in sql
+        assert "greatest(countIf(" in sql
+
+    def test_categorical_uses_count(self):
+        sql = self._annotation_sql("categorical")
+        assert "count() AS value" in sql
+
+    def test_text_uses_count(self):
+        sql = self._annotation_sql("text")
+        assert "count() AS value" in sql
+
+
+class TestDashboardQueryValidation:
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_cross_workspace_project_ids_returns_400(
+        self, mock_analytics_cls, auth_client, organization, user
+    ):
+        other_ws = Workspace.objects.create(
+            name="Other workspace",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+        other_project = Project.objects.create(
+            name="Other workspace project",
+            organization=organization,
+            workspace=other_ws,
+            model_type=AIModel.ModelTypes.GENERATIVE_LLM,
+            trace_type="observe",
+            metadata={},
+        )
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "project_ids": [str(other_project.id)],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+            },
+            format="json",
+        )
+        assert response.status_code == 400
+        mock_analytics_cls.return_value.execute_ch_query.assert_not_called()
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_invalid_dataset_ids_returns_400(self, mock_analytics_cls, auth_client):
+        response = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "dataset_ids": [str(uuid.uuid4())],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "row_count",
+                        "name": "row_count",
+                        "type": "system_metric",
+                        "source": "datasets",
+                        "aggregation": "count",
+                    }
+                ],
+            },
+            format="json",
+        )
+        assert response.status_code == 400
+
+
+class TestDashboardUpdateValidation:
+    @pytest.mark.django_db
+    def test_patch_empty_name_rejected(self, auth_client, dashboard):
+        response = auth_client.patch(
+            f"/tracer/dashboard/{dashboard.id}/",
+            {"name": ""},
+            format="json",
+        )
+        assert response.status_code == 400
+        dashboard.refresh_from_db()
+        assert dashboard.name == "Test Dashboard"
+
+    @pytest.mark.django_db
+    def test_patch_whitespace_name_rejected(self, auth_client, dashboard):
+        response = auth_client.patch(
+            f"/tracer/dashboard/{dashboard.id}/",
+            {"name": "   "},
+            format="json",
+        )
+        assert response.status_code == 400
+        dashboard.refresh_from_db()
+        assert dashboard.name == "Test Dashboard"
+
+
+class TestFilterValuesEndpoint:
+    URL = "/tracer/dashboard/filter_values/"
+
+    @pytest.mark.django_db
+    def test_missing_metric_name_returns_400(self, auth_client):
+        response = auth_client.get(
+            self.URL, {"source": "traces", "metric_type": "system_metric"}
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    def test_blank_metric_name_returns_400(self, auth_client):
+        response = auth_client.get(self.URL, {"metric_name": "", "source": "traces"})
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    def test_invalid_source_returns_400(self, auth_client):
+        response = auth_client.get(
+            self.URL, {"metric_name": "model", "source": "bogus"}
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    def test_invalid_metric_type_returns_400(self, auth_client):
+        response = auth_client.get(
+            self.URL, {"metric_name": "model", "metric_type": "bogus"}
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    def test_non_uuid_dataset_id_returns_400(self, auth_client):
+        response = auth_client.get(
+            self.URL,
+            {
+                "metric_name": "col",
+                "source": "dataset_column",
+                "dataset_id": "not-a-uuid",
+            },
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=False)
+    def test_system_metric_returns_empty_when_clickhouse_disabled(
+        self, _mock_ch, auth_client
+    ):
+        response = auth_client.get(
+            self.URL, {"metric_name": "model", "metric_type": "system_metric"}
+        )
+        assert response.status_code == 200
+        assert response.json()["result"]["values"] == []
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_traces_system_metric_returns_distinct_values(
+        self, mock_analytics_cls, _mock_ch, auth_client, project
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "gpt-4"}, {"val": "claude-3"}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.get(
+            self.URL,
+            {
+                "source": "traces",
+                "metric_type": "system_metric",
+                "metric_name": "model",
+                "project_ids": str(project.id),
+            },
+        )
+        assert response.status_code == 200
+        body = response.content.decode()
+        assert "gpt-4" in body
+        assert "claude-3" in body
+
+    @pytest.mark.django_db
+    def test_dataset_column_non_uuid_column_returns_400(self, auth_client):
+        response = auth_client.get(
+            self.URL,
+            {
+                "source": "dataset_column",
+                "metric_name": "not-a-uuid",
+                "dataset_id": str(uuid.uuid4()),
+            },
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    def test_dataset_column_unknown_column_returns_empty(self, auth_client):
+        # A column/dataset not owned by this workspace resolves to no values.
+        response = auth_client.get(
+            self.URL,
+            {
+                "source": "dataset_column",
+                "metric_name": str(uuid.uuid4()),
+                "dataset_id": str(uuid.uuid4()),
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["result"]["values"] == []
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_traces_enduser_metric_returns_values(
+        self, mock_analytics_cls, _mock_ch, auth_client, project
+    ):
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [{"val": "external"}, {"val": "internal"}]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.get(
+            self.URL,
+            {
+                "source": "traces",
+                "metric_type": "system_metric",
+                "metric_name": "user_id_type",
+                "project_ids": str(project.id),
+            },
+        )
+        assert response.status_code == 200
+        body = response.content.decode()
+        assert "external" in body
+        assert "internal" in body
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=False)
+    def test_simulation_source_returns_empty_when_clickhouse_disabled(
+        self, _mock_ch, auth_client
+    ):
+        response = auth_client.get(
+            self.URL,
+            {
+                "source": "simulation",
+                "metric_type": "system_metric",
+                "metric_name": "status",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["result"]["values"] == []
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_dataset_column_flattens_array_cells(
+        self, mock_analytics_cls, _mock_ch, auth_client, organization, workspace
+    ):
+        from model_hub.models.choices import (
+            DataTypeChoices,
+            SourceChoices,
+            StatusType,
+        )
+        from model_hub.models.develop_dataset import Column, Dataset
+
+        dataset = Dataset.objects.create(
+            name="DS", organization=organization, workspace=workspace
+        )
+        column = Column.objects.create(
+            id=uuid.uuid4(),
+            name="lang",
+            data_type=DataTypeChoices.ARRAY.value,
+            source=SourceChoices.OTHERS.value,
+            status=StatusType.RUNNING.value,
+            dataset=dataset,
+        )
+        mock_service = MagicMock()
+        mock_result = MagicMock()
+        mock_result.data = [
+            {"val": '["English","French"]'},
+            {"val": '["English","Spanish"]'},
+        ]
+        mock_service.execute_ch_query.return_value = mock_result
+        mock_analytics_cls.return_value = mock_service
+
+        response = auth_client.get(
+            self.URL,
+            {
+                "source": "dataset_column",
+                "metric_name": str(column.id),
+                "dataset_id": str(dataset.id),
+            },
+        )
+        assert response.status_code == 200
+        labels = {v["value"] for v in response.json()["result"]["values"]}
+        # array cells flattened to individual elements, deduped
+        assert labels == {"English", "French", "Spanish"}
+        assert '["English","French"]' not in labels
+
+
+class TestFilterValuesAnnotationBranches:
+    URL = "/tracer/dashboard/filter_values/"
+
+    def _label(self, organization, workspace, ltype, settings=None):
+        from model_hub.models.develop_annotations import AnnotationsLabels
+
+        return AnnotationsLabels.objects.create(
+            name=f"L-{ltype}",
+            type=ltype,
+            organization=organization,
+            workspace=workspace,
+            settings=settings or {},
+        )
+
+    @pytest.mark.django_db
+    def test_star_label_returns_star_options(
+        self, auth_client, organization, workspace
+    ):
+        label = self._label(organization, workspace, "star", {"no_of_stars": 3})
+        response = auth_client.get(
+            self.URL,
+            {
+                "source": "traces",
+                "metric_type": "annotation_metric",
+                "metric_name": str(label.id),
+            },
+        )
+        assert response.status_code == 200
+        values = response.json()["result"]["values"]
+        assert [v["value"] for v in values] == ["1", "2", "3"]
+        assert values[0]["label"] == "1 star"
+        assert values[2]["label"] == "3 stars"
+
+    @pytest.mark.django_db
+    def test_thumbs_label_returns_up_down_options(
+        self, auth_client, organization, workspace
+    ):
+        label = self._label(organization, workspace, "thumbs_up_down")
+        response = auth_client.get(
+            self.URL,
+            {
+                "source": "traces",
+                "metric_type": "annotation_metric",
+                "metric_name": str(label.id),
+            },
+        )
+        assert response.status_code == 200
+        values = response.json()["result"]["values"]
+        assert {v["value"] for v in values} == {"thumbs_up", "thumbs_down"}
+
+    @pytest.mark.django_db
+    def test_unknown_label_returns_empty(self, auth_client):
+        response = auth_client.get(
+            self.URL,
+            {
+                "source": "traces",
+                "metric_type": "annotation_metric",
+                "metric_name": str(uuid.uuid4()),
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["result"]["values"] == []
+
+
+class TestSimulationAgents:
+    URL = "/tracer/dashboard/simulation-agents/"
+
+    def _agent(self, organization, workspace, name="Agent A", deleted=False):
+        from simulate.models.agent_definition import AgentDefinition
+
+        agent = AgentDefinition.objects.create(
+            agent_name=name,
+            agent_type=AgentDefinition.AgentTypeChoices.TEXT,
+            inbound=True,
+            description="test agent",
+            organization=organization,
+            workspace=workspace,
+            languages=["en"],
+        )
+        if deleted:
+            agent.deleted = True
+            agent.save(update_fields=["deleted"])
+        return agent
+
+    @pytest.mark.django_db
+    def test_returns_workspace_agents_without_obs_link(
+        self, auth_client, organization, workspace
+    ):
+        agent = self._agent(organization, workspace, "Voice Agent")
+        response = auth_client.get(self.URL)
+        assert response.status_code == 200
+        agents = response.json()["result"]["agents"]
+        found = next((a for a in agents if a["id"] == str(agent.id)), None)
+        assert found is not None
+        assert found["name"] == "Voice Agent"
+        assert found["observability_project_id"] is None
+
+    @pytest.mark.django_db
+    def test_excludes_deleted_agents(self, auth_client, organization, workspace):
+        agent = self._agent(organization, workspace, "Deleted Agent", deleted=True)
+        response = auth_client.get(self.URL)
+        assert response.status_code == 200
+        ids = {a["id"] for a in response.json()["result"]["agents"]}
+        assert str(agent.id) not in ids
+
+    @pytest.mark.django_db
+    def test_excludes_other_workspace_agents(
+        self, auth_client, organization, user, workspace
+    ):
+        other_ws = Workspace.objects.create(
+            name="Other workspace",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+        agent = self._agent(organization, other_ws, "Other WS Agent")
+        response = auth_client.get(self.URL)
+        assert response.status_code == 200
+        ids = {a["id"] for a in response.json()["result"]["agents"]}
+        assert str(agent.id) not in ids
+
+
+class TestWidgetExecutePreviewBranches:
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    def test_execute_query_widget_without_metrics_returns_400(
+        self, _mock_ch, auth_client, dashboard, user
+    ):
+        widget = DashboardWidget.objects.create(
+            dashboard=dashboard,
+            name="No metrics",
+            position=0,
+            width=6,
+            height=4,
+            query_config={"granularity": "day", "metrics": []},
+            chart_config={},
+            created_by=user,
+        )
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{widget.id}/query/"
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=False)
+    def test_preview_returns_400_when_clickhouse_disabled(
+        self, _mock_ch, auth_client, dashboard, sample_query_config
+    ):
+        response = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/preview/",
+            {"query_config": sample_query_config},
+            format="json",
+        )
+        assert response.status_code == 400
+
+
+class TestWidgetWriteIsolation:
+    """Foreign-workspace widget *writes* must be rejected with no mutation.
+    (Read isolation is covered by TestWidgetReadEndpoints; this covers writes:
+    create / update / destroy / reorder / duplicate.)"""
+
+    def _foreign(self, organization, user):
+        other_ws = Workspace.objects.create(
+            name="Other WS",
+            organization=organization,
+            is_active=True,
+            created_by=user,
+        )
+        dash = Dashboard.objects.create(
+            workspace=other_ws,
+            name="Foreign Dashboard",
+            created_by=user,
+            updated_by=user,
+        )
+        widget = DashboardWidget.objects.create(
+            dashboard=dash,
+            name="Foreign Widget",
+            position=0,
+            width=6,
+            height=4,
+            query_config={},
+            chart_config={},
+            created_by=user,
+        )
+        return dash, widget
+
+    @pytest.mark.django_db
+    def test_create_under_foreign_dashboard_blocked(
+        self, auth_client, organization, user
+    ):
+        dash, _ = self._foreign(organization, user)
+        before = DashboardWidget.objects.filter(dashboard=dash).count()
+        resp = auth_client.post(
+            f"/tracer/dashboard/{dash.id}/widgets/",
+            {
+                "name": "Injected",
+                "position": 0,
+                "width": 6,
+                "height": 4,
+                "query_config": {},
+                "chart_config": {},
+            },
+            format="json",
+        )
+        assert resp.status_code == 404
+        assert DashboardWidget.objects.filter(dashboard=dash).count() == before
+
+    @pytest.mark.django_db
+    def test_update_foreign_widget_blocked(self, auth_client, organization, user):
+        dash, widget = self._foreign(organization, user)
+        resp = auth_client.put(
+            f"/tracer/dashboard/{dash.id}/widgets/{widget.id}/",
+            {
+                "name": "Hijacked",
+                "position": 0,
+                "width": 6,
+                "height": 4,
+                "query_config": {},
+                "chart_config": {},
+            },
+            format="json",
+        )
+        assert resp.status_code == 404
+        widget.refresh_from_db()
+        assert widget.name == "Foreign Widget"
+
+    @pytest.mark.django_db
+    def test_destroy_foreign_widget_blocked(self, auth_client, organization, user):
+        dash, widget = self._foreign(organization, user)
+        resp = auth_client.delete(f"/tracer/dashboard/{dash.id}/widgets/{widget.id}/")
+        assert resp.status_code == 404
+        widget.refresh_from_db()
+        assert widget.deleted is False
+
+    @pytest.mark.django_db
+    def test_reorder_foreign_dashboard_blocked(self, auth_client, organization, user):
+        dash, widget = self._foreign(organization, user)
+        resp = auth_client.post(
+            f"/tracer/dashboard/{dash.id}/widgets/reorder/",
+            {"order": [str(widget.id)]},
+            format="json",
+        )
+        assert resp.status_code == 404
+        widget.refresh_from_db()
+        assert widget.position == 0
+
+    @pytest.mark.django_db
+    def test_duplicate_foreign_widget_blocked(self, auth_client, organization, user):
+        dash, widget = self._foreign(organization, user)
+        before = DashboardWidget.objects.filter(dashboard=dash).count()
+        resp = auth_client.post(
+            f"/tracer/dashboard/{dash.id}/widgets/{widget.id}/duplicate/"
+        )
+        # 400 rather than 404: duplicate_widget catches the queryset's Http404
+        # and re-emits it as 400. Isolation still holds — no copy is created.
+        assert resp.status_code == 400
+        assert DashboardWidget.objects.filter(dashboard=dash).count() == before
+
+
+class TestQueryEngineFailure:
+    """A ClickHouse error mid-execution must degrade gracefully (no 500 crash)
+    on every query-executing endpoint."""
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_query_action_survives_ch_failure(
+        self, mock_analytics_cls, auth_client, observe_project
+    ):
+        service = MagicMock()
+        service.execute_ch_query.side_effect = Exception("CH exploded")
+        mock_analytics_cls.return_value = service
+        resp = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "project_ids": [str(observe_project.id)],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+            },
+            format="json",
+        )
+        # Per-metric isolation swallows the CH error -> 200 with an empty series,
+        # never a 500.
+        assert resp.status_code == 200
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.get_clickhouse_client")
+    def test_execute_query_survives_ch_failure(
+        self, mock_get_client, _mock_enabled, auth_client, dashboard, dashboard_widget
+    ):
+        client = MagicMock()
+        client.execute_read.side_effect = Exception("CH exploded")
+        mock_get_client.return_value = client
+        resp = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{dashboard_widget.id}/query/"
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.is_clickhouse_enabled", return_value=True)
+    @patch("tracer.views.dashboard.get_clickhouse_client")
+    def test_preview_survives_ch_failure(
+        self,
+        mock_get_client,
+        _mock_enabled,
+        auth_client,
+        dashboard,
+        sample_query_config,
+    ):
+        client = MagicMock()
+        client.execute_read.side_effect = Exception("CH exploded")
+        mock_get_client.return_value = client
+        resp = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/preview/",
+            {"query_config": sample_query_config},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+
+class TestWidgetMutationErrorBranches:
+    """Nonexistent-target error branches for the mutation actions."""
+
+    @pytest.mark.django_db
+    def test_destroy_nonexistent_widget_returns_404(self, auth_client, dashboard):
+        resp = auth_client.delete(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{uuid.uuid4()}/"
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.django_db
+    def test_duplicate_nonexistent_widget_rejected(self, auth_client, dashboard):
+        before = DashboardWidget.objects.filter(dashboard=dashboard).count()
+        resp = auth_client.post(
+            f"/tracer/dashboard/{dashboard.id}/widgets/{uuid.uuid4()}/duplicate/"
+        )
+        assert resp.status_code == 400
+        assert DashboardWidget.objects.filter(dashboard=dashboard).count() == before
+
+
+class TestQueryMalformedInput:
+    @pytest.mark.django_db
+    def test_malformed_project_uuid_returns_400(self, auth_client):
+        resp = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "project_ids": ["not-a-uuid"],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": "latency",
+                        "name": "latency",
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+
+
+class TestXSSPayloadNonExecutable:
+    """A markup/XSS metric name is currently echoed back in the response body
+    (pre-existing; the parameterize-the-attribute-key follow-up removes the
+    reflection). Until then, assert the reflection is inert: the response is
+    served as application/json, so a reflected <script> is JSON text, never
+    rendered HTML."""
+
+    @pytest.mark.django_db
+    @patch("tracer.views.dashboard.AnalyticsQueryService")
+    def test_xss_metric_name_response_is_json_not_html(
+        self, mock_analytics_cls, auth_client, observe_project
+    ):
+        service = MagicMock()
+        result = MagicMock()
+        result.data = []
+        service.execute_ch_query.return_value = result
+        mock_analytics_cls.return_value = service
+        payload = '<script>alert("xss")</script>'
+        resp = auth_client.post(
+            "/tracer/dashboard/query/",
+            {
+                "project_ids": [str(observe_project.id)],
+                "granularity": "day",
+                "time_range": {"preset": "7D"},
+                "metrics": [
+                    {
+                        "id": payload,
+                        "name": payload,
+                        "type": "system_metric",
+                        "aggregation": "avg",
+                    }
+                ],
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        # Non-executable: served as JSON, so a reflected payload is inert text.
+        assert resp["Content-Type"].startswith("application/json")

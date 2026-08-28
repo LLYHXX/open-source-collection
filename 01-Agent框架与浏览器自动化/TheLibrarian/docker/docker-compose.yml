@@ -1,0 +1,130 @@
+# Two-service compose stack for The Librarian.
+#
+# Run from the repo root:
+#   docker compose -f docker/docker-compose.yml up -d --build
+#
+# Reads credentials from the `.env` file at the repo root (see
+# `.env.example`). The mcp-server stores data in `../data` (the repo
+# root's data/ directory, bind-mounted into the container).
+
+name: the-librarian
+
+services:
+  mcp-server:
+    build:
+      context: ..
+      dockerfile: docker/mcp-server.Dockerfile
+    image: librarian-mcp:latest
+    container_name: librarian-mcp
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "${LIBRARIAN_DATA_UID:-1001}:${LIBRARIAN_DATA_GID:-1001}"
+    environment:
+      # ADR 0008 P3: no admin token. The admin tRPC API is served only on the
+      # internal listener below (reachable solely over the `internal` docker
+      # network), so the token is no longer a network gate and is not required.
+      LIBRARIAN_AGENT_TOKEN: "${LIBRARIAN_AGENT_TOKEN:-}"
+      LIBRARIAN_AGENT_TOKENS: "${LIBRARIAN_AGENT_TOKENS:-}"
+      # Optional one-shot first-owner bootstrap. Empty is dormant.
+      LIBRARIAN_BOOTSTRAP_CLAIM_SECRET: "${LIBRARIAN_BOOTSTRAP_CLAIM_SECRET:-}"
+      LIBRARIAN_ALLOWED_ORIGINS: "${LIBRARIAN_ALLOWED_ORIGINS:-}"
+      LIBRARIAN_DATA_DIR: "/data"
+      LIBRARIAN_HOST: "0.0.0.0"
+      LIBRARIAN_PORT: "3838"
+      # Admin tRPC listener (ADR 0008 P2). Bound on 0.0.0.0 so the dashboard
+      # container can reach it over the dedicated `internal` docker network, but
+      # DELIBERATELY absent from `ports:` below — it is never published to the
+      # host. The boundary is the isolated docker network, not a bearer token.
+      LIBRARIAN_TRPC_HOST: "0.0.0.0"
+      LIBRARIAN_TRPC_PORT: "3840"
+    # Opt-in operator DNS (both unset = Docker's default resolv.conf, no change).
+    # The mcp-server reaches the curator's LLM provider over this DNS; set the
+    # Tailscale resolver FIRST when that provider is only reachable on a tailnet
+    # — c-ares never consults a later nameserver after an NXDOMAIN, and
+    # IP-based access fails (Tailscale Serve TLS needs the hostname SNI).
+    # Tailscale MagicDNS also forwards public lookups, so the one server usually
+    # suffices; LIBRARIAN_DNS_FALLBACK is an optional second nameserver.
+    dns:
+      - ${LIBRARIAN_DNS:-}
+      - ${LIBRARIAN_DNS_FALLBACK:-}
+    ports:
+      # Only the public agent port (/mcp + /healthz + /primer.md) is published.
+      # The tRPC port (3840) is intentionally NOT here — see LIBRARIAN_TRPC_* above.
+      - "${LIBRARIAN_MCP_PUBLISHED_HOST:-127.0.0.1}:3838:3838"
+    networks:
+      - librarian-internal
+    volumes:
+      - ../data:/data
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3838/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: docker/dashboard.Dockerfile
+    image: librarian-dashboard:latest
+    container_name: librarian-dashboard
+    restart: unless-stopped
+    init: true
+    environment:
+      # ADR 0008 P3: the dashboard reaches the trusted internal tRPC listener over
+      # the `internal` docker network with NO bearer — no admin token to set.
+      LIBRARIAN_SERVER_URL: "http://mcp-server:3838"
+      # Admin tRPC over the internal docker network (ADR 0008 P2): the dashboard's
+      # tRPC client + /api/trpc proxy target this, NOT the public 3838 agent port
+      # (a /trpc request there now 404s). Reaches the mcp-server's internal
+      # listener over `librarian-internal` — never the host.
+      LIBRARIAN_TRPC_URL: "http://mcp-server:3840"
+      # Opt-in single-port deployments proxy the agent surface through this
+      # dashboard. Both values are dashboard-owned, so pass them explicitly
+      # through Compose's otherwise-literal environment map.
+      LIBRARIAN_SINGLE_PORT: "${LIBRARIAN_SINGLE_PORT:-}"
+      LIBRARIAN_PUBLIC_URL: "${LIBRARIAN_PUBLIC_URL:-}"
+      NODE_ENV: "production"
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    # Same opt-in operator DNS as mcp-server (see that service's dns: block);
+    # both are unset by default, leaving Docker's default resolv.conf in place.
+    dns:
+      - ${LIBRARIAN_DNS:-}
+      - ${LIBRARIAN_DNS_FALLBACK:-}
+    ports:
+      - "${LIBRARIAN_DASHBOARD_PUBLISHED_HOST:-127.0.0.1}:3839:3000"
+    networks:
+      - librarian-internal
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+# Dedicated bridge network for the two services (ADR 0008 P2, spec §5 Q1).
+# NOT `internal: true`: an internal network has no gateway, so Docker (a) will
+# not publish the agent port (3838) to the host, and (b) cuts the mcp-server's
+# required egress (curator LLM calls, GitHub backups) — that combination is what
+# took the agent surface offline on compose deploys in rc.10–rc.13. The admin
+# tRPC port (3840) is kept off the host by simply never publishing it (it is
+# absent from every `ports:` above); a dedicated user-defined network still
+# isolates it from other docker stacks.
+networks:
+  librarian-internal:
+    internal: false

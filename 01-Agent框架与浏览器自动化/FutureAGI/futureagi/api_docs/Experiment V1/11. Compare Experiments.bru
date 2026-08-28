@@ -1,0 +1,42 @@
+meta {
+  name: Compare Experiments (Choose Winner)
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/experiments/{{experimentId}}/compare-experiments/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "response_time": 5,
+    "completion_tokens": 5,
+    "total_tokens": 5,
+    "eval_name_here": 5
+  }
+}
+
+docs {
+  ## Compare Experiments / Choose Winner (V1)
+
+  POST: Calculate comparison rankings with weighted metrics.
+  GET: Retrieve existing comparison data.
+  Used by ChooseWinnerDrawer.jsx.
+
+  ### Request Body (POST)
+  Weights (0-10 scale) for each metric:
+  - `response_time` — Weight for response time
+  - `completion_tokens` — Weight for completion tokens
+  - `total_tokens` — Weight for total tokens
+  - `{eval_name}` — Dynamic weight for each evaluation metric
+
+  ### Response
+  Normalized scores (0-10), rankings per ExperimentDatasetTable, overall winner.
+}

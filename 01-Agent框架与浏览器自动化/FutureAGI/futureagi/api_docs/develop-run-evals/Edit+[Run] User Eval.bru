@@ -1,0 +1,30 @@
+meta {
+  name: Edit+[Run] User Eval
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{host}}/model-hub/develops/5d5d2b4c-dd95-4d5a-93ed-407b7368cf3a/edit_and_run_user_eval/685603d6-7781-4c8c-ac1e-dd4d61525113/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "run" : true,
+    "config": {
+      "mapping": {
+        "response": "4fa3ca26-0d13-4af0-ad2a-8052d20ba592",
+        "query" : "11bab26e-c4b2-46d8-b8b7-4f79afa8595f"
+      },
+      "config": {
+        "model":"gpt-4o-mini"
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+meta {
+  name: get experiment v2 detail
+  type: http
+  seq: 6
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/6871fd73-7cff-4e3e-bd28-6971388558f7
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}

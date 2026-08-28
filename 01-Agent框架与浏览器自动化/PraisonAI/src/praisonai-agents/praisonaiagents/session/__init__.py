@@ -1,0 +1,229 @@
+"""
+Session persistence module for PraisonAI Agents.
+
+Provides automatic session persistence with zero configuration.
+When a session_id is configured on an Agent, conversation history
+is automatically persisted to disk and restored on subsequent runs.
+
+The session_id is set through the Agent's memory configuration; Agent itself
+has no top-level session_id parameter.
+
+Usage:
+    from praisonaiagents import Agent, MemoryConfig
+
+    # With session persistence (auto-enabled)
+    agent = Agent(
+        name="Assistant",
+        memory=MemoryConfig(session_id="my-session-123"),
+    )
+    agent.start("Hello")
+
+    # Later, new process - history is restored
+    agent = Agent(
+        name="Assistant",
+        memory=MemoryConfig(session_id="my-session-123"),
+    )
+    agent.start("What did I say before?")  # Remembers!
+
+    # The plain-dict spelling is equivalent:
+    #   Agent(name="Assistant", memory={"session_id": "my-session-123"})
+
+Default storage: ~/.praisonai/sessions/{session_id}.json
+"""
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .store import DefaultSessionStore, SessionMessage, SessionData, CompactionCheckpoint
+    from .sqlite_store import SqliteSessionStore
+    from .sqlite_transcript_store import SqliteTranscriptStore
+    from .protocols import SessionStoreProtocol, SessionMirrorProtocol
+    from .hierarchy import HierarchicalSessionStore, SessionSnapshot, ExtendedSessionData
+
+# Lazy loading for zero import overhead
+_module_cache = {}
+
+
+def __getattr__(name: str):
+    """Lazy load session components."""
+    if name in _module_cache:
+        return _module_cache[name]
+    
+    if name == "Session":
+        from .api import Session
+        _module_cache[name] = Session
+        return Session
+    
+    if name == "DefaultSessionStore":
+        from .store import DefaultSessionStore
+        _module_cache[name] = DefaultSessionStore
+        return DefaultSessionStore
+
+    if name == "SqliteSessionStore":
+        from .sqlite_store import SqliteSessionStore
+        _module_cache[name] = SqliteSessionStore
+        return SqliteSessionStore
+
+    if name == "SqliteTranscriptStore":
+        from .sqlite_transcript_store import SqliteTranscriptStore
+        _module_cache[name] = SqliteTranscriptStore
+        return SqliteTranscriptStore
+    
+    if name == "SessionMessage":
+        from .store import SessionMessage
+        _module_cache[name] = SessionMessage
+        return SessionMessage
+    
+    if name == "SessionData":
+        from .store import SessionData
+        _module_cache[name] = SessionData
+        return SessionData
+
+    if name == "CompactionCheckpoint":
+        from .store import CompactionCheckpoint
+        _module_cache[name] = CompactionCheckpoint
+        return CompactionCheckpoint
+    
+    if name == "get_default_session_store":
+        from .store import get_default_session_store
+        _module_cache[name] = get_default_session_store
+        return get_default_session_store
+    
+    if name == "SessionStoreProtocol":
+        from .protocols import SessionStoreProtocol
+        _module_cache[name] = SessionStoreProtocol
+        return SessionStoreProtocol
+
+    if name == "SearchableSessionStoreProtocol":
+        from .protocols import SearchableSessionStoreProtocol
+        _module_cache[name] = SearchableSessionStoreProtocol
+        return SearchableSessionStoreProtocol
+
+    if name == "SessionMirrorProtocol":
+        from .protocols import SessionMirrorProtocol
+        _module_cache[name] = SessionMirrorProtocol
+        return SessionMirrorProtocol
+
+    if name == "PortableSessionStoreProtocol":
+        from .protocols import PortableSessionStoreProtocol
+        _module_cache[name] = PortableSessionStoreProtocol
+        return PortableSessionStoreProtocol
+
+    if name == "ImportReport":
+        from .protocols import ImportReport
+        _module_cache[name] = ImportReport
+        return ImportReport
+
+    if name == "SessionHit":
+        from .protocols import SessionHit
+        _module_cache[name] = SessionHit
+        return SessionHit
+
+    if name == "SessionSummary":
+        from .protocols import SessionSummary
+        _module_cache[name] = SessionSummary
+        return SessionSummary
+    
+    if name == "HierarchicalSessionStore":
+        from .hierarchy import HierarchicalSessionStore
+        _module_cache[name] = HierarchicalSessionStore
+        return HierarchicalSessionStore
+    
+    if name == "get_hierarchical_session_store":
+        from .hierarchy import get_hierarchical_session_store
+        _module_cache[name] = get_hierarchical_session_store
+        return get_hierarchical_session_store
+    
+    if name == "SessionSnapshot":
+        from .hierarchy import SessionSnapshot
+        _module_cache[name] = SessionSnapshot
+        return SessionSnapshot
+    
+    if name == "ExtendedSessionData":
+        from .hierarchy import ExtendedSessionData
+        _module_cache[name] = ExtendedSessionData
+        return ExtendedSessionData
+
+    # W1 — Identity resolver
+    if name == "IdentityResolverProtocol":
+        from .identity import IdentityResolverProtocol
+        _module_cache[name] = IdentityResolverProtocol
+        return IdentityResolverProtocol
+    if name == "IdentityLink":
+        from .identity import IdentityLink
+        _module_cache[name] = IdentityLink
+        return IdentityLink
+    if name == "InMemoryIdentityResolver":
+        from .identity import InMemoryIdentityResolver
+        _module_cache[name] = InMemoryIdentityResolver
+        return InMemoryIdentityResolver
+    if name == "FileIdentityResolver":
+        from .identity import FileIdentityResolver
+        _module_cache[name] = FileIdentityResolver
+        return FileIdentityResolver
+
+    # W1 — Task-local session context
+    if name == "SessionContext":
+        from .context import SessionContext
+        _module_cache[name] = SessionContext
+        return SessionContext
+    if name == "set_session_context":
+        from .context import set_session_context
+        _module_cache[name] = set_session_context
+        return set_session_context
+    if name == "get_session_context":
+        from .context import get_session_context
+        _module_cache[name] = get_session_context
+        return get_session_context
+    if name == "clear_session_context":
+        from .context import clear_session_context
+        _module_cache[name] = clear_session_context
+        return clear_session_context
+
+    # Workspace-scoped default session identity (Issue #3154)
+    if name == "workspace_id":
+        from .workspace import workspace_id
+        _module_cache[name] = workspace_id
+        return workspace_id
+
+    # Cross-context continuation prompt assembler (session handoff)
+    if name == "build_handoff_prompt":
+        from .handoff import build_handoff_prompt
+        _module_cache[name] = build_handoff_prompt
+        return build_handoff_prompt
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "Session",
+    "DefaultSessionStore",
+    "SqliteSessionStore",
+    "SqliteTranscriptStore",
+    "SessionMessage", 
+    "SessionData",
+    "CompactionCheckpoint",
+    "get_default_session_store",
+    "SessionStoreProtocol",
+    "SearchableSessionStoreProtocol",
+    "SessionMirrorProtocol",
+    "PortableSessionStoreProtocol",
+    "ImportReport",
+    "SessionHit",
+    "SessionSummary",
+    "HierarchicalSessionStore",
+    "get_hierarchical_session_store",
+    "SessionSnapshot",
+    "ExtendedSessionData",
+    # W1
+    "IdentityResolverProtocol",
+    "IdentityLink",
+    "InMemoryIdentityResolver",
+    "FileIdentityResolver",
+    "SessionContext",
+    "set_session_context",
+    "get_session_context",
+    "clear_session_context",
+    "workspace_id",
+    "build_handoff_prompt",
+]

@@ -1,0 +1,34 @@
+meta {
+  name: test-connection-mongodb
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{host}}/data-connector/test/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "definitions_name": "MongoDb",
+    "auth_source": "admin",
+    "cluster_type": "SELF_MANAGED_REPLICA_SET",
+    "connection_string": "{{mongodb_connection_string}}",
+    "database": "sybill-dev",
+    "table_id": "convInsightsView",
+    "connection_id": "f2ccb3da-476c-4551-9a45-ba0448617cbc"
+    // "username": "",
+    // "password": ""
+  }
+}
+
+body:multipart-form {
+  definitions_name: MongoDb
+  connection_id: 798c846a-bf06-4910-9e69-445d5be0053a
+}

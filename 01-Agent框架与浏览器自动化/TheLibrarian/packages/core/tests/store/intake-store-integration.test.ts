@@ -1,0 +1,166 @@
+// Intake ↔ store wiring (plan 036 Phase 4 / spec 035 §F5). Pins that the
+// markdown LibrarianStore can submit raw text to the inbox and run the
+// intake over it end-to-end against the REAL store (real vault, git, index
+// — only the LLM is faked).
+
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { type LibrarianStore, type LlmClient, createLibrarianStore } from "@librarian/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+let store: LibrarianStore | null = null;
+let dataDir = "";
+
+beforeEach(() => {
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "librarian-consol-store-"));
+});
+afterEach(() => {
+  try {
+    store?.close();
+  } catch {
+    /* ignore */
+  }
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  store = null;
+});
+
+function fakeClient(content: string): LlmClient {
+  return { complete: async () => ({ content, model: "gpt-x", usage: null }) };
+}
+
+describe("LibrarianStore intake wiring (markdown)", () => {
+  it("submits raw text to the inbox and files it into a memory", async () => {
+    store = createLibrarianStore({ dataDir, backend: "markdown" });
+
+    const ref = store.submitToInbox("Elaine lives in Berlin.");
+    expect(ref.relPath.startsWith("inbox/")).toBe(true);
+    // The submission is in the inbox, NOT yet a memory.
+    expect(store.searchMemories({ query: "Elaine", status: "active" })).toEqual([]);
+
+    const summary = await store.runIntakeSweep({
+      llmClient: fakeClient(
+        JSON.stringify({
+          action: "create",
+          title: "Elaine",
+          body: "Elaine lives in Berlin.",
+          tags: ["person"],
+          rationale: "novel topic",
+          confidence: 0.97,
+        }),
+      ),
+    });
+
+    expect(summary).toMatchObject({ consolidated: 1, judgeErrors: 0, errored: 0 });
+    // The intake filed it as a real, recallable memory.
+    const found = store.searchMemories({ query: "Elaine", status: "active" });
+    expect(found.map((m) => m.title)).toContain("Elaine");
+  });
+
+  it("augments an existing memory through the real store (no-clobber appended body)", async () => {
+    store = createLibrarianStore({ dataDir, backend: "markdown" });
+    const { memory } = store.createMemory({ title: "Elaine", body: "Lives in Paris." });
+    store.submitToInbox("Elaine moved to Berlin");
+
+    const summary = await store.runIntakeSweep({
+      llmClient: fakeClient(
+        JSON.stringify({
+          action: "augment",
+          target_id: memory.id,
+          addition: "Now in [[Berlin]].",
+          rationale: "adds the move",
+          confidence: 0.97,
+        }),
+      ),
+    });
+
+    expect(summary).toMatchObject({ consolidated: 1 });
+    const updated = store.getMemory(memory.id);
+    expect(updated?.body).toContain("Lives in Paris."); // original preserved (no-clobber)
+    expect(updated?.body).toContain("[[Berlin]]"); // new info woven in
+  });
+
+  it("leaves the vault git tree clean after a judge-error sweep", async () => {
+    store = createLibrarianStore({ dataDir, backend: "markdown" });
+    store.submitToInbox("unparseable submission");
+    // judge_error leaves the claim in .processing; the final sweep commit must
+    // capture that move so the working tree stays clean (Phase-7 git push).
+    await store.runIntakeSweep({ llmClient: fakeClient("not json at all") });
+    const porcelain = execFileSync("git", ["status", "--porcelain"], {
+      cwd: path.join(dataDir, "vault"),
+      encoding: "utf8",
+    });
+    expect(porcelain.trim()).toBe("");
+  });
+
+  it("files a duplicate submission to a no-op (nothing created)", async () => {
+    store = createLibrarianStore({ dataDir, backend: "markdown" });
+    store.submitToInbox("dupe");
+    const summary = await store.runIntakeSweep({
+      llmClient: fakeClient(
+        JSON.stringify({ action: "noop", rationale: "duplicate", confidence: 0.9 }),
+      ),
+    });
+    expect(summary).toMatchObject({ consolidated: 1 });
+    expect(store.listMemories({}).total).toBe(0);
+  });
+
+  it("carries the agent_id submission hint onto the consolidated memory", async () => {
+    store = createLibrarianStore({ dataDir, backend: "markdown" });
+    store.submitToInbox("Elaine lives in Berlin.", {
+      agentId: "agent-a",
+      tags: ["person"],
+    });
+    await store.runIntakeSweep({
+      llmClient: fakeClient(
+        JSON.stringify({
+          action: "create",
+          title: "Elaine",
+          body: "Elaine lives in Berlin.",
+          tags: [],
+          rationale: "novel",
+          confidence: 0.97,
+        }),
+      ),
+    });
+    const elaine = store
+      .listMemories({ status: "active" })
+      .memories.find((m) => m.title === "Elaine");
+    expect(elaine).toMatchObject({ agent_id: "agent-a" });
+  });
+
+  it("records an intake decision-log run + per-item op through the real store (spec 043 C1)", async () => {
+    store = createLibrarianStore({ dataDir, backend: "markdown" });
+    store.submitToInbox("Elaine lives in Berlin.");
+    await store.runIntakeSweep({
+      trigger: "tick",
+      llmClient: fakeClient(
+        JSON.stringify({
+          action: "create",
+          title: "Elaine",
+          body: "Elaine lives in Berlin.",
+          tags: ["person"],
+          rationale: "novel topic",
+          confidence: 0.97,
+        }),
+      ),
+    });
+
+    // The decision log is queryable from the same store — one run, one op, with
+    // the full outcome captured (filing itself is unchanged; this is observational).
+    const runs = store.listIntakeRuns();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ trigger: "tick", status: "completed", consolidated: 1 });
+    const ops = store.getIntakeOperations(runs[0]!.id);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({
+      action: "create",
+      outcome: "applied",
+      confidence: 0.97,
+      rationale: "novel topic",
+    });
+    // And the sidecar landed OUTSIDE the git vault, like curation-runs.json.
+    expect(fs.existsSync(path.join(dataDir, "intake-runs.json"))).toBe(true);
+  });
+});

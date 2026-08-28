@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en" style="max-height: 100vh;">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Google Tag Manager (gated on VITE_GTM_ID at build time so OSS
+         builds don't load third-party tracking) -->
+    <script>(function(){
+      var GTM_ID = "%VITE_GTM_ID%";
+      if (!GTM_ID || GTM_ID === "%" + "VITE_GTM_ID%") return;
+      (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+        new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+        j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+        'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+        })(window,document,'script','dataLayer',GTM_ID);
+    })();
+    </script>
+    <!-- End Google Tag Manager -->
+
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- Favicon -->
+    <link rel="icon" href="/favicon/favicon.ico" />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="16x16"
+      href="/favicon/favicon-16x16.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="/favicon/favicon-32x32.png"
+    />
+    <link
+      rel="apple-touch-icon"
+      sizes="180x180"
+      href="/favicon/apple-touch-icon.png"
+    />
+
+    <!-- Fonts: App uses Inter (system/bundled). Public Sans & Barlow removed — were unused, render-blocking, ~300KB wasted. -->
+
+    <title>Future AGI</title>
+
+    <meta
+      name="description"
+      content="Future AGI helps companies to align their AI to their users automatically"
+    />
+    <meta
+      name="keywords"
+      content="react,material,kit,application,dashboard,admin,template"
+    />
+
+    <link rel="preconnect" href="https://www.google.com" crossorigin />
+    <link rel="dns-prefetch" href="https://www.google.com" />
+    <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
+    <link rel="dns-prefetch" href="https://www.gstatic.com" />
+  </head>
+
+  <body>
+    <!-- Google Tag Manager (noscript) -->
+    <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-PJVV29XF"
+      height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+
+    <!-- Appcues removed — no longer used -->
+    
+    <!-- FOUC prevention: set data-theme before first paint so CSS variables match -->
+    <script>
+      (function() {
+        try {
+          var s = JSON.parse(localStorage.getItem('settings'));
+          var m = s && s.themeMode || 'system';
+          if (m === 'system') {
+            m = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          }
+          document.body.setAttribute('data-theme', m);
+        } catch (e) {}
+      })();
+    </script>
+
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+    <!-- Runtime config — see frontend/docker-entrypoint.sh -->
+    <script src="/config.js"></script>
+    <script>
+      const global = globalThis;
+    </script>
+    <!-- Handle Vite dynamic import errors (e.g. after a new deployment when old chunks are removed) -->
+    <script>
+      window.addEventListener('vite:preloadError', (event) => {
+        event.preventDefault();
+        // Allow reload to proceed without beforeunload confirmation (e.g. from ReplayDrawer)
+        window.__RELOADING_FOR_VITE_PRELOAD_ERROR = true;
+        window.location.reload();
+      });
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

@@ -1,0 +1,73 @@
+eval_id: 11
+name: chunk_attribution
+description: Tracks if the context chunk is used in generating the response.
+criteria: "You are evaluating whether a specific context chunk was actually used in generating the output response.\n\n##\
+  \ Criteria\n\n1. Content traceability: Check if any fact, phrase, or data point in the output can be traced to this specific\
+  \ chunk.\n   - Pass: Output mentions \"Q3 revenue was $5M\" and this chunk contains that figure.\n   - Fail: Output discusses\
+  \ topics not covered by this chunk at all.\n\n2. Meaningful contribution: The chunk must have contributed substantive information,\
+  \ not just common phrasing.\n   - Pass: A unique fact from this chunk appears in the output.\n   - Fail: Only superficial\
+  \ topical overlap without specific information usage.\n\n3. Direct or indirect usage: Paraphrasing or logical extension\
+  \ of chunk content counts as attribution.\n   - Pass: Output paraphrases a key finding from the chunk.\n   - Fail: Output\
+  \ and chunk share the same topic but draw from different information.\n\n## Anti-bias Rules\n\n- Partial use counts: even\
+  \ one fact from the chunk used in the output is sufficient for 'Passed'.\n- Generic boilerplate in a chunk (e.g., \"For\
+  \ more info, visit our website\") is NOT meaningful contribution.\n- A short output that uses chunk information scores higher\
+  \ than a long output that ignores it.\n\n## Scoring\n\nReturn 'Passed' if the chunk meaningfully contributed to the output\
+  \ through direct reference, paraphrasing, or logical extension. Return 'Failed' if the output does not draw on any information\
+  \ unique to this chunk.\n\n## Inputs\n\n<context>{{context}}</context>\n\n<output>{{output}}</output>"
+eval_tags:
+- RAG
+- Retrieval Systems
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - context
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    context: The context provided for the response
+    output: The output to be evaluated
+  param_modalities:
+    context:
+    - TEXT
+    - PDF
+    - KNOWLEDGE_BASE
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output:
+    - TEXT
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating whether a specific context chunk was actually used in generating the output response.\n\
+    \n## Criteria\n\n1. Content traceability: Check if any fact, phrase, or data point in the output can be traced to this\
+    \ specific chunk.\n   - Pass: Output mentions \"Q3 revenue was $5M\" and this chunk contains that figure.\n   - Fail:\
+    \ Output discusses topics not covered by this chunk at all.\n\n2. Meaningful contribution: The chunk must have contributed\
+    \ substantive information, not just common phrasing.\n   - Pass: A unique fact from this chunk appears in the output.\n\
+    \   - Fail: Only superficial topical overlap without specific information usage.\n\n3. Direct or indirect usage: Paraphrasing\
+    \ or logical extension of chunk content counts as attribution.\n   - Pass: Output paraphrases a key finding from the chunk.\n\
+    \   - Fail: Output and chunk share the same topic but draw from different information.\n\n## Anti-bias Rules\n\n- Partial\
+    \ use counts: even one fact from the chunk used in the output is sufficient for 'Passed'.\n- Generic boilerplate in a\
+    \ chunk (e.g., \"For more info, visit our website\") is NOT meaningful contribution.\n- A short output that uses chunk\
+    \ information scores higher than a long output that ignores it.\n\n## Scoring\n\nReturn 'Passed' if the chunk meaningfully\
+    \ contributed to the output through direct reference, paraphrasing, or logical extension. Return 'Failed' if the output\
+    \ does not draw on any information unique to this chunk.\n\n## Inputs\n\n<context>{{context}}</context>\n\n<output>{{output}}</output>"

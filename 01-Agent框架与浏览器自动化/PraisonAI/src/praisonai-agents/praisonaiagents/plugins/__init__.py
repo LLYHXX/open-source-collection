@@ -1,0 +1,523 @@
+"""
+Plugin Module for PraisonAI Agents.
+
+Provides dynamic plugin loading and hook-based extension system.
+
+Features:
+- Dynamic plugin discovery and loading
+- Hook-based extension points
+- Protocol-driven plugin interfaces
+- Built-in plugins (logging, metrics)
+- Plugin SDK for easy plugin development
+
+Folder Structure:
+- plugins/sdk/       - Plugin SDK (base classes, decorators)
+- plugins/builtin/   - Built-in plugins (logging, metrics)
+- plugins/protocols.py - Plugin protocols for type safety
+
+Usage:
+    from praisonaiagents.plugins import PluginManager, Plugin, PluginHook
+    
+    # Create plugin manager
+    manager = PluginManager()
+    
+    # Load plugins from directory
+    manager.load_from_directory("./plugins")
+    
+    # Use built-in plugins
+    from praisonaiagents.plugins.builtin import LoggingPlugin, MetricsPlugin
+    manager.register(LoggingPlugin())
+    
+    # Use plugin SDK
+    from praisonaiagents.plugins.sdk import plugin
+    
+    @plugin(name="my_plugin", hooks=[PluginHook.BEFORE_TOOL])
+    def my_plugin_func(hook_type, *args, **kwargs):
+        return args[0] if args else None
+"""
+
+__all__ = [
+    # Easy enable API
+    "enable",
+    "disable",
+    "maybe_enable_from_config",
+    "list_plugins",
+    "is_enabled",
+    "get_plugin_registry",
+    # Core
+    "PluginManager",
+    "Plugin",
+    "PluginHook",
+    "PluginType",
+    "PluginInfo",
+    "FunctionPlugin",
+    "PluginDecision",
+    "GuardrailBlocked",
+    "get_plugin_manager",
+    # Protocols
+    "PluginProtocol",
+    "ToolPluginProtocol",
+    "HookPluginProtocol",
+    "AgentPluginProtocol",
+    "LLMPluginProtocol",
+    # Single-file plugin support
+    "PluginMetadata",
+    "PluginParseError",
+    "parse_plugin_header",
+    "parse_plugin_header_from_file",
+    "discover_plugins",
+    "load_plugin",
+    "discover_and_load_plugins",
+    "get_default_plugin_dirs",
+    "get_plugin_template",
+    "ensure_plugin_dir",
+]
+
+
+# ============================================================================
+# EASY ENABLE API
+# ============================================================================
+# These functions provide a simple way to enable/disable plugins globally.
+# Zero performance impact when not called - plugins only load on enable().
+# ============================================================================
+
+# Global state for plugin system (lazy initialized)
+import threading
+
+_plugins_lock = threading.Lock()
+_plugins_enabled: bool = False
+_enabled_plugin_names: list = None  # None = all, list = specific
+_auto_enable_attempted: bool = False
+_auto_enable_lock = threading.Lock()
+
+
+def maybe_enable_from_config() -> None:
+    """Enable plugins once per process when config or env requests it."""
+    global _auto_enable_attempted
+
+    # Fast path: avoid taking the lock once initialization has been attempted.
+    if _auto_enable_attempted or _plugins_enabled:
+        return
+
+    # Hold a dedicated lock across the whole init so concurrent callers block
+    # until enable() has finished (rather than returning early on the flag).
+    with _auto_enable_lock:
+        if _auto_enable_attempted or _plugins_enabled:
+            return
+        _auto_enable_attempted = True
+
+        try:
+            from praisonaiagents.config.loader import (
+                get_enabled_plugins,
+                get_plugin_options,
+                is_plugins_enabled,
+            )
+
+            if is_plugins_enabled():
+                enable(get_enabled_plugins(), options_by_name=get_plugin_options())
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).debug("Plugin auto-enable skipped: %s", exc)
+
+
+def enable(plugins: list = None, options_by_name: dict = None) -> None:
+    """Enable the plugin system.
+    
+    Discovers and enables plugins from default directories.
+    This is the main entry point for using plugins.
+    
+    Args:
+        plugins: Optional list of plugin names to enable.
+                 If None, enables all discovered plugins.
+        options_by_name: Optional ``{plugin_name: options_dict}`` mapping of
+                 per-plugin options (e.g. from ``.praisonai/config.yaml``).
+                 Each enabled plugin receives its own options via ``on_config``.
+    
+    Examples:
+        # Enable all discovered plugins
+        from praisonaiagents import plugins
+        plugins.enable()
+        
+        # Enable specific plugins only
+        plugins.enable(["logging", "metrics"])
+
+        # Enable with per-plugin options
+        plugins.enable(["pii_guardrail"], {"pii_guardrail": {"redact": ["email"]}})
+    
+    Note:
+        - Tools and guardrails work WITHOUT calling enable()
+        - Only background plugins (hooks, metrics, logging) need enable()
+        - Can also be enabled via PRAISONAI_PLUGINS env var
+        - Can also be enabled via .praisonai/config.yaml (unified) or config.toml
+    """
+    global _plugins_enabled, _enabled_plugin_names
+    
+    with _plugins_lock:
+        _plugins_enabled = True
+        _enabled_plugin_names = plugins  # None = all, list = specific
+    
+    # Get plugin manager and auto-discover
+    from .manager import get_plugin_manager
+    manager = get_plugin_manager()
+
+    # Register per-plugin options so they can be delivered via on_config.
+    if options_by_name:
+        manager.set_plugin_options(options_by_name)
+    
+    # Auto-discover plugins from default directories and entry points
+    manager.auto_discover_plugins()
+    manager.discover_entry_points()
+    
+    # Snapshot the names under lock to avoid TOCTOU
+    with _plugins_lock:
+        target_plugins = list(_enabled_plugin_names) if _enabled_plugin_names is not None else None
+    
+    # Enable specific plugins or all
+    if target_plugins is not None:
+        # Enable only specified plugins
+        for name in target_plugins:
+            manager.enable(name)
+    else:
+        # Enable all discovered plugins
+        for plugin_info in manager.list_plugins():
+            manager.enable(plugin_info.get("name", ""))
+    
+    import logging
+    # Bridge enabled plugins into the runtime hook engine so their lifecycle
+    # methods actually fire during Agent/bot execution.
+    try:
+        wired = manager.wire_into_hook_registry()
+        logging.debug(f"Wired {wired} plugin hook(s) into the default registry")
+    except Exception as e:
+        logging.warning(f"Failed to wire plugins into hook registry: {e}")
+
+    # Deliver per-plugin options to each enabled plugin via its on_config hook.
+    try:
+        delivered = manager.apply_plugin_options()
+        if delivered:
+            logging.debug(f"Delivered options to {delivered} plugin(s) via on_config")
+    except Exception as e:
+        logging.warning(f"Failed to deliver plugin options: {e}")
+
+    logging.debug(f"Plugins enabled: {plugins if plugins else 'all'}")
+
+
+def disable(plugins: list = None) -> None:
+    """Disable plugins.
+    
+    Args:
+        plugins: Optional list of plugin names to disable.
+                 If None, disables all plugins.
+    
+    Examples:
+        # Disable all plugins
+        plugins.disable()
+        
+        # Disable specific plugins
+        plugins.disable(["logging"])
+    """
+    global _plugins_enabled, _enabled_plugin_names
+    
+    from .manager import get_plugin_manager
+    manager = get_plugin_manager()
+    
+    if plugins is not None:
+        # Disable specific plugins
+        for name in plugins:
+            manager.disable(name)
+    else:
+        # Disable all plugins
+        with _plugins_lock:
+            _plugins_enabled = False
+            _enabled_plugin_names = None
+        for plugin_info in manager.list_plugins():
+            manager.disable(plugin_info.get("name", ""))
+
+
+def list_plugins() -> list:
+    """List all discovered plugins.
+    
+    Returns:
+        List of plugin info dicts with name, version, enabled status.
+    
+    Example:
+        from praisonaiagents import plugins
+        all_plugins = plugins.list_plugins()
+        for p in all_plugins:
+            print(f"{p['name']} v{p['version']} - {'enabled' if p['enabled'] else 'disabled'}")
+    """
+    from .manager import get_plugin_manager
+    manager = get_plugin_manager()
+    
+    # Auto-discover if not already done
+    if not manager._plugins and not manager._single_file_plugins:
+        manager.auto_discover_plugins()
+    
+    # Combine registered plugins and single-file plugins
+    result = []
+    
+    # Add registered plugins (Plugin class instances)
+    for info in manager.list_plugins():
+        if hasattr(info, 'name'):
+            # PluginInfo object
+            result.append({
+                "name": info.name,
+                "version": getattr(info, 'version', '1.0.0'),
+                "description": getattr(info, 'description', ''),
+                "enabled": manager.is_enabled(info.name),
+                "type": "registered",
+            })
+        elif isinstance(info, dict):
+            # Already a dict
+            info["enabled"] = manager.is_enabled(info.get("name", ""))
+            info["type"] = "registered"
+            result.append(info)
+    
+    # Add single-file plugins
+    for name, meta in manager._single_file_plugins.items():
+        result.append({
+            "name": name,
+            "version": meta.get("version", "1.0.0"),
+            "description": meta.get("description", ""),
+            "enabled": manager.is_enabled(name),
+            "type": "single_file",
+        })
+    
+    return result
+
+
+def is_enabled(name: str = None) -> bool:
+    """Check if plugins are enabled.
+    
+    Args:
+        name: Optional plugin name to check. If None, checks if system is enabled.
+    
+    Returns:
+        True if enabled, False otherwise.
+    """
+    with _plugins_lock:
+        if name is None:
+            return _plugins_enabled
+    
+    from .manager import get_plugin_manager
+    manager = get_plugin_manager()
+    return manager.is_enabled(name)
+
+
+def get_plugin_registry() -> list:
+    """Return a truthful, unified view of all discoverable plugins.
+
+    Combines three real sources — no hardcoded/fake entries:
+
+    - Entry-point plugins (installed pip packages registering in the
+      ``praisonai.plugins`` group), reported with their ``source`` as their
+      distribution/entry-point provenance.
+    - Registered ``Plugin`` instances held by the :class:`PluginManager`.
+    - Project/user single-file plugins discovered on disk (``.praisonai/plugins``
+      and ``~/.praisonai/plugins``), reported without executing them.
+
+    Each entry is a dict with ``name``, ``version``, ``source``
+    (``entry_point`` | ``registered`` | ``single_file``), ``enabled`` state,
+    ``hooks`` and ``description``. Enabled state reflects both the live manager
+    and the persisted config allow-list, so a truthful CLI can render it
+    without a running agent.
+
+    Returns:
+        List of plugin entry dicts.
+    """
+    from .manager import get_plugin_manager
+
+    manager = get_plugin_manager()
+
+    # Config-driven enabled allow-list (None => all enabled when plugins on).
+    config_enabled = None
+    try:
+        from ..config.loader import get_enabled_plugins
+
+        config_enabled = get_enabled_plugins()
+    except Exception:
+        config_enabled = None
+
+    def _config_says_enabled(name: str) -> bool:
+        if config_enabled is None:
+            return manager.is_enabled(name)
+        return name in config_enabled
+
+    entries: list = []
+    seen: set = set()
+
+    # 1. Registered Plugin instances (includes entry-point plugins already
+    #    loaded via discover_entry_points()).
+    for info in manager.list_plugins():
+        name = getattr(info, "name", None)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        hooks = [
+            h.value if hasattr(h, "value") else str(h)
+            for h in (getattr(info, "hooks", None) or [])
+        ]
+        entries.append({
+            "name": name,
+            "version": getattr(info, "version", "1.0.0"),
+            "description": getattr(info, "description", ""),
+            "source": "registered",
+            "enabled": manager.is_enabled(name) or _config_says_enabled(name),
+            "hooks": hooks,
+        })
+
+    # 2. Entry-point plugins present on the system but not yet loaded, so
+    #    `list` shows provenance even before enable().
+    try:
+        import importlib.metadata as _md
+
+        try:
+            eps = _md.entry_points(group="praisonai.plugins")
+        except TypeError:
+            eps = _md.entry_points().get("praisonai.plugins", [])
+        for ep in eps:
+            if ep.name in seen:
+                continue
+            seen.add(ep.name)
+            dist = getattr(getattr(ep, "dist", None), "name", None)
+            entries.append({
+                "name": ep.name,
+                "version": "-",
+                "description": "",
+                "source": f"entry_point:{dist}" if dist else "entry_point",
+                "enabled": _config_says_enabled(ep.name),
+                "hooks": [],
+            })
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug(f"Entry-point plugin scan failed: {e}")
+
+    # 3. Single-file plugins discovered on disk (metadata only, no exec).
+    try:
+        from .discovery import discover_plugins
+
+        for meta in discover_plugins():
+            name = meta.get("name")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            entries.append({
+                "name": name,
+                "version": meta.get("version", "1.0.0"),
+                "description": meta.get("description", ""),
+                "source": "single_file",
+                "enabled": manager.is_enabled(name) or _config_says_enabled(name),
+                "hooks": list(meta.get("hooks", []) or []),
+                "path": meta.get("path"),
+            })
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug(f"Single-file plugin discovery failed: {e}")
+
+    return entries
+
+
+def __getattr__(name: str):
+    """Lazy load module components."""
+    # Core classes
+    if name == "PluginManager":
+        from .manager import PluginManager
+        return PluginManager
+    
+    if name == "get_plugin_manager":
+        from .manager import get_plugin_manager
+        return get_plugin_manager
+    
+    if name == "Plugin":
+        from .plugin import Plugin
+        return Plugin
+    
+    if name == "PluginHook":
+        from .plugin import PluginHook
+        return PluginHook
+    
+    if name == "PluginInfo":
+        from .plugin import PluginInfo
+        return PluginInfo
+    
+    if name == "FunctionPlugin":
+        from .plugin import FunctionPlugin
+        return FunctionPlugin
+    
+    if name == "PluginType":
+        from .plugin import PluginType
+        return PluginType
+
+    if name == "PluginDecision":
+        from .plugin import PluginDecision
+        return PluginDecision
+
+    if name == "GuardrailBlocked":
+        from .plugin import GuardrailBlocked
+        return GuardrailBlocked
+    
+    # Protocols
+    if name == "PluginProtocol":
+        from .protocols import PluginProtocol
+        return PluginProtocol
+    
+    if name == "ToolPluginProtocol":
+        from .protocols import ToolPluginProtocol
+        return ToolPluginProtocol
+    
+    if name == "HookPluginProtocol":
+        from .protocols import HookPluginProtocol
+        return HookPluginProtocol
+    
+    if name == "AgentPluginProtocol":
+        from .protocols import AgentPluginProtocol
+        return AgentPluginProtocol
+    
+    if name == "LLMPluginProtocol":
+        from .protocols import LLMPluginProtocol
+        return LLMPluginProtocol
+    
+    # Single-file plugin support - parser
+    if name == "PluginMetadata":
+        from .parser import PluginMetadata
+        return PluginMetadata
+    
+    if name == "PluginParseError":
+        from .parser import PluginParseError
+        return PluginParseError
+    
+    if name == "parse_plugin_header":
+        from .parser import parse_plugin_header
+        return parse_plugin_header
+    
+    if name == "parse_plugin_header_from_file":
+        from .parser import parse_plugin_header_from_file
+        return parse_plugin_header_from_file
+    
+    # Single-file plugin support - discovery
+    if name == "discover_plugins":
+        from .discovery import discover_plugins
+        return discover_plugins
+    
+    if name == "load_plugin":
+        from .discovery import load_plugin
+        return load_plugin
+    
+    if name == "discover_and_load_plugins":
+        from .discovery import discover_and_load_plugins
+        return discover_and_load_plugins
+    
+    if name == "get_default_plugin_dirs":
+        from .discovery import get_default_plugin_dirs
+        return get_default_plugin_dirs
+    
+    if name == "get_plugin_template":
+        from .discovery import get_plugin_template
+        return get_plugin_template
+    
+    if name == "ensure_plugin_dir":
+        from .discovery import ensure_plugin_dir
+        return ensure_plugin_dir
+    
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

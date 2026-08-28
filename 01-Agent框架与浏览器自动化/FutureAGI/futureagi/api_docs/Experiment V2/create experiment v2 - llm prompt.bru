@@ -1,0 +1,64 @@
+meta {
+  name: create experiment v2 - llm prompt
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/model-hub/experiments/v2/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+body:json {
+  {
+    "name": "LLM Prompt Experiment - V2.10",
+    "dataset_id": "aa1abcc5-fef9-44ee-96c6-2f499296c8f3",
+    "column_id": "a7a16fa9-5ffb-466b-9079-5582570a54bd",
+    "experiment_type": "llm",
+    "prompt_config": [
+      {
+        "name": "prompt-1",
+        "prompt_id": "67a0d6a7-ec16-4e84-837a-c60abbc2d8ff",
+        "prompt_version": "11e41c80-8538-42d4-b4f0-a51665de28b0",
+        "model": "gpt-4o-mini",
+        "model_params": {
+          "temperature": 0.5,
+          "maxTokens": 4085,
+          "topP": 1,
+          "presencePenalty": 1,
+          "frequencyPenalty": 1,
+          "responseFormat": "text",
+          "providers": "openai",
+          "logoUrl": "https://fi-image-assets.s3.ap-south-1.amazonaws.com/provider-logos/openai-icon.png"
+        },
+        "configuration": {
+          "tool_choice": null,
+          "tools": null
+        },
+        "output_format": "string"
+      }
+    ],
+    "user_eval_metrics": [
+      {
+        "template_id": "8fb9c73b-ff61-432a-9e7d-8741fa8317bf",
+        "name": "Context relevance",
+        "config": {
+          "mapping": {
+            "output": "output",
+            "input": "a7a16fa9-5ffb-466b-9079-5582570a54bd"
+          },
+          "config": {},
+          "reasonColumn": false
+        },
+        "model": "turing_flash",
+        "error_localizer": false,
+        "kb_id": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Delete a row
+  type: http
+  seq: 11
+}
+
+delete {
+  url: {{host}}/model-hub/develops/d4996d4f-d78a-47d6-8b44-760ed6cd8f43/delete_row/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "row_ids" : ["e8199a52-16be-47ad-8b29-0c4486098b79"]
+  }
+}

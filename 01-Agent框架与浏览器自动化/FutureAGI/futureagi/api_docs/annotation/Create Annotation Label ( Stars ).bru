@@ -1,0 +1,28 @@
+meta {
+  name: Create Annotation Label ( Stars )
+  type: http
+  seq: 14
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations-labels/
+  body: json
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  {
+    "name": "stars -1",
+    "type": "star",
+    "settings": {
+      "no_of_stars": 4
+    },
+      "project": "3274f1e5-803c-4dae-b26f-a37d36f6a068"
+  }
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Get Evaluation Config
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{host}}/model-hub/prompt-templates/:id/get_evaluation_configs
+  body: json
+  auth: bearer
+}
+
+params:path {
+  id:
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+tests {
+  /*
+  Test cases;
+
+  1. Fetch created evaluations for the prompt template
+  */
+}

@@ -1,0 +1,31 @@
+meta {
+  name: Create Knowledge Base
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/model-hub/kb/
+  body: json
+  auth: bearer
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "My New Knowledge Base",
+    "embedding_model": "BAAI/bge-small-en-v1.5",
+    "chunk_size": 512
+  }
+}
+
+docs {
+  This request creates a new knowledge base.
+}

@@ -1,0 +1,41 @@
+eval_id: 147
+name: fuzzy_match
+description: Computes fuzzy string matching score using SequenceMatcher (difflib). Returns a similarity ratio between 0 and 1
+  based on the longest contiguous matching subsequences. Good for approximate string comparison.
+criteria: Measures approximate string similarity using longest common subsequence ratio.
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config:
+    case_insensitive:
+      type: boolean
+      default: true
+  config_params_desc:
+    output: The generated/output text
+    expected: The expected/reference text
+    case_insensitive: Whether to lowercase before comparing (default true)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        from difflib import SequenceMatcher
+        s1 = str(kwargs.get("output", output or "")).strip()
+        s2 = str(kwargs.get("expected", expected or "")).strip()
+        case_insensitive = kwargs.get("case_insensitive", True)
+        if case_insensitive:
+            s1 = s1.lower()
+            s2 = s2.lower()
+        if not s1 and not s2:
+            return {"score": 1.0, "reason": "Fuzzy Match: 1.0 (both empty)"}
+        ratio = SequenceMatcher(None, s1, s2).ratio()
+        return {"score": float(ratio), "reason": f"Fuzzy Match: {ratio:.4f}"}

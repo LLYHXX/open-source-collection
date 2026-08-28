@@ -1,0 +1,44 @@
+meta {
+  name: 11 - Missing Label IDs (Error)
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{version_v1_id}}"
+  }
+}
+
+docs {
+  # Missing Label IDs - Error Case
+
+  ## Test Scenario
+  Send request without label_ids field to test validation.
+
+  ## Expected Behavior
+  - Status: 400 Bad Request
+  - Error message about required labels
+
+  ## Expected Response
+  ```json
+  {
+    "status": false,
+    "result": "Error assigning multiple labels: Label ids are required"
+  }
+  ```
+
+  ## Test Coverage
+  - Required field validation
+  - Missing array parameter
+}

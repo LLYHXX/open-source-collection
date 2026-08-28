@@ -1,0 +1,90 @@
+meta {
+  name: List Graph Executions
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/agent-playground/graphs/:graph_id/executions/?page_number=1&page_size=10
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page_number: 1
+  page_size: 10
+}
+
+params:path {
+  graph_id: {{graph_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  graph_id: 2c6046fb-df73-47b1-8372-436a0636a8e5
+}
+
+docs {
+  # List Graph Executions
+
+  Returns a paginated list of all executions for a graph. Supports optional status filtering.
+
+  ## Path Parameters
+  - `graph_id`: Graph UUID
+
+  ## Query Parameters
+  - `page_number` (optional, default: 1): Page number
+  - `page_size` (optional, default: 10): Items per page
+
+  ## Response (Success)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "executions": [
+        {
+          "id": "execution-uuid",
+          "status": "SUCCESS",
+          "started_at": "2024-01-15T10:30:00Z",
+          "completed_at": "2024-01-15T10:30:05Z",
+          "error_message": null,
+          "created_at": "2024-01-15T10:30:00Z"
+        }
+      ],
+      "metadata": {
+        "total_count": 25,
+        "page_number": 1,
+        "page_size": 10,
+        "total_pages": 3,
+        "next_page": 2,
+        "previous_page": null
+      }
+    }
+  }
+  ```
+
+  ## Response (Empty)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "executions": [],
+      "metadata": {
+        "total_count": 0,
+        "page_number": 1,
+        "page_size": 10,
+        "total_pages": 0,
+        "next_page": null,
+        "previous_page": null
+      }
+    }
+  }
+  ```
+
+  ## Notes
+  - Results are ordered by `created_at` descending (newest first)
+  - Does not include `input_payload` or `output_payload` for performance; use Get Execution Detail for full data
+}

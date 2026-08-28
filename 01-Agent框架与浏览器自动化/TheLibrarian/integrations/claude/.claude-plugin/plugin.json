@@ -1,0 +1,12 @@
+{
+  "name": "the-librarian",
+  "description": "Durable memory for Claude Code, backed by your Librarian MCP server: automatic transcript capture + recall-awareness hooks, a native-memory write-block, and four slash commands. No version field — Claude versions this plugin by git commit, so every merge auto-updates.",
+  "author": {
+    "name": "Jim Sangwine",
+    "email": "jim@sangwine.net"
+  },
+  "homepage": "https://github.com/code-ministry-ltd/the-librarian/tree/main/integrations/claude",
+  "repository": "https://github.com/code-ministry-ltd/the-librarian",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "handoff", "mcp", "librarian", "recall", "cross-harness"]
+}

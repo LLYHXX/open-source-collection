@@ -1,0 +1,881 @@
+"""
+Unit tests for AutoGenerator and WorkflowAutoGenerator classes.
+
+Tests cover:
+- Default model value (gpt-4o-mini)
+- Tools preservation (not replaced with [''])
+- LiteLLM fallback to OpenAI
+- Lazy loading of client
+- Timeout and max_retries configuration
+"""
+
+import pytest
+import os
+import sys
+from unittest.mock import Mock, patch, MagicMock
+import json
+import tempfile
+
+# Add the source path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
+try:
+    from praisonai.auto import AutoGenerator, WorkflowAutoGenerator
+except ImportError as e:
+    pytest.skip(f"Could not import required modules: {e}", allow_module_level=True)
+
+from pydantic import BaseModel
+
+class DummyModel(BaseModel):
+    pass
+
+class TestAutoGeneratorDefaultModel:
+    """Test suite for default model configuration."""
+    
+    def test_default_model_is_gpt4o_mini(self):
+        """Test that default model is gpt-4o-mini, not gpt-5-nano."""
+        # Clear environment variables to test defaults
+        with patch.dict(os.environ, {}, clear=True):
+            # Set required API key
+            os.environ['OPENAI_API_KEY'] = 'test-key'
+            
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+            
+            # Check that default model is gpt-4o-mini
+            assert generator.config_list[0]['model'] == 'gpt-4o-mini'
+    
+    def test_model_from_environment_variable(self):
+        """Test that MODEL_NAME environment variable is respected."""
+        with patch.dict(os.environ, {'MODEL_NAME': 'custom-model', 'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+            
+            assert generator.config_list[0]['model'] == 'custom-model'
+    
+    def test_openai_model_name_fallback(self):
+        """Test that OPENAI_MODEL_NAME is used as fallback."""
+        with patch.dict(os.environ, {'OPENAI_MODEL_NAME': 'gpt-4', 'OPENAI_API_KEY': 'test-key'}, clear=True):
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+            
+            assert generator.config_list[0]['model'] == 'gpt-4'
+
+
+class TestAutoGeneratorToolsPreservation:
+    """Test suite for tools preservation in generated YAML."""
+    
+    def test_tools_are_preserved_in_convert_and_save(self):
+        """Test that generated tools are preserved, not replaced with ['']."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+            
+            # Mock JSON data with tools
+            json_data = {
+                'roles': {
+                    'researcher': {
+                        'role': 'Researcher',
+                        'goal': 'Research topics',
+                        'backstory': 'Expert researcher',
+                        'tools': ['ScrapeWebsiteTool', 'WebsiteSearchTool'],
+                        'tasks': {
+                            'research_task': {
+                                'description': 'Research the topic',
+                                'expected_output': 'Research report'
+                            }
+                        }
+                    }
+                }
+            }
+            
+            # Use a temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                generator.agent_file = f.name
+            
+            try:
+                generator.convert_and_save(json_data, merge=False)
+                
+                # Read the saved file
+                import yaml
+                with open(generator.agent_file, 'r') as f:
+                    saved_data = yaml.safe_load(f)
+                
+                # Check that tools are preserved
+                assert saved_data['roles']['researcher']['tools'] == ['ScrapeWebsiteTool', 'WebsiteSearchTool']
+            finally:
+                os.unlink(generator.agent_file)
+    
+    def test_tools_preserved_in_merge(self):
+        """Test that tools are preserved when merging with existing file."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+            
+            # Create existing file
+            existing_data = {
+                'framework': 'praisonai',
+                'topic': 'Existing topic',
+                'roles': {},
+                'dependencies': []
+            }
+            
+            # New JSON data with tools
+            new_json_data = {
+                'roles': {
+                    'writer': {
+                        'role': 'Writer',
+                        'goal': 'Write content',
+                        'backstory': 'Expert writer',
+                        'tools': ['FileReadTool', 'TXTSearchTool'],
+                        'tasks': {
+                            'write_task': {
+                                'description': 'Write the content',
+                                'expected_output': 'Written content'
+                            }
+                        }
+                    }
+                }
+            }
+            
+            # Use a temporary file
+            import yaml
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                yaml.dump(existing_data, f)
+                generator.agent_file = f.name
+            
+            try:
+                generator.convert_and_save(new_json_data, merge=True)
+                
+                # Read the saved file
+                with open(generator.agent_file, 'r') as f:
+                    saved_data = yaml.safe_load(f)
+                
+                # Check that tools are preserved
+                assert saved_data['roles']['writer']['tools'] == ['FileReadTool', 'TXTSearchTool']
+            finally:
+                os.unlink(generator.agent_file)
+
+
+class TestAutoGeneratorLazyLoading:
+    """Test suite for lazy loading of client."""
+
+    def test_client_is_not_created_on_init(self):
+        """Test that client is not created during __init__."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+
+            # Check that the core client is not created yet
+            assert generator._core_client is None
+
+    def test_client_is_created_on_first_access(self):
+        """Test that the core OpenAI client is created on first access."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+
+            # Before access
+            assert generator._core_client is None
+
+            # Trigger lazy loading
+            client = generator._get_core_client()
+
+            # After access
+            assert client is not None
+            assert generator._core_client is not None
+            
+class TestAutoGeneratorLiteLLMFallback:
+    """Test suite for LiteLLM fallback to OpenAI."""
+
+    def test_uses_litellm_when_available(self):
+        with patch('praisonai.auto.is_available', side_effect=lambda x: x == "litellm"):
+            with patch('praisonai.auto._get_litellm') as mock_litellm:
+
+                mock_response = Mock()
+                mock_response.choices = [
+                    Mock(message=Mock(content="{}"))
+                ]
+
+                mock_litellm.return_value.completion.return_value = mock_response
+
+                generator = AutoGenerator(
+                    topic="Test topic",
+                    framework="praisonai"
+                )
+
+                generator._structured_completion(
+                    response_model=DummyModel,
+                    messages=[]
+                )
+
+                mock_litellm.return_value.completion.assert_called_once()
+
+
+    def test_falls_back_to_openai_when_litellm_unavailable(self):
+
+        with patch('praisonai.auto.is_available') as mock_available:
+            mock_available.side_effect = lambda x: x == "openai"
+
+            with patch.object(
+                AutoGenerator,
+                "_get_core_client"
+            ) as mock_client:
+
+                mock_client.return_value \
+                    .parse_structured_output \
+                    .return_value = DummyModel()
+
+                generator = AutoGenerator(
+                    topic="Test topic",
+                    framework="praisonai"
+                )
+
+                generator._structured_completion(
+                    response_model=DummyModel,
+                    messages=[]
+                )
+
+                mock_client.assert_called_once()
+
+class TestWorkflowAutoGenerator:
+    """Test suite for WorkflowAutoGenerator."""
+    
+    def test_default_model_is_gpt4o_mini(self):
+        """Test that default model is gpt-4o-mini."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ['OPENAI_API_KEY'] = 'test-key'
+            
+            generator = WorkflowAutoGenerator(
+                topic="Test workflow"
+            )
+            
+            assert generator.config_list[0]['model'] == 'gpt-4o-mini'
+    
+    def test_lazy_loading(self):
+        """Test that OpenAI client uses lazy loading."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(
+                topic="Test workflow"
+            )
+
+            assert generator._core_client is None
+
+
+
+    def test_litellm_fallback(self):
+        with patch('praisonai.auto.is_available') as mock_available:
+
+            mock_available.side_effect = (
+                lambda provider: provider == "openai"
+            )
+
+            with patch.object(
+                WorkflowAutoGenerator,
+                "_get_core_client"
+            ) as mock_client:
+
+                mock_client.return_value \
+                    .parse_structured_output \
+                    .return_value = DummyModel()
+
+                generator = WorkflowAutoGenerator(
+                    topic="Test workflow"
+                )
+
+                generator._structured_completion(
+                    response_model=DummyModel,
+                    messages=[]
+                )
+
+                mock_client.assert_called_once()
+
+class TestAutoGeneratorJSONMode:
+    """Test suite for JSON mode structured output."""
+
+    def test_uses_json_mode_not_tools_mode(self):
+        """
+        Test that OpenAI fallback uses response_format
+        instead of tools mode.
+        """
+
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+
+            with patch(
+                'praisonai.auto.is_available'
+            ) as mock_available:
+
+                mock_available.side_effect = (
+                    lambda provider: provider == "openai"
+                )
+
+                with patch.object(
+                    AutoGenerator,
+                    "_get_core_client"
+                ) as mock_client:
+
+                    mock_client.return_value \
+                        .parse_structured_output \
+                        .return_value = DummyModel()
+
+
+                    generator = AutoGenerator(
+                        topic="Test topic",
+                        framework="praisonai"
+                    )
+
+
+                    generator._structured_completion(
+                        response_model=DummyModel,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": "test"
+                            }
+                        ]
+                    )
+
+
+                    call_kwargs = (
+                        mock_client
+                        .return_value
+                        .parse_structured_output
+                        .call_args
+                        .kwargs
+                    )
+
+
+                    assert "response_format" in call_kwargs
+                    assert "tools" not in call_kwargs
+
+
+
+    def test_workflow_generator_uses_json_mode(self):
+        """
+        Test that WorkflowAutoGenerator also uses
+        OpenAI structured JSON response format.
+        """
+
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+
+            with patch(
+                'praisonai.auto.is_available'
+            ) as mock_available:
+
+                mock_available.side_effect = (
+                    lambda provider: provider == "openai"
+                )
+
+
+                with patch.object(
+                    WorkflowAutoGenerator,
+                    "_get_core_client"
+                ) as mock_client:
+
+
+                    mock_client.return_value \
+                        .parse_structured_output \
+                        .return_value = DummyModel()
+
+
+                    generator = WorkflowAutoGenerator(
+                        topic="Test workflow"
+                    )
+
+
+                    generator._structured_completion(
+                        response_model=DummyModel,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": "test"
+                            }
+                        ]
+                    )
+
+
+                    call_kwargs = (
+                        mock_client
+                        .return_value
+                        .parse_structured_output
+                        .call_args
+                        .kwargs
+                    )
+
+
+                    assert "response_format" in call_kwargs
+                    assert "tools" not in call_kwargs
+class TestAutoGeneratorImprovedPrompt:
+    """Test suite for improved task analysis prompt."""
+    
+    def test_prompt_includes_complexity_analysis(self):
+        """Test that the prompt includes task complexity analysis."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+            prompt = generator.get_user_content()
+            
+            # Check for complexity analysis steps
+            assert "TASK COMPLEXITY ANALYSIS" in prompt
+            assert "DETERMINE OPTIMAL TEAM SIZE" in prompt
+            assert "Simple tasks: 1-2 agents" in prompt
+            assert "Complex tasks: 3-4 agents" in prompt
+    
+    def test_prompt_discourages_unnecessary_complexity(self):
+        """Test that the prompt discourages unnecessary complexity."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+            prompt = generator.get_user_content()
+            
+            assert "meaningful specialization" in prompt
+            assert "Avoid unnecessary complexity" in prompt
+
+
+class TestWorkflowPatterns:
+    """Test suite for workflow patterns including new orchestrator-workers and evaluator-optimizer."""
+    
+    def test_get_prompt_sequential(self):
+        """Test that sequential pattern generates correct prompt."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Test topic")
+            prompt = generator._get_prompt("sequential")
+            assert "sequential" in prompt.lower()
+            assert "Sequential Workflow" in prompt
+    
+    def test_get_prompt_orchestrator_workers(self):
+        """Test that orchestrator-workers pattern generates correct prompt."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Test topic")
+            prompt = generator._get_prompt("orchestrator-workers")
+            assert "orchestrator" in prompt.lower()
+            assert "workers" in prompt.lower()
+            assert "synthesizer" in prompt.lower()
+    
+    def test_get_prompt_evaluator_optimizer(self):
+        """Test that evaluator-optimizer pattern generates correct prompt."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Test topic")
+            prompt = generator._get_prompt("evaluator-optimizer")
+            assert "evaluator" in prompt.lower()
+            assert "generator" in prompt.lower()
+            assert "loop" in prompt.lower()
+            assert "APPROVED" in prompt
+
+
+class TestPatternRecommendation:
+    """Test suite for pattern recommendation based on task type."""
+    
+    def test_recommend_sequential_for_simple_task(self):
+        """Test that sequential is recommended for simple tasks."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Write a blog post")
+            assert generator.recommend_pattern() == "sequential"
+    
+    def test_recommend_parallel_for_concurrent_tasks(self):
+        """Test that parallel is recommended for concurrent tasks."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Research from multiple sources simultaneously")
+            assert generator.recommend_pattern() == "parallel"
+    
+    def test_recommend_orchestrator_for_complex_tasks(self):
+        """Test that orchestrator-workers is recommended for complex tasks."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Comprehensive analysis and break down the problem")
+            assert generator.recommend_pattern() == "orchestrator-workers"
+    
+    def test_recommend_evaluator_for_quality_tasks(self):
+        """Test that evaluator-optimizer is recommended for quality-focused tasks."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Refine and improve the content quality")
+            assert generator.recommend_pattern() == "evaluator-optimizer"
+    
+    def test_recommend_routing_for_classification_tasks(self):
+        """Test that routing is recommended for classification tasks."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Classify and route different types of requests")
+            assert generator.recommend_pattern() == "routing"
+
+
+class TestAutoGeneratorConfiguration:
+    """Test suite for configuration options."""
+    
+    def test_custom_config_list(self):
+        """Test that custom config_list is respected."""
+        custom_config = [
+            {
+                'model': 'custom-model',
+                'base_url': 'https://custom.api.com',
+                'api_key': 'custom-key'
+            }
+        ]
+        
+        generator = AutoGenerator(
+            topic="Test topic",
+            framework="praisonai",
+            config_list=custom_config
+        )
+        
+        assert generator.config_list == custom_config
+    
+    def test_base_url_priority(self):
+        """Test base_url environment variable priority."""
+        with patch.dict(os.environ, {
+            'OPENAI_BASE_URL': 'https://priority.api.com',
+            'OPENAI_API_BASE': 'https://fallback.api.com',
+            'OPENAI_API_KEY': 'test-key'
+        }):
+            generator = AutoGenerator(
+                topic="Test topic",
+                framework="praisonai"
+            )
+            
+            assert generator.config_list[0]['base_url'] == 'https://priority.api.com'
+
+
+class TestBaseAutoGenerator:
+    """Test suite for BaseAutoGenerator shared functionality."""
+    
+    def test_analyze_complexity_simple(self):
+        """Test that simple tasks are detected correctly."""
+        from praisonai.auto import BaseAutoGenerator
+        
+        simple_tasks = [
+            "Write a haiku about spring",
+            "Create a simple summary",
+            "Write a brief poem",
+            "Make a quick list"
+        ]
+        
+        for task in simple_tasks:
+            assert BaseAutoGenerator.analyze_complexity(task) == 'simple', f"Failed for: {task}"
+    
+    def test_analyze_complexity_complex(self):
+        """Test that complex tasks are detected correctly."""
+        from praisonai.auto import BaseAutoGenerator
+        
+        complex_tasks = [
+            "Comprehensive market analysis and report",
+            "Research and write a detailed analysis",
+            "Multi-step process to coordinate teams",
+            "In-depth investigation of multiple sources"
+        ]
+        
+        for task in complex_tasks:
+            assert BaseAutoGenerator.analyze_complexity(task) == 'complex', f"Failed for: {task}"
+    
+    def test_analyze_complexity_moderate(self):
+        """Test that moderate tasks are detected correctly."""
+        from praisonai.auto import BaseAutoGenerator
+        
+        moderate_tasks = [
+            "Research AI trends",
+            "Analyze customer feedback",
+            "Design a workflow"
+        ]
+        
+        for task in moderate_tasks:
+            assert BaseAutoGenerator.analyze_complexity(task) == 'moderate', f"Failed for: {task}"
+    
+    def test_get_available_tools_falls_back_to_static_list(self):
+        """When the resolver is unavailable, the frozen legacy list is returned."""
+        from praisonai.auto import BaseAutoGenerator, AVAILABLE_TOOLS
+
+        gen = BaseAutoGenerator.__new__(BaseAutoGenerator)
+        with patch.object(gen, "_available_tools", return_value=[]):
+            tools = gen.get_available_tools()
+
+        # Should return a copy of the frozen list, not the original
+        assert tools == AVAILABLE_TOOLS
+        assert tools is not AVAILABLE_TOOLS
+        assert "WebsiteSearchTool" in tools
+        assert "PDFSearchTool" in tools
+        assert "ScrapeWebsiteTool" in tools
+
+    def test_get_available_tools_prefers_resolver(self):
+        """When the resolver reports tools, they take precedence over the static list."""
+        from praisonai.auto import BaseAutoGenerator
+
+        gen = BaseAutoGenerator.__new__(BaseAutoGenerator)
+        resolved = ["read_file", "write_file", "internet_search"]
+        with patch.object(gen, "_available_tools", return_value=resolved):
+            tools = gen.get_available_tools()
+
+        assert tools == resolved
+
+
+class TestWorkflowDynamicAgentCount:
+    """Test suite for dynamic agent count in WorkflowAutoGenerator."""
+    
+    def test_prompt_includes_complexity_analysis(self):
+        """Test that workflow prompt includes complexity analysis."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Research AI trends")
+            prompt = generator._get_prompt("sequential")
+            
+            assert "STEP 1: ANALYZE TASK COMPLEXITY" in prompt
+            assert "STEP 2: DESIGN WORKFLOW" in prompt
+            assert "STEP 3: ASSIGN TOOLS" in prompt
+    
+    def test_prompt_includes_tools_list(self):
+        """Test that workflow prompt lists the resolver-provided tools."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Research AI trends")
+            resolved = ["internet_search", "read_file", "write_file"]
+            with patch.object(generator, "_available_tools", return_value=resolved):
+                prompt = generator._get_prompt("sequential")
+
+            assert "Available Tools:" in prompt
+            for tool in resolved:
+                assert tool in prompt
+
+    def test_prompt_falls_back_to_static_tools_when_resolver_empty(self):
+        """When the resolver returns nothing, the frozen legacy list is used."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Research AI trends")
+            with patch.object(generator, "_available_tools", return_value=[]):
+                prompt = generator._get_prompt("sequential")
+
+            assert "Available Tools:" in prompt
+            assert "WebsiteSearchTool" in prompt
+            assert "PDFSearchTool" in prompt
+    
+    def test_simple_task_gets_fewer_agents_guidance(self):
+        """Test that simple tasks get 1-2 agents guidance."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Write a simple haiku")
+            prompt = generator._get_prompt("sequential")
+            
+            assert "1-2 agents" in prompt
+            assert "simple task detected" in prompt
+    
+    def test_complex_task_gets_more_agents_guidance(self):
+        """Test that complex tasks get 3-4 agents guidance."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Comprehensive market analysis and detailed report")
+            prompt = generator._get_prompt("sequential")
+            
+            assert "3-4 agents" in prompt
+            assert "complex task detected" in prompt
+
+
+# =============================================================================
+# TODO 2: Single-Agent Option Tests
+# =============================================================================
+class TestSingleAgentOption:
+    """Test suite for single-agent generation option."""
+    
+    def test_single_agent_structure_exists(self):
+        """Test that SingleAgentStructure Pydantic model exists."""
+        from praisonai.auto import SingleAgentStructure
+        assert SingleAgentStructure is not None
+    
+    def test_auto_generator_has_single_agent_mode(self):
+        """Test that AutoGenerator supports single_agent parameter."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Write a haiku",
+                framework="praisonai",
+                single_agent=True
+            )
+            assert generator.single_agent == True
+    
+    def test_workflow_generator_has_single_agent_mode(self):
+        """Test that WorkflowAutoGenerator supports single_agent parameter."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(
+                topic="Write a haiku",
+                single_agent=True
+            )
+            assert generator.single_agent == True
+
+
+# =============================================================================
+# TODO 3: LLM-Based Pattern Recommendation Tests
+# =============================================================================
+class TestLLMPatternRecommendation:
+    """Test suite for LLM-based pattern recommendation."""
+    
+    def test_recommend_pattern_llm_method_exists(self):
+        """Test that recommend_pattern_llm method exists."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Test task")
+            assert hasattr(generator, 'recommend_pattern_llm')
+    
+    def test_pattern_recommendation_pydantic_model_exists(self):
+        """Test that PatternRecommendation Pydantic model exists."""
+        from praisonai.auto import PatternRecommendation
+        assert PatternRecommendation is not None
+    
+    def test_pattern_recommendation_has_required_fields(self):
+        """Test PatternRecommendation has pattern, reasoning, confidence."""
+        from praisonai.auto import PatternRecommendation
+        fields = PatternRecommendation.model_fields
+        assert 'pattern' in fields
+        assert 'reasoning' in fields
+        assert 'confidence' in fields
+
+
+# =============================================================================
+# TODO 4: Validation Gates Tests
+# =============================================================================
+class TestValidationGates:
+    """Test suite for validation gates in workflows."""
+    
+    def test_validation_gate_model_exists(self):
+        """Test that ValidationGate Pydantic model exists."""
+        from praisonai.auto import ValidationGate
+        assert ValidationGate is not None
+    
+    def test_validation_gate_has_required_fields(self):
+        """Test ValidationGate has criteria, pass_action, fail_action."""
+        from praisonai.auto import ValidationGate
+        fields = ValidationGate.model_fields
+        assert 'criteria' in fields
+        assert 'pass_action' in fields
+        assert 'fail_action' in fields
+    
+    def test_workflow_structure_supports_gates(self):
+        """Test that WorkflowStructure has optional gates field."""
+        from praisonai.auto import WorkflowStructure
+        fields = WorkflowStructure.model_fields
+        assert 'gates' in fields
+
+
+# =============================================================================
+# TODO 6: Pattern Support for AutoGenerator Tests
+# =============================================================================
+class TestAutoGeneratorPatternSupport:
+    """Test suite for pattern support in AutoGenerator."""
+    
+    def test_auto_generator_accepts_pattern_parameter(self):
+        """Test that AutoGenerator accepts pattern parameter."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Research and write",
+                framework="praisonai",
+                pattern="parallel"
+            )
+            assert generator.pattern == "parallel"
+    
+    def test_auto_generator_has_recommend_pattern(self):
+        """Test that AutoGenerator has recommend_pattern method."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(topic="Test", framework="praisonai")
+            assert hasattr(generator, 'recommend_pattern')
+    
+    def test_auto_generator_prompt_includes_pattern(self):
+        """Test that AutoGenerator prompt includes pattern guidance."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = AutoGenerator(
+                topic="Research from multiple sources",
+                framework="praisonai",
+                pattern="parallel"
+            )
+            prompt = generator.get_user_content()
+            assert "parallel" in prompt.lower()
+
+
+# =============================================================================
+# TODO 7: Merge Support for WorkflowAutoGenerator Tests
+# =============================================================================
+class TestWorkflowMergeSupport:
+    """Test suite for merge support in WorkflowAutoGenerator."""
+    
+    def test_workflow_generator_accepts_merge_parameter(self):
+        """Test that WorkflowAutoGenerator.generate accepts merge parameter."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Test task")
+            # Check that generate method accepts merge parameter
+            import inspect
+            sig = inspect.signature(generator.generate)
+            assert 'merge' in sig.parameters
+    
+    def test_merge_with_existing_workflow_method_exists(self):
+        """Test that merge_with_existing_workflow method exists."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(topic="Test task")
+            assert hasattr(generator, 'merge_with_existing_workflow')
+
+
+# =============================================================================
+# TODO 10: Framework Support for WorkflowAutoGenerator Tests
+# =============================================================================
+class TestWorkflowFrameworkSupport:
+    """Test suite for framework support in WorkflowAutoGenerator."""
+    
+    @staticmethod
+    def _fake_registry(name="crewai", default="praisonai", supports_workflow=True):
+        """Registry double whose adapter reports available, so framework
+        validation passes without the framework actually being installed.
+
+        ``supports_workflow`` mirrors the adapter ``SUPPORTS_WORKFLOW`` flag the
+        WorkflowAutoGenerator now enforces via ``require_workflow=True``.
+        """
+        from unittest.mock import MagicMock
+        adapter = MagicMock()
+        adapter.name = name
+        adapter.is_available.return_value = True
+        adapter.SUPPORTS_WORKFLOW = supports_workflow
+        registry = MagicMock()
+        registry.create.return_value = adapter
+        registry.pick_default.return_value = default
+        return registry
+
+    def test_workflow_generator_accepts_framework_parameter(self):
+        """Explicit framework goes straight to create() without pick_default()."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            registry = self._fake_registry("crewai")
+            generator = WorkflowAutoGenerator(
+                topic="Test task",
+                framework="crewai",
+                adapter_registry=registry,
+            )
+            assert generator.framework == "crewai"
+            registry.create.assert_called_once_with("crewai")
+            registry.pick_default.assert_not_called()
+    
+    def test_workflow_generator_default_framework_is_praisonai(self):
+        """Omitted framework resolves via the shared registry default selector."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            registry = self._fake_registry("praisonai", default="praisonai")
+            generator = WorkflowAutoGenerator(
+                topic="Test task",
+                adapter_registry=registry,
+            )
+            assert generator.framework == "praisonai"
+            registry.pick_default.assert_called_once()
+            registry.create.assert_called_once_with("praisonai")
+    
+    def test_save_workflow_respects_framework(self):
+        """Test that _save_workflow uses the specified framework."""
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
+            generator = WorkflowAutoGenerator(
+                topic="Test task",
+                framework="crewai",
+                adapter_registry=self._fake_registry("crewai"),
+            )
+            # The framework should be stored and used in output
+            assert generator.framework == "crewai"
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])

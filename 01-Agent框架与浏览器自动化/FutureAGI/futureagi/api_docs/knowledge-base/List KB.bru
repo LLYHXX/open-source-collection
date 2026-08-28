@@ -1,0 +1,23 @@
+meta {
+  name: List Knowledge Bases
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}/model-hub/kb/
+  body: none
+  auth: bearer
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  This request retrieves a list of all knowledge bases.
+}

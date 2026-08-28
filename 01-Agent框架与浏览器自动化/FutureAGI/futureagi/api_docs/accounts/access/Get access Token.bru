@@ -1,0 +1,22 @@
+meta {
+  name: Get access Token
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/accounts/token/
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+
+
+      "email": "kartik.nvj@futureagi.com",
+      "password": "test@123"
+
+
+  }
+}

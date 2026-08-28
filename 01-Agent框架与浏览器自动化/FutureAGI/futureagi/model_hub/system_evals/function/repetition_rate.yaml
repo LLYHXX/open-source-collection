@@ -1,0 +1,29 @@
+eval_id: 196
+name: repetition_rate
+description: Measures repeated n-gram rate in text. Returns 1-rate as score (higher = less repetitive = better). Useful for detecting degenerate/looping LLM outputs.
+eval_tags:
+- NLP Metrics
+- Text
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [text]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  function_params_schema: {n: {type: integer, default: 3, minimum: 1}}
+  config_params_desc: {text: Text to check for repetition, n: "N-gram size (default 3)"}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        from collections import Counter
+        text = str(kwargs.get("text", output or "")).strip().lower()
+        n = int(kwargs.get("n", 3))
+        tokens = text.split()
+        if len(tokens) < n: return {"score": 1.0, "reason": "Text too short"}
+        ngrams = [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+        counts = Counter(ngrams)
+        repeated = sum(c-1 for c in counts.values() if c > 1)
+        rate = repeated/len(ngrams) if ngrams else 0.0
+        return {"score": float(max(0, 1-rate)), "reason": f"Repetition rate: {rate:.4f} ({repeated} repeated {n}-grams)"}

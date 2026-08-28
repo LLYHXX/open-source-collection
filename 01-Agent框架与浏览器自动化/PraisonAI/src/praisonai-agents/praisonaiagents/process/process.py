@@ -1,0 +1,1778 @@
+import logging
+import asyncio
+import threading
+import time
+import json
+from typing import Dict, Optional, List, Any, AsyncGenerator
+from pydantic import BaseModel, ConfigDict
+from ..agent.agent import Agent
+from ..task.task import Task
+from ..main import display_error
+from ..run_outcome import AgentRunOutcome, RunStatus, validate_decision_string
+from .manager_schema import ManagerInstructions
+import csv
+import os
+
+class LoopItems(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    items: List[Any]
+
+class Process:
+    DEFAULT_RETRY_LIMIT = 3  # Predefined retry limit in a common place
+    # Legacy validation decisions - deprecated in favor of typed outcomes
+    VALIDATION_FAILURE_DECISIONS = ["invalid", "retry", "failed", "error", "unsuccessful", "fail", "errors", "reject", "rejected", "incomplete"]  # Decision strings that trigger validation feedback
+
+    def __init__(
+        self,
+        tasks: Dict[str, Task],
+        agents: List[Agent],
+        manager_llm: Optional[str] = None,
+        verbose: bool = False,
+        max_iter: int = 10,
+        max_retries: int = 3,
+        workflow_timeout: Optional[int] = None,  # seconds, None = no timeout
+        output: Optional[str] = None,
+    ):
+        logging.debug(f"=== Initializing Process ===")
+        logging.debug(f"Number of tasks: {len(tasks)}")
+        logging.debug(f"Number of agents: {len(agents)}")
+        logging.debug(f"Manager LLM: {manager_llm}")
+        logging.debug(f"Max iterations: {max_iter}")
+
+        self.tasks = tasks
+        self.agents = agents
+        self.manager_llm = manager_llm
+        self.max_iter = max_iter
+        self.max_retries = max_retries
+        self.workflow_timeout = workflow_timeout
+        self.task_retry_counter: Dict[str, int] = {} # Initialize retry counter
+        self.workflow_finished = False # ADDED: Workflow finished flag
+        self.workflow_cancelled = False # ADDED: Workflow cancellation flag for timeout
+        self._state_lock_init = threading.Lock()  # Thread lock for synchronous shared-state updates
+        self._state_lock = None # Lazy-initialized async lock for shared state protection
+        
+        # Resolve verbose from output= param (takes precedence) or legacy verbose= param
+        if output is not None:
+            # output= takes precedence over verbose=
+            from ..config.presets import OUTPUT_PRESETS
+            preset = OUTPUT_PRESETS.get(output, {})
+            self._verbose = preset.get("verbose", False)
+        else:
+            # Backward compat: use legacy verbose= param
+            self._verbose = verbose
+        
+        # Keep self.verbose as alias for backward compat
+        self.verbose = self._verbose
+        
+        logging.debug(f"Verbose mode: {self._verbose}")
+
+    async def _get_state_lock(self):
+        """Get or create the async state lock (must be called from async context)."""
+        if self._state_lock is None:
+            with self._state_lock_init:  # Use existing threading.Lock for synchronization
+                if self._state_lock is None:  # Double-check after acquiring
+                    self._state_lock = asyncio.Lock()
+        return self._state_lock
+
+    def _task_by_name(self, name):
+        """Return the task whose name matches, or None. First-match, mirrors prior inline lookup."""
+        return next((t for t in self.tasks.values() if t.name == name), None)
+
+    def _create_llm_instance(self):
+        """Create and return a configured LLM instance for manager tasks."""
+        from ..llm import LLM
+        return LLM(model=self.manager_llm, temperature=0.7)
+
+    def _process_validation_outcome(
+        self, 
+        decision_str: str, 
+        current_task, 
+        elapsed_s: float = 0.0
+    ) -> AgentRunOutcome:
+        """
+        Process validation decision using typed outcomes.
+        
+        Converts legacy validation decision strings to typed AgentRunOutcome
+        for structured error handling and exhaustive matching.
+        
+        Args:
+            decision_str: Raw validation decision string from LLM
+            current_task: Task that performed the validation
+            elapsed_s: Execution time for the validation
+            
+        Returns:
+            AgentRunOutcome with typed status and structured metadata
+        """
+        # Convert decision string to typed status
+        status = validate_decision_string(decision_str)
+        
+        # Extract task and agent context
+        agent_name = current_task.agent.name if current_task and current_task.agent else "unknown"
+        task_name = current_task.name if current_task else "unknown"
+        
+        # Find the task that was validated
+        validated_task = None
+        rejected_output = None
+        
+        if current_task:
+            # Find the task that produced the output being validated
+            if current_task.previous_tasks:
+                # For validation tasks, typically validate the most recent previous task
+                prev_task_name = current_task.previous_tasks[-1]
+                validated_task = self._task_by_name(prev_task_name)
+            elif current_task.context:
+                # If no previous_tasks, check context for the validated task
+                for ctx_task in reversed(current_task.context):
+                    if ctx_task.result and ctx_task.name != current_task.name:
+                        validated_task = ctx_task
+                        break
+            
+            if validated_task and validated_task.result:
+                rejected_output = validated_task.result.raw
+        
+        # Create structured context
+        context = {
+            "validation_response": decision_str,
+            "validation_details": current_task.result.raw if current_task and current_task.result else None,
+            "rejected_output": rejected_output,
+            "validator_task": task_name,
+            "validated_task": validated_task.name if validated_task else None,
+        }
+        
+        # Create appropriate outcome based on status
+        if status == "success":
+            return AgentRunOutcome.success(
+                output=current_task.result.raw if current_task and current_task.result else "",
+                elapsed_s=elapsed_s,
+                agent_name=agent_name,
+                run_id=getattr(current_task, 'run_id', None),
+                context=context,
+            )
+        elif status == "timeout":
+            return AgentRunOutcome.timeout(
+                error=f"Validation timed out: {decision_str}",
+                elapsed_s=elapsed_s,
+                agent_name=agent_name,
+                run_id=getattr(current_task, 'run_id', None),
+                context=context,
+            )
+        elif status == "cancelled":
+            return AgentRunOutcome.cancelled(
+                error=f"Validation was cancelled: {decision_str}",
+                elapsed_s=elapsed_s,
+                agent_name=agent_name,
+                run_id=getattr(current_task, 'run_id', None),
+                context=context,
+            )
+        elif status == "invalid_output":
+            return AgentRunOutcome.invalid_output(
+                error=f"Validation failed: {decision_str}",
+                elapsed_s=elapsed_s,
+                agent_name=agent_name,
+                run_id=getattr(current_task, 'run_id', None),
+                context=context,
+            )
+        else:  # status == "failure"
+            return AgentRunOutcome.failure(
+                error=f"Validation failed: {decision_str}",
+                error_category="validation",
+                elapsed_s=elapsed_s,
+                agent_name=agent_name,
+                run_id=getattr(current_task, 'run_id', None),
+                context=context,
+            )
+
+    def _parse_manager_instructions(self, response, ManagerInstructions):
+        """Parse LLM response and return ManagerInstructions instance.
+        
+        Args:
+            response: String response from LLM
+            ManagerInstructions: Pydantic model class for validation
+            
+        Returns:
+            ManagerInstructions instance
+            
+        Raises:
+            Exception: If parsing fails
+        """
+        try:
+            parsed_json = json.loads(response)
+            return ManagerInstructions(**parsed_json)
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            raise Exception(f"Failed to parse response: {response}") from e
+
+    def _create_loop_subtasks(self, loop_task: Task, decision_mode: bool = False):
+        """Create subtasks for a loop task from input file.
+        
+        Args:
+            loop_task: The loop task to create subtasks for
+            decision_mode: If True, create decision-type subtasks with conditions (for start tasks)
+        """
+        if not loop_task.input_file:
+            logging.warning(f"_create_loop_subtasks called for {loop_task.name} but no input_file specified")
+            return
+            
+        try:
+            file_ext = os.path.splitext(loop_task.input_file)[1].lower()
+            new_tasks = []
+
+            if file_ext == ".csv":
+                with open(loop_task.input_file, "r", encoding="utf-8") as f:
+                    reader = csv.reader(f, quotechar='"', escapechar='\\')
+                    previous_task = None
+                    task_count = 0
+
+                    for i, row in enumerate(reader):
+                        if not row:  # Skip empty rows
+                            continue
+
+                        # Handle Q&A pairs with potential commas
+                        task_desc = row[0].strip() if row else ""
+                        if len(row) > 1:
+                            question = row[0].strip()
+                            answer = ",".join(field.strip() for field in row[1:])
+                            task_desc = f"Question: {question}\nAnswer: {answer}"
+
+                        if not task_desc:  # Skip rows with empty content
+                            continue
+
+                        task_count += 1
+                        logging.debug(f"Creating subtask from CSV row {i+1}: {task_desc}")
+
+                        # Configure task based on decision_mode
+                        if decision_mode:
+                            # For start tasks: create decision-type tasks with conditions and inherited next_tasks
+                            inherited_next_tasks = loop_task.next_tasks if loop_task.next_tasks else []
+                            row_name = f"{loop_task.name}_{task_count}" if loop_task.name else task_desc
+                            row_task = Task(
+                                description=f"{loop_task.description}\n{task_desc}" if loop_task.description else task_desc,
+                                agent=loop_task.agent,
+                                name=row_name,
+                                expected_output=getattr(loop_task, 'expected_output', None),
+                                on_task_complete=loop_task.callback,  # Inherit callback from parent loop task
+                                is_start=(task_count == 1),
+                                task_type="decision",  # Change to decision type for start tasks
+                                next_tasks=inherited_next_tasks,  # Inherit parent's next tasks
+                                condition={
+                                    "done": inherited_next_tasks if inherited_next_tasks else [],
+                                    "retry": [row_name],
+                                    "exit": []  # Empty list for exit condition
+                                }
+                            )
+                        else:
+                            # For regular loop tasks: create basic task-type subtasks
+                            row_task = Task(
+                                description=f"{loop_task.description}\n{task_desc}" if loop_task.description else task_desc,
+                                agent=loop_task.agent,
+                                name=f"{loop_task.name}_{task_count}" if loop_task.name else task_desc,
+                                expected_output=getattr(loop_task, 'expected_output', None),
+                                on_task_complete=loop_task.callback,  # Inherit callback from parent loop task
+                                is_start=(task_count == 1),
+                                task_type="task"
+                            )
+                        
+                        self.tasks[row_task.id] = row_task
+                        new_tasks.append(row_task)
+
+                        if previous_task:
+                            previous_task.next_tasks = [row_task.name]
+                            if decision_mode:
+                                previous_task.condition["done"] = [row_task.name]  # Use "done" consistently for decision tasks
+                        previous_task = row_task
+
+                    logging.info(f"Created {task_count} subtasks from CSV file for {loop_task.name}")
+            else:
+                # Handle text files
+                with open(loop_task.input_file, "r", encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+                    previous_task = None
+                    for i, line in enumerate(lines):
+                        if not line.strip():  # Skip empty lines
+                            continue
+                        
+                        # Configure task based on decision_mode
+                        if decision_mode:
+                            # For start tasks: create tasks with conditions 
+                            row_task = Task(
+                                description=f"{loop_task.description}\n{line.strip()}" if loop_task.description else line.strip(),
+                                agent=loop_task.agent,
+                                name=f"{loop_task.name}_{i+1}" if loop_task.name else line.strip(),
+                                expected_output=getattr(loop_task, 'expected_output', None),
+                                on_task_complete=loop_task.callback,  # Inherit callback from parent loop task
+                                is_start=(i == 0),
+                                task_type="task",
+                                condition={
+                                    "complete": ["next"],
+                                    "retry": ["current"]
+                                }
+                            )
+                        else:
+                            # For regular loop tasks: create basic tasks
+                            row_task = Task(
+                                description=f"{loop_task.description}\n{line.strip()}" if loop_task.description else line.strip(),
+                                agent=loop_task.agent,
+                                name=f"{loop_task.name}_{i+1}" if loop_task.name else line.strip(),
+                                expected_output=getattr(loop_task, 'expected_output', None),
+                                on_task_complete=loop_task.callback,  # Inherit callback from parent loop task
+                                is_start=(i == 0),
+                                task_type="task"
+                            )
+                        
+                        self.tasks[row_task.id] = row_task
+                        new_tasks.append(row_task)
+
+                        if previous_task:
+                            previous_task.next_tasks = [row_task.name]
+                            if decision_mode:
+                                previous_task.condition["complete"] = [row_task.name]
+                        previous_task = row_task
+
+                    logging.info(f"Created {len(new_tasks)} subtasks from text file for {loop_task.name}")
+
+            if new_tasks and loop_task.next_tasks:
+                # Connect last subtask to loop task's next tasks
+                last_task = new_tasks[-1]
+                if decision_mode:
+                    # For decision mode, ensure the last task points to parent's next tasks
+                    if not last_task.next_tasks:
+                        last_task.next_tasks = loop_task.next_tasks
+                else:
+                    last_task.next_tasks = loop_task.next_tasks
+
+        except Exception as e:
+            logging.error(f"Failed to create subtasks for loop task {loop_task.name}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Mark task as failed to ensure error is visible
+            loop_task.status = "failed"
+            if hasattr(loop_task, 'result') and loop_task.result is None:
+                from ..output.models import TaskOutput
+                loop_task.result = TaskOutput(
+                    raw=f"Failed to read input file: {e}",
+                    task_id=loop_task.id
+                )
+
+    def _build_routing_context(self, current_task: Task) -> Dict[str, Any]:
+        """Build a variable context for evaluating a task's `when` condition.
+
+        Combines the task's structured result (json_dict / pydantic fields) with
+        the raw output so expressions like ``{{score}} > 80`` can resolve, and
+        exposes the raw text as ``previous_output``.
+        """
+        context: Dict[str, Any] = {}
+        result = getattr(current_task, "result", None)
+        if result is not None:
+            try:
+                context.update(result.to_dict())
+            except Exception:
+                pass
+            context["previous_output"] = getattr(result, "raw", "")
+        return context
+
+    def _has_when_routing(self, task: Task) -> bool:
+        """True if the task uses the unified when/then_task/else_task routing."""
+        return task.when is not None or task.then_task is not None or task.else_task is not None
+
+    def _resolve_when_routing(self, current_task: Task) -> Optional[Task]:
+        """Resolve the next Task via the unified `when`/`then_task`/`else_task`
+        routing on the current task. Returns None if no such routing applies."""
+        if current_task.when is None and current_task.then_task is None and current_task.else_task is None:
+            return None
+        next_name = current_task.get_next_task(self._build_routing_context(current_task))
+        if not next_name:
+            return None
+        next_task = next((t for t in self.tasks.values() if t.name == next_name), None)
+        if next_task:
+            next_task.status = "not started"
+            logging.debug(f"Routing to {next_task.name} based on when-condition: {current_task.when}")
+        else:
+            logging.warning(f"when-routing target '{next_name}' not found among tasks")
+        return next_task
+
+    def _build_task_context(self, current_task: Task) -> str:
+        """Build context for a task based on its retain_full_context setting"""
+        # Check if we have validation feedback to include
+        if current_task.validation_feedback:
+            feedback = current_task.validation_feedback
+            context = f"\nPrevious attempt failed validation with reason: {feedback['validation_response']}"
+            if feedback.get('validated_task'):
+                context += f"\nValidated task: {feedback['validated_task']}"
+            if feedback.get('validation_details'):
+                context += f"\nValidation feedback: {feedback['validation_details']}"
+            if feedback.get('rejected_output'):
+                context += f"\nRejected output: {feedback['rejected_output']}"
+            context += "\nPlease try again with a different approach based on this feedback.\n"
+            # Clear the feedback after including it to prevent it from persisting
+            current_task.validation_feedback = None
+            
+            # If we have validation feedback but no previous tasks context, return just the feedback
+            if not (current_task.previous_tasks or current_task.context):
+                return context
+            # Otherwise, append the regular context
+            context += "\nInput data from previous tasks:"
+        elif not (current_task.previous_tasks or current_task.context):
+            return ""
+        else:
+            context = "\nInput data from previous tasks:"
+        
+        if current_task.retain_full_context:
+            # Original behavior: include all previous tasks
+            for prev_name in current_task.previous_tasks:
+                prev_task = self._task_by_name(prev_name)
+                if prev_task and prev_task.result:
+                    context += f"\n{prev_name}: {prev_task.result.raw}"
+                    
+            # Add data from context tasks
+            if current_task.context:
+                for ctx_task in current_task.context:
+                    if ctx_task.result and ctx_task.name != current_task.name:
+                        context += f"\n{ctx_task.name}: {ctx_task.result.raw}"
+        else:
+            # New behavior: only include the most recent previous task
+            if current_task.previous_tasks:
+                # Get the most recent previous task (last in the list)
+                prev_name = current_task.previous_tasks[-1]
+                prev_task = self._task_by_name(prev_name)
+                if prev_task and prev_task.result:
+                    context += f"\n{prev_name}: {prev_task.result.raw}"
+                    
+            # For context tasks, still include the most recent one
+            if current_task.context:
+                # Get the most recent context task with a result
+                for ctx_task in reversed(current_task.context):
+                    if ctx_task.result and ctx_task.name != current_task.name:
+                        context += f"\n{ctx_task.name}: {ctx_task.result.raw}"
+                        break  # Only include the most recent one
+                        
+        return context
+    
+    async def _set_workflow_finished(self, value: bool):
+        """Thread-safe setter for workflow_finished flag."""
+        lock = await self._get_state_lock()
+        async with lock:
+            self.workflow_finished = value
+
+    def _find_next_not_started_task(self) -> Optional[Task]:
+        """Fallback mechanism to find the next 'not started' task."""
+        fallback_attempts = 0
+        temp_current_task = None
+        
+        # Clear previous task context before finding next task
+        # NOTE: Fixed to only clear _execution_context instead of mutating descriptions
+        for task in self.tasks.values():
+            if hasattr(task, '_execution_context'):
+                task._execution_context = None
+        
+        while fallback_attempts < self.max_retries and not temp_current_task:
+            fallback_attempts += 1
+            logging.debug(f"Fallback attempt {fallback_attempts}: Trying to find next 'not started' task.")
+            for task_candidate in self.tasks.values():
+                if task_candidate.status == "not started":
+                    # Check if there's a condition path to this task
+                    current_conditions = task_candidate.condition or {}
+                    leads_to_task = any(
+                        task_value for task_value in current_conditions.values() 
+                        if isinstance(task_value, (list, str)) and task_value
+                    )
+                    
+                    if not leads_to_task and not task_candidate.next_tasks:
+                        continue  # Skip if no valid path exists
+                    
+                    # Fix TOCTOU bug: Move the entire check-and-increment inside the lock
+                    with self._state_lock_init:
+                        current_count = self.task_retry_counter.get(task_candidate.id, 0)
+                        if current_count < self.max_retries:
+                            self.task_retry_counter[task_candidate.id] = current_count + 1
+                            temp_current_task = task_candidate
+                            logging.debug(f"Fallback attempt {fallback_attempts}: Found 'not started' task: {temp_current_task.name}, retry count: {self.task_retry_counter[temp_current_task.id]}")
+                            return temp_current_task # Return the found task immediately
+                        else:
+                            logging.debug(f"Max retries ({self.max_retries}) reached for task {task_candidate.name} in fallback mode, marking as failed.")
+                            task_candidate.status = "failed"
+            if not temp_current_task:
+                logging.debug(f"Fallback attempt {fallback_attempts}: No 'not started' task found within retry limit.")
+        return None # Return None if no task found after all attempts
+
+    async def _get_manager_instructions_with_fallback_async(self, manager_task, manager_prompt, ManagerInstructions):
+        """Async version of getting manager instructions with fallback"""
+        try:
+            # First try structured output (OpenAI compatible)
+            logging.info("Attempting structured output...")
+            return await self._get_structured_response_async(manager_task, manager_prompt, ManagerInstructions)
+        except Exception as e:
+            logging.info(f"Structured output failed: {e}, falling back to JSON mode...")
+            # Fallback to regular JSON mode
+            try:
+                # Generate JSON structure description from Pydantic model
+                try:
+                    schema = ManagerInstructions.model_json_schema()
+                    props_desc = ", ".join([f'"{k}": <{v.get("type", "any")}>' for k, v in schema.get('properties', {}).items()])
+                    required_props = schema.get('required', [])
+                    required_props_str = ', '.join(f'"{p}"' for p in required_props)
+                    required_desc = f" (required: {required_props_str})" if required_props else ""
+                    json_structure_desc = "{" + props_desc + "}"
+                    enhanced_prompt = manager_prompt + f"\n\nIMPORTANT: Respond with valid JSON only, using this exact structure: {json_structure_desc}{required_desc}"
+                except Exception as schema_error:
+                    logging.warning(f"Could not generate schema for ManagerInstructions: {schema_error}. Using hardcoded prompt.")
+                    # Fallback to hardcoded prompt if schema generation fails
+                    enhanced_prompt = manager_prompt + "\n\nIMPORTANT: Respond with valid JSON only, using this exact structure: {\"task_id\": <int>, \"agent_name\": \"<string>\", \"action\": \"<execute or stop>\"}"
+                
+                return await self._get_json_response_async(manager_task, enhanced_prompt, ManagerInstructions)
+            except Exception as fallback_error:
+                error_msg = f"Both structured output and JSON fallback failed: {fallback_error}"
+                logging.error(error_msg, exc_info=True)
+                raise Exception(error_msg) from fallback_error
+
+    def _get_manager_instructions_with_fallback(self, manager_task, manager_prompt, ManagerInstructions):
+        """Sync version of getting manager instructions with fallback"""
+        # Create LLM instance with the manager_llm
+        llm = self._create_llm_instance()
+        
+        try:
+            # Use LLM with output_pydantic for structured output
+            logging.info("Attempting structured output...")
+            response = llm.get_response(
+                prompt=manager_prompt,
+                system_prompt=manager_task.description,
+                output_pydantic=ManagerInstructions
+            )
+            
+            # Parse the response and validate with Pydantic
+            return self._parse_manager_instructions(response, ManagerInstructions)
+                
+        except Exception as e:
+            logging.info(f"Structured output failed: {e}, falling back to JSON mode...")
+            # Fallback to regular JSON mode with explicit JSON instructions
+            try:
+                # Generate JSON structure description from Pydantic model
+                try:
+                    schema = ManagerInstructions.model_json_schema()
+                    props_desc = ", ".join([f'"{k}": <{v.get("type", "any")}>' for k, v in schema.get('properties', {}).items()])
+                    required_props = schema.get('required', [])
+                    required_props_str = ', '.join(f'"{p}"' for p in required_props)
+                    required_desc = f" (required: {required_props_str})" if required_props else ""
+                    json_structure_desc = "{" + props_desc + "}"
+                    enhanced_prompt = manager_prompt + f"\n\nIMPORTANT: Respond with valid JSON only, using this exact structure: {json_structure_desc}{required_desc}"
+                except Exception as schema_error:
+                    logging.warning(f"Could not generate schema for ManagerInstructions: {schema_error}. Using hardcoded prompt.")
+                    # Fallback to hardcoded prompt if schema generation fails
+                    enhanced_prompt = manager_prompt + "\n\nIMPORTANT: Respond with valid JSON only, using this exact structure: {\"task_id\": <int>, \"agent_name\": \"<string>\", \"action\": \"<execute or stop>\"}"
+                
+                response = llm.get_response(
+                    prompt=enhanced_prompt,
+                    system_prompt=manager_task.description,
+                    output_json=True
+                )
+                
+                # Parse JSON and validate with Pydantic
+                return self._parse_manager_instructions(response, ManagerInstructions)
+            except Exception as fallback_error:
+                error_msg = f"Both structured output and JSON fallback failed: {fallback_error}"
+                logging.error(error_msg, exc_info=True)
+                raise Exception(error_msg) from fallback_error
+
+    async def _get_structured_response_async(self, manager_task, manager_prompt, ManagerInstructions):
+        """Async version of structured response"""
+        # Create LLM instance with the manager_llm
+        llm = self._create_llm_instance()
+        
+        # Use async get_response with output_pydantic
+        response = await llm.get_response_async(
+            prompt=manager_prompt,
+            system_prompt=manager_task.description,
+            output_pydantic=ManagerInstructions
+        )
+        
+        # Parse the response and validate with Pydantic
+        return self._parse_manager_instructions(response, ManagerInstructions)
+
+    async def _get_json_response_async(self, manager_task, enhanced_prompt, ManagerInstructions):
+        """Async version of JSON fallback response"""
+        # Create LLM instance with the manager_llm
+        llm = self._create_llm_instance()
+        
+        response = await llm.get_response_async(
+            prompt=enhanced_prompt,
+            system_prompt=manager_task.description,
+            output_json=True
+        )
+        
+        # Parse JSON and validate with Pydantic
+        return self._parse_manager_instructions(response, ManagerInstructions)
+
+    async def _check_all_tasks_completed(self) -> bool:
+        """Check if all tasks are completed and handle workflow completion.
+        
+        Returns:
+            bool: True if all tasks are completed and workflow should exit, False otherwise.
+        """
+        if all(task.status == "completed" for task in self.tasks.values()):
+            logging.info("All tasks are completed.")
+            await self._set_workflow_finished(True)
+            return True
+        return False
+    
+    def _check_all_tasks_completed_sync(self) -> bool:
+        """Synchronous version of _check_all_tasks_completed.
+        
+        Returns:
+            bool: True if all tasks are completed and workflow should exit, False otherwise.
+        """
+        if all(task.status == "completed" for task in self.tasks.values()):
+            logging.info("All tasks are completed.")
+            # Use thread-safe setter for sync context
+            self._set_workflow_finished_sync(True)
+            return True
+        return False
+    
+    def _set_workflow_finished_sync(self, value: bool):
+        """Thread-safe setter for workflow_finished flag in sync context."""
+        with self._state_lock_init:
+            self.workflow_finished = value
+
+    async def aworkflow(self) -> AsyncGenerator[str, None]:
+        """Async version of workflow method"""
+        logging.debug("=== Starting Async Workflow ===")
+        current_iter = 0  # Track how many times we've looped
+        workflow_start = time.monotonic()  # For timeout enforcement
+        # Build workflow relationships first
+        logging.debug("Building workflow relationships...")
+        for task in self.tasks.values():
+            if task.next_tasks:
+                for next_task_name in task.next_tasks:
+                    next_task = self._task_by_name(next_task_name)
+                    if next_task:
+                        next_task.previous_tasks.append(task.name)
+                        logging.debug(f"Added {task.name} as previous task for {next_task_name}")
+
+        # Find start task
+        logging.debug("Finding start task...")
+        start_task = None
+        for task_id, task in self.tasks.items():
+            if task.is_start:
+                start_task = task
+                logging.debug(f"Found marked start task: {task.name} (id: {task_id})")
+                break
+
+        if not start_task:
+            start_task = list(self.tasks.values())[0]
+            logging.debug(f"No start task marked, using first task: {start_task.name}")
+
+        # If loop type and no input_file, default to tasks.csv
+        if start_task and start_task.task_type == "loop" and not start_task.input_file:
+            start_task.input_file = "tasks.csv"
+
+        # --- If loop + input_file, read file & create tasks using consolidated helper
+        # Mirrors the sync workflow() pre-expansion so async workflows with a
+        # CSV-driven loop start task run once per row instead of a single time.
+        if start_task and start_task.task_type == "loop" and getattr(start_task, "input_file", None):
+            try:
+                parent_loop_task = start_task
+                parent_input_file = parent_loop_task.input_file
+                self._create_loop_subtasks(parent_loop_task, decision_mode=True)
+                subtasks = [
+                    t for t in self.tasks.values()
+                    if t.name.startswith(parent_loop_task.name + "_")
+                ]
+                if subtasks:
+                    parent_loop_task.status = "completed"
+                    parent_loop_task._subtasks_created = True
+                    start_task = next((t for t in subtasks if t.is_start), subtasks[0])
+                    logging.info(f"Created {len(subtasks)} tasks from: {parent_input_file}")
+            except Exception as e:
+                logging.error(f"Failed to read file tasks: {e}")
+
+        current_task = start_task
+        visited_tasks = set()
+
+        while current_task:
+            current_iter += 1
+            if current_iter > self.max_iter:
+                logging.info(f"Max iteration limit {self.max_iter} reached, ending workflow.")
+                break
+
+            # Enforce workflow timeout if set
+            if self.workflow_timeout is not None:
+                elapsed = time.monotonic() - workflow_start
+                if elapsed > self.workflow_timeout:
+                    logging.warning(f"Workflow timeout ({self.workflow_timeout}s) exceeded after {elapsed:.1f}s, cancelling workflow.")
+                    self.workflow_cancelled = True
+                    break
+
+            # ADDED: Check workflow finished flag at the start of each cycle
+            if self.workflow_finished:
+                logging.info("Workflow finished early as all tasks are completed.")
+                break
+                
+            # ADDED: Check workflow cancellation flag
+            if self.workflow_cancelled:
+                logging.warning("Workflow has been cancelled, stopping task execution.")
+                break
+
+            # Add task summary at start of each cycle
+            logging.debug(f"""
+=== Workflow Cycle {current_iter} Summary ===
+Total tasks: {len(self.tasks)}
+Outstanding tasks: {sum(1 for t in self.tasks.values() if t.status != "completed")}
+Completed tasks: {sum(1 for t in self.tasks.values() if t.status == "completed")}
+Tasks by status:
+- Not started: {sum(1 for t in self.tasks.values() if t.status == "not started")}
+- In progress: {sum(1 for t in self.tasks.values() if t.status == "in_progress")}
+- Completed: {sum(1 for t in self.tasks.values() if t.status == "completed")}
+Tasks by type:
+- Loop tasks: {sum(1 for t in self.tasks.values() if t.task_type == "loop")}
+- Decision tasks: {sum(1 for t in self.tasks.values() if t.task_type == "decision")}
+- Regular tasks: {sum(1 for t in self.tasks.values() if t.task_type not in ["loop", "decision"])}
+            """)
+
+            # ADDED: Check if all tasks are completed and set workflow_finished flag
+            if await self._check_all_tasks_completed():
+                break  # Exit immediately to prevent task reset
+
+            task_id = current_task.id
+            logging.debug(f"""
+=== Task Execution Details ===
+Current task: {current_task.name}
+Type: {current_task.task_type}
+Status: {current_task.status}
+Previous tasks: {current_task.previous_tasks}
+Next tasks: {current_task.next_tasks}
+Context tasks: {[t.name for t in current_task.context] if current_task.context else []}
+Description length: {len(current_task.description)}
+            """)
+
+            # Build context and store separately instead of mutating description
+            context = self._build_task_context(current_task)
+            # Store context in dedicated field instead of concatenating to description
+            current_task._execution_context = context if context else ""
+
+            # Skip execution for loop tasks, only process their subtasks
+            if current_task.task_type == "loop":
+                logging.debug(f"""
+=== Loop Task Details ===
+Name: {current_task.name}
+ID: {current_task.id}
+Status: {current_task.status}
+Next tasks: {current_task.next_tasks}
+Condition: {current_task.condition}
+Subtasks created: {getattr(current_task, '_subtasks_created', False)}
+Input file: {getattr(current_task, 'input_file', None)}
+                """)
+
+                # Check if subtasks are created and completed
+                if getattr(current_task, "_subtasks_created", False):
+                    subtasks = [
+                        t for t in self.tasks.values()
+                        if t.name.startswith(current_task.name + "_")
+                    ]
+                    logging.debug(f"""
+=== Subtask Status Check ===
+Total subtasks: {len(subtasks)}
+Completed: {sum(1 for st in subtasks if st.status == "completed")}
+Pending: {sum(1 for st in subtasks if st.status != "completed")}
+                    """)
+
+                    # Log detailed subtask info
+                    for st in subtasks:
+                        logging.debug(f"""
+Subtask: {st.name}
+- Status: {st.status}
+- Next tasks: {st.next_tasks}
+- Condition: {st.condition}
+                        """)
+
+                    if subtasks and all(st.status == "completed" for st in subtasks):
+                        logging.debug(f"=== All {len(subtasks)} subtasks completed for {current_task.name} ===")
+
+                        # Mark loop task completed and move to next task
+                        current_task.status = "completed"
+                        logging.debug(f"Loop {current_task.name} marked as completed")
+
+                        # Set result for loop task when all subtasks complete
+                        if not current_task.result:
+                            # Get result from last completed subtask
+                            last_subtask = next((t for t in reversed(subtasks) if t.status == "completed"), None)
+                            if last_subtask and last_subtask.result:
+                                current_task.result = last_subtask.result
+                        
+                        # Route to next task based on condition
+                        if current_task.condition:
+                            # Get decision from result if available
+                            decision_str = None
+                            if current_task.result:
+                                if current_task.result.pydantic and hasattr(current_task.result.pydantic, "decision"):
+                                    decision_str = current_task.result.pydantic.decision.lower().strip()
+                                elif current_task.result.raw:
+                                    decision_str = current_task.result.raw.lower().strip()
+                            
+                            # For loop tasks, use "done" to follow condition path
+                            if current_task.task_type == "loop" and all(t.status == "completed" for t in subtasks):
+                                decision_str = "done"
+                            
+                            target_tasks = current_task.condition.get(decision_str, []) if decision_str else []
+                            task_value = target_tasks[0] if isinstance(target_tasks, list) else target_tasks
+                            next_task = self._task_by_name(task_value)
+                            if next_task:
+                                next_task.status = "not started"  # Reset status to allow execution
+                                logging.debug(f"Routing to {next_task.name} based on decision: {decision_str}")
+                                await self._set_workflow_finished(False)
+                                current_task = next_task
+                                # Ensure the task is yielded for execution
+                                if current_task.id not in visited_tasks:
+                                    yield current_task.id
+                                    visited_tasks.add(current_task.id)
+                            else:
+                                # End workflow if no valid next task found
+                                logging.info(f"No valid next task found for decision: {decision_str}")
+                                await self._set_workflow_finished(True)
+                                current_task = None
+                                break
+                else:
+                    logging.debug(f"No subtasks created yet for {current_task.name}")
+                    # Create subtasks if needed
+                    if current_task.input_file:
+                        self._create_loop_subtasks(current_task)
+                        current_task._subtasks_created = True
+                        logging.debug(f"Created subtasks from {current_task.input_file}")
+                    else:
+                        # No input file, mark as done
+                        current_task.status = "completed"
+                        logging.debug(f"No input file, marking {current_task.name} as completed")
+                        if current_task.next_tasks:
+                            next_task_name = current_task.next_tasks[0]
+                            next_task = self._task_by_name(next_task_name)
+                            current_task = next_task
+                        else:
+                            current_task = None
+            else:
+                # Execute non-loop task
+                logging.debug(f"=== Executing non-loop task: {current_task.name} (id: {task_id}) ===")
+                logging.debug(f"Task status: {current_task.status}")
+                logging.debug(f"Task next_tasks: {current_task.next_tasks}")
+                yield task_id
+                visited_tasks.add(task_id)
+
+                # Only end workflow if no next_tasks AND no conditions AND no when-routing
+                if not current_task.next_tasks and not current_task.condition and not self._has_when_routing(current_task) and not any(
+                    t.task_type == "loop" and current_task.name.startswith(t.name + "_")
+                    for t in self.tasks.values()
+                ):
+                    logging.info(f"Task {current_task.name} has no next tasks, ending workflow")
+                    await self._set_workflow_finished(True)
+                    current_task = None
+                    break
+
+            # Reset completed task to "not started" so it can run again (atomic operation)
+            # Get async state lock (created within async context)
+            lock = await self._get_state_lock()
+            async with lock:
+                if self.tasks[task_id].status == "completed":
+                    # Never reset loop tasks, decision tasks, or their subtasks if rerun is False
+                    subtask_name = self.tasks[task_id].name
+                    task_to_check = self.tasks[task_id]
+                    logging.debug(f"=== Checking reset for completed task: {subtask_name} ===")
+                    logging.debug(f"Task type: {task_to_check.task_type}")
+                    logging.debug(f"Task status before reset check: {task_to_check.status}")
+                    logging.debug(f"Task rerun: {getattr(task_to_check, 'rerun', True)}") # default to True if not set
+                    logging.debug(f"Task async_execution: {task_to_check.async_execution}")
+
+                    if (getattr(task_to_check, 'rerun', True) and # Corrected condition - reset only if rerun is True (or default True)
+                        task_to_check.task_type != "loop" and # Removed "decision" from exclusion
+                        not any(t.task_type == "loop" and subtask_name.startswith(t.name + "_")
+                               for t in self.tasks.values()) and
+                        not task_to_check.async_execution):  # Don't reset async parallel tasks
+                        logging.debug(f"=== Resetting non-loop, non-decision, non-parallel task {subtask_name} to 'not started' ===")
+                        self.tasks[task_id].status = "not started"
+                        logging.debug(f"Task status after reset: {self.tasks[task_id].status}")
+                    else:
+                        logging.debug(f"=== Skipping reset for loop/decision/subtask/parallel or rerun=False: {subtask_name} ===")
+                        logging.debug(f"Keeping status as: {self.tasks[task_id].status}")
+
+
+            # Determine next task based on result
+            next_task = None
+            if current_task and current_task.result:
+                if current_task.task_type in ["decision", "loop"]:
+                    # Get decision from pydantic or raw response
+                    decision_str = current_task.result.raw.lower().strip()
+                    if current_task.result.pydantic and hasattr(current_task.result.pydantic, "decision"):
+                        decision_str = current_task.result.pydantic.decision.lower().strip()
+
+                    # Check if task has conditions and next_tasks
+                    if current_task.condition:
+                        # Get target task based on decision
+                        target_tasks = current_task.condition.get(decision_str, [])
+                        # Handle all forms of exit conditions
+                        if not target_tasks or target_tasks == "exit" or (isinstance(target_tasks, list) and (not target_tasks or target_tasks[0] == "exit")):
+                            logging.info(f"Workflow exit condition met on decision: {decision_str}")
+                            await self._set_workflow_finished(True)
+                            current_task = None
+                            break
+                        else:
+                            # Find the target task by name
+                            task_value = target_tasks[0] if isinstance(target_tasks, list) else target_tasks
+                            next_task = self._task_by_name(task_value)
+                            if next_task:
+                                next_task.status = "not started"  # Reset status to allow execution
+                                
+                                # NEW: Process validation outcome using typed system
+                                validation_outcome = self._process_validation_outcome(decision_str, current_task)
+                                
+                                # Store typed outcome on task for new callers
+                                next_task.validation_outcome = validation_outcome
+                                
+                                # Backward compatibility: legacy string-based validation feedback  
+                                if decision_str in Process.VALIDATION_FAILURE_DECISIONS:
+                                    if current_task and current_task.result:
+                                        feedback = validation_outcome.to_dict()
+                                        # Flatten context fields to top level for legacy compatibility
+                                        if 'context' in feedback and feedback['context']:
+                                            feedback.update(feedback['context'])
+                                        # Add legacy fields for backward compatibility
+                                        feedback.update({
+                                            'validation_response': decision_str,
+                                            'validation_details': current_task.result.raw,
+                                        })
+                                        next_task.validation_feedback = feedback
+                                        logging.debug(f"Added validation feedback to {next_task.name}: {feedback['validation_response']} (validated task: {feedback.get('validated_task', 'None')})")
+                                
+                                logging.debug(f"Routing to {next_task.name} based on decision: {decision_str} (outcome: {validation_outcome.status})")
+                                # Don't mark workflow as finished when following condition path
+                                await self._set_workflow_finished(False)
+
+            # Unified condition routing (when/then_task/else_task) takes priority
+            # over next_tasks when configured on the current task.
+            when_routing_exhausted = False
+            if not next_task and current_task:
+                if self._has_when_routing(current_task):
+                    when_task = self._resolve_when_routing(current_task)
+                    if when_task:
+                        next_task = when_task
+                        await self._set_workflow_finished(False)
+                    elif not current_task.next_tasks:
+                        # when-routing is authoritative: it resolved to no target
+                        # (e.g. the taken branch has no then/else_task) and there
+                        # is no next_tasks fallback, so this path ends cleanly
+                        # instead of picking an unrelated not-started task.
+                        when_routing_exhausted = True
+
+            # If no condition-based routing, use next_tasks
+            if not next_task and current_task and current_task.next_tasks:
+                next_task_name = current_task.next_tasks[0]
+                next_task = self._task_by_name(next_task_name)
+                if next_task:
+                    # Reset the next task to allow re-execution
+                    next_task.status = "not started"
+                    # Don't mark workflow as finished if we're in a task loop
+                    if (next_task.previous_tasks and current_task.name in next_task.previous_tasks and 
+                        next_task.next_tasks and 
+                        next_task.next_tasks[0] in self.tasks and 
+                        next_task.name in self.tasks[next_task.next_tasks[0]].previous_tasks):
+                        await self._set_workflow_finished(False)
+                    logging.debug(f"Following next_tasks to {next_task.name}")
+
+            current_task = next_task
+            if not current_task and not when_routing_exhausted:
+                current_task = self._find_next_not_started_task() # General fallback if no next task in workflow
+
+
+            if not current_task:
+                # Add final workflow summary
+                logging.debug(f"""
+=== Final Workflow Summary ===
+Total tasks processed: {len(self.tasks)}
+Final status:
+- Completed tasks: {sum(1 for t in self.tasks.values() if t.status == "completed")}
+- Outstanding tasks: {sum(1 for t in self.tasks.values() if t.status != "completed")}
+Tasks by status:
+- Not started: {sum(1 for t in self.tasks.values() if t.status == "not started")}
+- In progress: {sum(1 for t in self.tasks.values() if t.status == "in_progress")}
+- Completed: {sum(1 for t in self.tasks.values() if t.status == "completed")}
+- Failed: {sum(1 for t in self.tasks.values() if t.status == "failed")}
+Tasks by type:
+- Loop tasks: {sum(1 for t in self.tasks.values() if t.task_type == "loop")}
+- Decision tasks: {sum(1 for t in self.tasks.values() if t.task_type == "decision")}
+- Regular tasks: {sum(1 for t in self.tasks.values() if t.task_type not in ["loop", "decision"])}
+Total iterations: {current_iter}
+Workflow Finished: {self.workflow_finished} # ADDED: Workflow Finished Status
+                """)
+
+                logging.info("Workflow execution completed")
+                break
+
+            # Add completion logging
+            logging.debug(f"""
+=== Task Completion ===
+Task: {current_task.name}
+Final status: {current_task.status}
+Next task: {next_task.name if next_task else None}
+Iteration: {current_iter}/{self.max_iter}
+Workflow Finished: {self.workflow_finished} # ADDED: Workflow Finished Status
+            """)
+
+    async def asequential(self) -> AsyncGenerator[str, None]:
+        """Async version of sequential method"""
+        for task_id in self.tasks:
+            task = self.tasks[task_id]
+            if task.status == "failed":
+                continue  # Skip failed tasks
+            # Check if any context dependency failed
+            if hasattr(task, 'context') and task.context:
+                deps_failed = any(
+                    self.tasks[dep.id].status == "failed"
+                    for dep in task.context if hasattr(dep, 'id') and dep.id in self.tasks
+                )
+                # Honor per-task graceful-degradation flags: a task that opted
+                # into skip_on_failure/on_error="continue" still runs even when
+                # an upstream dependency failed.
+                if deps_failed and not (
+                    getattr(task, 'skip_on_failure', False)
+                    or getattr(task, 'on_error', 'stop') == 'continue'
+                ):
+                    task.status = "failed"
+                    continue
+            if task.status != "completed":
+                yield task_id
+
+    async def ahierarchical(self) -> AsyncGenerator[str, None]:
+        """Async version of hierarchical method"""
+        logging.debug(f"Starting hierarchical task execution with {len(self.tasks)} tasks")
+        manager_agent = Agent(
+            name="Manager",
+            role="Project manager",
+            goal="Manage the entire flow of tasks and delegate them to the right agent",
+            backstory="Expert project manager to coordinate tasks among agents",
+            llm=self.manager_llm,
+            output={"verbose": self.verbose, "markdown": True},
+            reflection=False
+        )
+
+        manager_task = Task(
+            name="manager_task",
+            description="Decide the order of tasks and which agent executes them",
+            expected_output="All tasks completed successfully",
+            agent=manager_agent
+        )
+        manager_task_id = yield manager_task
+        logging.info(f"Created manager task with ID {manager_task_id}")
+
+        completed_count = 0
+        total_tasks = len(self.tasks) - 1
+        logging.info(f"Need to complete {total_tasks} tasks (excluding manager task)")
+        
+        # Track invalid selection attempts and error context
+        invalid_selection_attempts = 0
+        MAX_INVALID_SELECTIONS = 3
+        error_context = ""
+
+        while completed_count < total_tasks:
+            tasks_summary = []
+            for tid, tk in self.tasks.items():
+                if tid == manager_task_id:
+                    continue
+                task_info = {
+                    "task_id": tid,
+                    "name": tk.name,
+                    "description": tk.description,
+                    "status": tk.status if tk.status else "not started",
+                    "agent": tk.agent.name if tk.agent else "No agent"
+                }
+                tasks_summary.append(task_info)
+                logging.info(f"Task {tid} status: {task_info}")
+
+            manager_prompt = f"""
+Here is the current status of all tasks except yours (manager_task):
+{tasks_summary}
+
+Provide a JSON with the structure:
+{{
+   "task_id": <int>,
+   "agent_name": "<string>",
+   "action": "<execute or stop>"
+}}
+""" + error_context
+
+            # Retry logic for manager instruction failures
+            MAX_MANAGER_RETRIES = 3
+            parsed_instructions = None
+            
+            for manager_attempt in range(MAX_MANAGER_RETRIES):
+                try:
+                    logging.info(f"Requesting manager instructions (attempt {manager_attempt + 1}/{MAX_MANAGER_RETRIES})...")
+                    if manager_task.async_execution:
+                        parsed_instructions = await self._get_manager_instructions_with_fallback_async(
+                            manager_task, manager_prompt, ManagerInstructions
+                        )
+                    else:
+                        # Offload sync call to thread to avoid blocking event loop
+                        parsed_instructions = await asyncio.to_thread(
+                            self._get_manager_instructions_with_fallback,
+                            manager_task, manager_prompt, ManagerInstructions
+                        )
+                    logging.info(f"Manager instructions: {parsed_instructions}")
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if manager_attempt < MAX_MANAGER_RETRIES - 1:
+                        # Not the last attempt, wait with exponential backoff
+                        delay = 2 ** manager_attempt
+                        logging.warning(
+                            f"Manager parse error (attempt {manager_attempt + 1}/{MAX_MANAGER_RETRIES}), "
+                            f"retrying in {delay}s: {e}"
+                        )
+                        # Always use async sleep in async context
+                        await asyncio.sleep(delay)
+                    else:
+                        # Final attempt failed
+                        display_error(f"Manager failed after {MAX_MANAGER_RETRIES} attempts: {e}")
+                        logging.error(f"Manager parse error: {str(e)}", exc_info=True)
+            
+            # If all retries failed, break out of the main loop
+            if parsed_instructions is None:
+                break
+
+            selected_task_id = parsed_instructions.task_id
+            selected_agent_name = parsed_instructions.agent_name
+            action = parsed_instructions.action
+
+            logging.info(f"Manager selected task_id={selected_task_id}, agent={selected_agent_name}, action={action}")
+
+            if action.lower() == "stop":
+                logging.info("Manager decided to stop task execution")
+                break
+
+            selected_task = self.tasks.get(selected_task_id)
+            if selected_task is None or selected_task_id == manager_task_id:
+                # Reject unknown ids and the synthetic manager_task by its actual id
+                # (it must never delegate to itself). Matching by id avoids colliding
+                # with a legitimate user task that happens to be named "manager_task".
+                # Re-prompt with the delegable IDs only.
+                invalid_selection_attempts += 1
+                if invalid_selection_attempts > MAX_INVALID_SELECTIONS:
+                    logging.error(
+                        f"Manager produced {invalid_selection_attempts} invalid task selections; aborting."
+                    )
+                    break
+
+                valid_task_ids = [
+                    tid for tid in self.tasks if tid != manager_task_id
+                ]
+                logging.warning(
+                    f"Manager selected invalid task_id={selected_task_id} "
+                    f"(attempt {invalid_selection_attempts}/{MAX_INVALID_SELECTIONS}); valid IDs: {valid_task_ids}"
+                )
+                # Set error context for next iteration (instead of appending to prompt that gets rebuilt)
+                error_context = (
+                    f"\n\n[ERROR] Your previous selection of task_id={selected_task_id} was invalid. "
+                    f"Valid task IDs are: {valid_task_ids}. Never select manager_task. "
+                    f"Please select again from the valid options."
+                )
+                continue  # Re-prompt the manager instead of breaking
+            
+            # Reset on valid selection
+            invalid_selection_attempts = 0
+            error_context = ""
+
+            original_agent = selected_task.agent.name if selected_task.agent else "None"
+            for a in self.agents:
+                if a.name == selected_agent_name:
+                    selected_task.agent = a
+                    logging.info(f"Changed agent for task {selected_task_id} from {original_agent} to {selected_agent_name}")
+                    break
+
+            if self.tasks[selected_task_id].status != "completed":
+                logging.info(f"Starting execution of task {selected_task_id}")
+                yield selected_task_id
+                logging.info(f"Finished execution of task {selected_task_id}, status: {self.tasks[selected_task_id].status}")
+
+            if self.tasks[selected_task_id].status == "completed":
+                completed_count += 1
+                logging.info(f"Task {selected_task_id} completed. Total completed: {completed_count}/{total_tasks}")
+
+        self.tasks[manager_task.id].status = "completed"
+        if self.verbose >= 1:
+            logging.info("All tasks completed under manager supervision.")
+        logging.info("Hierarchical task execution finished")
+
+    def workflow(self):
+        """Synchronous version of workflow method.
+        
+        DEPRECATED: This method is deprecated. Use the Workflow class instead:
+        
+        ```python
+        from praisonaiagents import Workflow, StepResult
+        from praisonaiagents.workflows import route, parallel, loop, repeat
+        
+        workflow = Workflow(steps=[step1, step2])
+        result = workflow.start("input")
+        ```
+        
+        The Workflow class provides a simpler API with more features:
+        - route() for decision-based branching
+        - parallel() for concurrent execution
+        - loop() for iteration over lists/CSV
+        - repeat() for evaluator-optimizer patterns
+        - Callbacks (on_step_start, on_step_complete, etc.)
+        - Guardrails with validation feedback
+        - Status tracking
+        """
+        from ..utils.deprecation import warn_deprecated_param
+        warn_deprecated_param(
+            "process='workflow'",
+            since="1.0.0",
+            removal="2.0.0", 
+            alternative="use the Workflow class instead: from praisonaiagents import Workflow; workflow = Workflow(steps=[...]); workflow.start()",
+            stacklevel=3
+        )
+        current_iter = 0  # Track how many times we've looped
+        workflow_start = time.monotonic()  # For timeout enforcement
+        # Build workflow relationships first
+        for task in self.tasks.values():
+            if task.next_tasks:
+                for next_task_name in task.next_tasks:
+                    next_task = self._task_by_name(next_task_name)
+                    if next_task:
+                        next_task.previous_tasks.append(task.name)
+
+        # Find start task
+        start_task = None
+        for task_id, task in self.tasks.items():
+            if task.is_start:
+                start_task = task
+                break
+
+        if not start_task:
+            start_task = list(self.tasks.values())[0]
+            logging.info("No start task marked, using first task")
+
+        # If loop type and no input_file, default to tasks.csv
+        if start_task and start_task.task_type == "loop" and not start_task.input_file:
+            start_task.input_file = "tasks.csv"
+
+        # --- If loop + input_file, read file & create tasks using consolidated helper
+        if start_task and start_task.task_type == "loop" and getattr(start_task, "input_file", None):
+            try:
+                parent_loop_task = start_task
+                parent_input_file = parent_loop_task.input_file
+                self._create_loop_subtasks(parent_loop_task, decision_mode=True)
+                # Get the first created subtask as the new start task
+                subtasks = [
+                    t for t in self.tasks.values()
+                    if t.name.startswith(parent_loop_task.name + "_")
+                ]
+                if subtasks:
+                    # Mark parent loop task as completed and find start subtask
+                    parent_loop_task.status = "completed"
+                    parent_loop_task._subtasks_created = True
+                    start_task = next((t for t in subtasks if t.is_start), subtasks[0])
+                    logging.info(f"Created {len(subtasks)} tasks from: {parent_input_file}")
+            except Exception as e:
+                logging.error(f"Failed to read file tasks: {e}")
+
+        # end of start task handling
+        current_task = start_task
+        visited_tasks = set()
+
+        while current_task:
+            current_iter += 1
+            if current_iter > self.max_iter:
+                logging.info(f"Max iteration limit {self.max_iter} reached, ending workflow.")
+                break
+
+            # Enforce workflow timeout if set
+            if self.workflow_timeout is not None:
+                elapsed = time.monotonic() - workflow_start
+                if elapsed > self.workflow_timeout:
+                    logging.warning(f"Workflow timeout ({self.workflow_timeout}s) exceeded after {elapsed:.1f}s, ending workflow.")
+                    self.workflow_cancelled = True
+                    break
+
+            # ADDED: Check workflow finished flag at the start of each cycle
+            if self.workflow_finished:
+                logging.info("Workflow finished early as all tasks are completed.")
+                break
+                
+            # ADDED: Check workflow cancellation flag
+            if self.workflow_cancelled:
+                logging.warning("Workflow has been cancelled, stopping task execution.")
+                break
+
+            # Add task summary at start of each cycle
+            logging.debug(f"""
+=== Workflow Cycle {current_iter} Summary ===
+Total tasks: {len(self.tasks)}
+Outstanding tasks: {sum(1 for t in self.tasks.values() if t.status != "completed")}
+Completed tasks: {sum(1 for t in self.tasks.values() if t.status == "completed")}
+Tasks by status:
+- Not started: {sum(1 for t in self.tasks.values() if t.status == "not started")}
+- In progress: {sum(1 for t in self.tasks.values() if t.status == "in_progress")}
+- Completed: {sum(1 for t in self.tasks.values() if t.status == "completed")}
+Tasks by type:
+- Loop tasks: {sum(1 for t in self.tasks.values() if t.task_type == "loop")}
+- Decision tasks: {sum(1 for t in self.tasks.values() if t.task_type == "decision")}
+- Regular tasks: {sum(1 for t in self.tasks.values() if t.task_type not in ["loop", "decision"])}
+            """)
+
+            # ADDED: Check if all tasks are completed and set workflow_finished flag
+            if self._check_all_tasks_completed_sync():
+                break  # Exit immediately to prevent task reset
+
+
+            # Handle loop task file reading at runtime using consolidated helper
+            if (current_task.task_type == "loop" and
+                current_task is not start_task and
+                getattr(current_task, "_subtasks_created", False) is not True):
+
+                if not current_task.input_file:
+                    current_task.input_file = "tasks.csv"
+
+                if getattr(current_task, "input_file", None):
+                    try:
+                        self._create_loop_subtasks(current_task, decision_mode=False)
+                        # Update current task to point to first subtask
+                        subtasks = [
+                            t for t in self.tasks.values()
+                            if t.name.startswith(current_task.name + "_")
+                        ]
+                        if subtasks:
+                            # Find first subtask by is_start flag or first in list
+                            first_subtask = next((t for t in subtasks if t.is_start), subtasks[0])
+                            current_task.next_tasks = [first_subtask.name]
+                            current_task._subtasks_created = True
+                            logging.info(f"Created {len(subtasks)} tasks from: {current_task.input_file} for loop task {current_task.name}")
+                    except Exception as e:
+                        logging.error(f"Failed to read file tasks for loop task {current_task.name}: {e}")
+
+            task_id = current_task.id
+            logging.debug(f"""
+=== Task Execution Details ===
+Current task: {current_task.name}
+Type: {current_task.task_type}
+Status: {current_task.status}
+Previous tasks: {current_task.previous_tasks}
+Next tasks: {current_task.next_tasks}
+Context tasks: {[t.name for t in current_task.context] if current_task.context else []}
+Description length: {len(current_task.description)}
+            """)
+
+            # Build context and store separately instead of mutating description
+            context = self._build_task_context(current_task)
+            # Store context in dedicated field instead of concatenating to description
+            current_task._execution_context = context if context else ""
+
+            # Skip execution for loop tasks, only process their subtasks
+            if current_task.task_type == "loop":
+                logging.debug(f"""
+=== Loop Task Details ===
+Name: {current_task.name}
+ID: {current_task.id}
+Status: {current_task.status}
+Next tasks: {current_task.next_tasks}
+Condition: {current_task.condition}
+Subtasks created: {getattr(current_task, '_subtasks_created', False)}
+Input file: {getattr(current_task, 'input_file', None)}
+                """)
+
+                # Check if subtasks are created and completed
+                if getattr(current_task, "_subtasks_created", False):
+                    subtasks = [
+                        t for t in self.tasks.values()
+                        if t.name.startswith(current_task.name + "_")
+                    ]
+
+                    logging.debug(f"""
+=== Subtask Status Check ===
+Total subtasks: {len(subtasks)}
+Completed: {sum(1 for st in subtasks if st.status == "completed")}
+Pending: {sum(1 for st in subtasks if st.status != "completed")}
+                    """)
+
+                    for st in subtasks:
+                        logging.debug(f"""
+Subtask: {st.name}
+- Status: {st.status}
+- Next tasks: {st.next_tasks}
+- Condition: {st.condition}
+                        """)
+
+                    if subtasks and all(st.status == "completed" for st in subtasks):
+                        logging.debug(f"=== All {len(subtasks)} subtasks completed for {current_task.name} ===")
+
+                        # Mark loop task completed and move to next task
+                        current_task.status = "completed"
+                        logging.debug(f"Loop {current_task.name} marked as completed")
+
+                        # Set result for loop task when all subtasks complete
+                        if not current_task.result:
+                            # Get result from last completed subtask
+                            last_subtask = next((t for t in reversed(subtasks) if t.status == "completed"), None)
+                            if last_subtask and last_subtask.result:
+                                current_task.result = last_subtask.result
+                        
+                        # Route to next task based on condition
+                        if current_task.condition:
+                            # Get decision from result if available
+                            decision_str = None
+                            if current_task.result:
+                                if current_task.result.pydantic and hasattr(current_task.result.pydantic, "decision"):
+                                    decision_str = current_task.result.pydantic.decision.lower().strip()
+                                elif current_task.result.raw:
+                                    decision_str = current_task.result.raw.lower().strip()
+                            
+                            # For loop tasks, use "done" to follow condition path
+                            if current_task.task_type == "loop" and all(t.status == "completed" for t in subtasks):
+                                decision_str = "done"
+                            
+                            target_tasks = current_task.condition.get(decision_str, []) if decision_str else []
+                            task_value = target_tasks[0] if isinstance(target_tasks, list) else target_tasks
+                            next_task = self._task_by_name(task_value)
+                            if next_task:
+                                next_task.status = "not started"  # Reset status to allow execution
+                                logging.debug(f"Routing to {next_task.name} based on decision: {decision_str}")
+                                self._set_workflow_finished_sync(False)
+                                current_task = next_task
+                                # Ensure the task is yielded for execution
+                                if current_task.id not in visited_tasks:
+                                    yield current_task.id
+                                    visited_tasks.add(current_task.id)
+                            else:
+                                # End workflow if no valid next task found
+                                logging.info(f"No valid next task found for decision: {decision_str}")
+                                self._set_workflow_finished_sync(True)
+                                current_task = None
+                                break
+                else:
+                    logging.debug(f"No subtasks created yet for {current_task.name}")
+                    # Create subtasks if needed
+                    if current_task.input_file:
+                        self._create_loop_subtasks(current_task)
+                        current_task._subtasks_created = True
+                        logging.debug(f"Created subtasks from {current_task.input_file}")
+                    else:
+                        # No input file, mark as done
+                        current_task.status = "completed"
+                        logging.debug(f"No input file, marking {current_task.name} as completed")
+                        if current_task.next_tasks:
+                            next_task_name = current_task.next_tasks[0]
+                            next_task = self._task_by_name(next_task_name)
+                            current_task = next_task
+                        else:
+                            current_task = None
+            else:
+                # Execute non-loop task
+                logging.debug(f"=== Executing non-loop task: {current_task.name} (id: {task_id}) ===")
+                logging.debug(f"Task status: {current_task.status}")
+                logging.debug(f"Task next_tasks: {current_task.next_tasks}")
+                yield task_id
+                visited_tasks.add(task_id)
+
+                # Only end workflow if no next_tasks AND no conditions AND no when-routing
+                if not current_task.next_tasks and not current_task.condition and not self._has_when_routing(current_task) and not any(
+                    t.task_type == "loop" and current_task.name.startswith(t.name + "_")
+                    for t in self.tasks.values()
+                ):
+                    logging.info(f"Task {current_task.name} has no next tasks, ending workflow")
+                    self._set_workflow_finished_sync(True)
+                    current_task = None
+                    break
+
+            # Reset completed task to "not started" so it can run again
+            if self.tasks[task_id].status == "completed":
+                # Never reset loop tasks, decision tasks, or their subtasks if rerun is False
+                subtask_name = self.tasks[task_id].name
+                task_to_check = self.tasks[task_id]
+                logging.debug(f"=== Checking reset for completed task: {subtask_name} ===")
+                logging.debug(f"Task type: {task_to_check.task_type}")
+                logging.debug(f"Task status before reset check: {task_to_check.status}")
+                logging.debug(f"Task rerun: {getattr(task_to_check, 'rerun', True)}") # default to True if not set
+                logging.debug(f"Task async_execution: {task_to_check.async_execution}")
+
+                if (getattr(task_to_check, 'rerun', True) and # Corrected condition - reset only if rerun is True (or default True)
+                    task_to_check.task_type != "loop" and # Removed "decision" from exclusion
+                    not any(t.task_type == "loop" and subtask_name.startswith(t.name + "_")
+                           for t in self.tasks.values()) and
+                    not task_to_check.async_execution):  # Don't reset async parallel tasks
+                    logging.debug(f"=== Resetting non-loop, non-decision, non-parallel task {subtask_name} to 'not started' ===")
+                    self.tasks[task_id].status = "not started"
+                    logging.debug(f"Task status after reset: {self.tasks[task_id].status}")
+                else:
+                    logging.debug(f"=== Skipping reset for loop/decision/subtask/parallel or rerun=False: {subtask_name} ===")
+                    logging.debug(f"Keeping status as: {self.tasks[task_id].status}")
+
+
+
+            # Determine next task based on result
+            next_task = None
+            if current_task and current_task.result:
+                if current_task.task_type in ["decision", "loop"]:
+                    # Get decision from pydantic or raw response
+                    decision_str = current_task.result.raw.lower().strip()
+                    if current_task.result.pydantic and hasattr(current_task.result.pydantic, "decision"):
+                        decision_str = current_task.result.pydantic.decision.lower().strip()
+
+                    # Check if task has conditions and next_tasks
+                    if current_task.condition:
+                        # Get target task based on decision
+                        target_tasks = current_task.condition.get(decision_str, [])
+                        # Handle all forms of exit conditions
+                        if not target_tasks or target_tasks == "exit" or (isinstance(target_tasks, list) and (not target_tasks or target_tasks[0] == "exit")):
+                            logging.info(f"Workflow exit condition met on decision: {decision_str}")
+                            self._set_workflow_finished_sync(True)
+                            current_task = None
+                            break
+                        else:
+                            # Find the target task by name
+                            task_value = target_tasks[0] if isinstance(target_tasks, list) else target_tasks
+                            next_task = self._task_by_name(task_value)
+                            if next_task:
+                                next_task.status = "not started"  # Reset status to allow execution
+                                
+                                # NEW: Process validation outcome using typed system
+                                validation_outcome = self._process_validation_outcome(decision_str, current_task)
+                                
+                                # Store typed outcome on task for new callers
+                                next_task.validation_outcome = validation_outcome
+                                
+                                # Backward compatibility: legacy string-based validation feedback
+                                if decision_str in Process.VALIDATION_FAILURE_DECISIONS:
+                                    if current_task and current_task.result:
+                                        feedback = validation_outcome.to_dict()
+                                        # Flatten context fields to top level for legacy compatibility
+                                        if 'context' in feedback and feedback['context']:
+                                            feedback.update(feedback['context'])
+                                        # Add legacy fields for backward compatibility
+                                        feedback.update({
+                                            'validation_response': decision_str,
+                                            'validation_details': current_task.result.raw,
+                                        })
+                                        next_task.validation_feedback = feedback
+                                        logging.debug(f"Added validation feedback to {next_task.name}: {feedback['validation_response']} (validated task: {feedback.get('validated_task', 'None')})")
+                                
+                                logging.debug(f"Routing to {next_task.name} based on decision: {decision_str} (outcome: {validation_outcome.status})")
+                                # Don't mark workflow as finished when following condition path
+                                self._set_workflow_finished_sync(False)
+
+            # Unified condition routing (when/then_task/else_task) takes priority
+            # over next_tasks when configured on the current task.
+            when_routing_exhausted = False
+            if not next_task and current_task:
+                if self._has_when_routing(current_task):
+                    when_task = self._resolve_when_routing(current_task)
+                    if when_task:
+                        next_task = when_task
+                        self._set_workflow_finished_sync(False)
+                    elif not current_task.next_tasks:
+                        # when-routing is authoritative: it resolved to no target
+                        # (e.g. the taken branch has no then/else_task) and there
+                        # is no next_tasks fallback, so this path ends cleanly
+                        # instead of picking an unrelated not-started task.
+                        when_routing_exhausted = True
+
+            # If no condition-based routing, use next_tasks
+            if not next_task and current_task and current_task.next_tasks:
+                next_task_name = current_task.next_tasks[0]
+                next_task = self._task_by_name(next_task_name)
+                if next_task:
+                    # Reset the next task to allow re-execution
+                    next_task.status = "not started"
+                    # Don't mark workflow as finished if we're in a task loop
+                    if (next_task.previous_tasks and current_task.name in next_task.previous_tasks and 
+                        next_task.next_tasks and 
+                        next_task.next_tasks[0] in self.tasks and 
+                        next_task.name in self.tasks[next_task.next_tasks[0]].previous_tasks):
+                        self._set_workflow_finished_sync(False)
+                    logging.debug(f"Following next_tasks to {next_task.name}")
+
+            current_task = next_task
+            if not current_task and not when_routing_exhausted:
+                current_task = self._find_next_not_started_task() # General fallback if no next task in workflow
+
+
+            if not current_task:
+                # Add final workflow summary
+                logging.debug(f"""
+=== Final Workflow Summary ===
+Total tasks processed: {len(self.tasks)}
+Final status:
+- Completed tasks: {sum(1 for t in self.tasks.values() if t.status == "completed")}
+- Outstanding tasks: {sum(1 for t in self.tasks.values() if t.status != "completed")}
+Tasks by status:
+- Not started: {sum(1 for t in self.tasks.values() if t.status == "not started")}
+- In progress: {sum(1 for t in self.tasks.values() if t.status == "in_progress")}
+- Completed: {sum(1 for t in self.tasks.values() if t.status == "completed")}
+- Failed: {sum(1 for t in self.tasks.values() if t.status == "failed")}
+Tasks by type:
+- Loop tasks: {sum(1 for t in self.tasks.values() if t.task_type == "loop")}
+- Decision tasks: {sum(1 for t in self.tasks.values() if t.task_type == "decision")}
+- Regular tasks: {sum(1 for t in self.tasks.values() if t.task_type not in ["loop", "decision"])}
+Total iterations: {current_iter}
+Workflow Finished: {self.workflow_finished} # ADDED: Workflow Finished Status
+                """)
+
+                logging.info("Workflow execution completed")
+                break
+
+            # Add completion logging
+            logging.debug(f"""
+=== Task Completion ===
+Task: {current_task.name}
+Final status: {current_task.status}
+Next task: {next_task.name if next_task else None}
+Iteration: {current_iter}/{self.max_iter}
+Workflow Finished: {self.workflow_finished} # ADDED: Workflow Finished Status
+            """)
+
+    def sequential(self):
+        """Synchronous version of sequential method"""
+        for task_id in self.tasks:
+            task = self.tasks[task_id]
+            if task.status == "failed":
+                continue  # Skip failed tasks
+            # Check if any context dependency failed
+            if hasattr(task, 'context') and task.context:
+                deps_failed = any(
+                    self.tasks[dep.id].status == "failed"
+                    for dep in task.context if hasattr(dep, 'id') and dep.id in self.tasks
+                )
+                # Honor per-task graceful-degradation flags: a task that opted
+                # into skip_on_failure/on_error="continue" still runs even when
+                # an upstream dependency failed.
+                if deps_failed and not (
+                    getattr(task, 'skip_on_failure', False)
+                    or getattr(task, 'on_error', 'stop') == 'continue'
+                ):
+                    task.status = "failed"
+                    continue
+            if task.status != "completed":
+                yield task_id
+
+    def hierarchical(self):
+        """Synchronous version of hierarchical method"""
+        logging.debug(f"Starting hierarchical task execution with {len(self.tasks)} tasks")
+        manager_agent = Agent(
+            name="Manager",
+            role="Project manager",
+            goal="Manage the entire flow of tasks and delegate them to the right agent",
+            backstory="Expert project manager to coordinate tasks among agents",
+            llm=self.manager_llm,
+            output={"verbose": self.verbose, "markdown": True},
+            reflection=False
+        )
+
+        manager_task = Task(
+            name="manager_task",
+            description="Decide the order of tasks and which agent executes them",
+            expected_output="All tasks completed successfully",
+            agent=manager_agent
+        )
+        manager_task_id = yield manager_task
+        logging.info(f"Created manager task with ID {manager_task_id}")
+
+        completed_count = 0
+        total_tasks = len(self.tasks) - 1
+        logging.info(f"Need to complete {total_tasks} tasks (excluding manager task)")
+        
+        # Track invalid selection attempts and error context
+        invalid_selection_attempts = 0
+        MAX_INVALID_SELECTIONS = 3
+        error_context = ""
+
+        while completed_count < total_tasks:
+            tasks_summary = []
+            for tid, tk in self.tasks.items():
+                if tid == manager_task_id:
+                    continue
+                task_info = {
+                    "task_id": tid,
+                    "name": tk.name,
+                    "description": tk.description,
+                    "status": tk.status if tk.status else "not started",
+                    "agent": tk.agent.name if tk.agent else "No agent"
+                }
+                tasks_summary.append(task_info)
+                logging.info(f"Task {tid} status: {task_info}")
+
+            manager_prompt = f"""
+Here is the current status of all tasks except yours (manager_task):
+{tasks_summary}
+
+Provide a JSON with the structure:
+{{
+   "task_id": <int>,
+   "agent_name": "<string>",
+   "action": "<execute or stop>"
+}}
+""" + error_context
+
+            try:
+                logging.info("Requesting manager instructions...")
+                parsed_instructions = self._get_manager_instructions_with_fallback(
+                    manager_task, manager_prompt, ManagerInstructions
+                )
+                logging.info(f"Manager instructions: {parsed_instructions}")
+            except Exception as e:
+                display_error(f"Manager parse error: {e}")
+                logging.error(f"Manager parse error: {str(e)}", exc_info=True)
+                break
+
+            selected_task_id = parsed_instructions.task_id
+            selected_agent_name = parsed_instructions.agent_name
+            action = parsed_instructions.action
+
+            logging.info(f"Manager selected task_id={selected_task_id}, agent={selected_agent_name}, action={action}")
+
+            if action.lower() == "stop":
+                logging.info("Manager decided to stop task execution")
+                break
+
+            selected_task = self.tasks.get(selected_task_id)
+            if selected_task is None or selected_task_id == manager_task_id:
+                # Reject unknown ids and the synthetic manager_task by its actual id
+                # (it must never delegate to itself). Matching by id avoids colliding
+                # with a legitimate user task that happens to be named "manager_task".
+                # Re-prompt with the delegable IDs only.
+                invalid_selection_attempts += 1
+                if invalid_selection_attempts > MAX_INVALID_SELECTIONS:
+                    logging.error(
+                        f"Manager produced {invalid_selection_attempts} invalid task selections; aborting."
+                    )
+                    break
+
+                valid_task_ids = [
+                    tid for tid in self.tasks if tid != manager_task_id
+                ]
+                logging.warning(
+                    f"Manager selected invalid task_id={selected_task_id} "
+                    f"(attempt {invalid_selection_attempts}/{MAX_INVALID_SELECTIONS}); valid IDs: {valid_task_ids}"
+                )
+                # Set error context for next iteration (instead of appending to prompt that gets rebuilt)
+                error_context = (
+                    f"\n\n[ERROR] Your previous selection of task_id={selected_task_id} was invalid. "
+                    f"Valid task IDs are: {valid_task_ids}. Never select manager_task. "
+                    f"Please select again from the valid options."
+                )
+                continue  # Re-prompt the manager instead of breaking
+            
+            # Reset on valid selection
+            invalid_selection_attempts = 0
+            error_context = ""
+
+            original_agent = selected_task.agent.name if selected_task.agent else "None"
+            for a in self.agents:
+                if a.name == selected_agent_name:
+                    selected_task.agent = a
+                    logging.info(f"Changed agent for task {selected_task_id} from {original_agent} to {selected_agent_name}")
+                    break
+
+            if self.tasks[selected_task_id].status != "completed":
+                logging.info(f"Starting execution of task {selected_task_id}")
+                yield selected_task_id
+                logging.info(f"Finished execution of task {selected_task_id}, status: {self.tasks[selected_task_id].status}")
+
+            if self.tasks[selected_task_id].status == "completed":
+                completed_count += 1
+                logging.info(f"Task {selected_task_id} completed. Total completed: {completed_count}/{total_tasks}")
+
+        self.tasks[manager_task.id].status = "completed"
+        if self.verbose >= 1:
+            logging.info("All tasks completed under manager supervision.")
+        logging.info("Hierarchical task execution finished")

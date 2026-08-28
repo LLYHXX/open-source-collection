@@ -1,0 +1,33 @@
+meta {
+  name: Create Replay
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8000/tracer/replay-session/
+  body: json
+  auth: inherit
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+}
+
+body:json {
+  {
+    "project_id": "0c6dfa53-4010-4eff-913d-f10b19750c27",
+    "replay_type": "session", // REQUIRED - "session" or "trace"
+    "ids": [ // default: [] - required if select_all is false
+      "3dd50a86-c1f8-4379-b38e-88a921223726",
+      "ffc26b27-9d50-44a5-b511-57bc83836c40",
+      "55999b71-e9fb-4943-a46c-a83d1ac3c369"
+    ],
+    "select_all": false // default: false
+  }
+}
+
+settings {
+  encodeUrl: false
+  timeout: 0
+}

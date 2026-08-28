@@ -1,0 +1,475 @@
+"""
+Structured exception hierarchy for PraisonAI SDK.
+
+Provides uniform error semantics for consistent handling across:
+- Multi-agent orchestration
+- Tool execution
+- LLM interactions
+- Memory operations
+- External integrations
+"""
+
+from typing import Literal, Protocol, runtime_checkable, Optional, Dict, Any, get_args
+from dataclasses import dataclass, field
+import uuid
+import warnings
+
+
+# Closed error taxonomy for typed failure classification
+AgentErrorKind = Literal[
+    "auth", "auth_permanent", "rate_limit", "overloaded",
+    "context_overflow", "idle_timeout", "billing",
+    "model_not_found", "empty_response", "format_error", "unknown",
+]
+
+# Legacy error category mapping for backward compatibility
+LEGACY_ERROR_CATEGORY_MAP = {
+    "tool": "unknown",
+    "llm": "unknown", 
+    "budget": "billing",
+    "validation": "format_error",
+    "network": "unknown",
+    "handoff": "unknown",
+}
+
+
+@dataclass
+class FailoverDecision:
+    """
+    Discriminated struct for retry and failover decisions.
+    
+    Separates classification (error kind) from action (what to do),
+    making the policy independently testable and overridable.
+    """
+    action: Literal["retry", "rotate_profile", "surface_error"]
+    reason: AgentErrorKind
+    backoff_ms: int = 0
+    is_retryable: bool = True
+
+
+@dataclass
+class IdleTimeoutBreaker:
+    """
+    Circuit breaker for consecutive idle-timeout failures.
+    
+    Prevents runaway API costs when providers repeatedly stall.
+    """
+    max_consecutive: int = 3
+    _count: int = field(default=0, init=False, repr=False)
+
+    def record_idle_timeout(self) -> bool:
+        """Returns True when the hard cap is reached."""
+        self._count += 1
+        return self._count >= self.max_consecutive
+
+    def reset(self) -> None:
+        self._count = 0
+
+
+@runtime_checkable
+class ErrorContextProtocol(Protocol):
+    """Protocol for structured error context propagation."""
+    
+    agent_id: str
+    run_id: str
+    is_retryable: bool
+    error_category: AgentErrorKind
+
+
+class PraisonAIError(Exception):
+    """
+    Base error class with structured context for PraisonAI SDK.
+    
+    All PraisonAI errors inherit from this to ensure uniform error handling,
+    context propagation, and observability hooks.
+    """
+    
+    def __init__(
+        self, 
+        message: str,
+        agent_id: str = "unknown",
+        run_id: Optional[str] = None,
+        error_category: Optional[AgentErrorKind] = None,
+        is_retryable: bool = False,
+        context: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(message)
+        self.message = message
+        self.agent_id = agent_id
+        self.run_id = run_id or str(uuid.uuid4())
+        
+        # Handle error category with legacy mapping
+        if error_category is None:
+            self.error_category = "unknown"
+        elif error_category in get_args(AgentErrorKind):
+            self.error_category = error_category
+        elif error_category in LEGACY_ERROR_CATEGORY_MAP:
+            self.error_category = LEGACY_ERROR_CATEGORY_MAP[error_category]
+            warnings.warn(
+                f"error_category={error_category!r} is deprecated; "
+                f"use {self.error_category!r} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        else:
+            raise ValueError(f"Unsupported error_category: {error_category!r}")
+            
+        self.is_retryable = is_retryable
+        self.context = context or {}
+
+    def __str__(self) -> str:
+        return f"[{self.error_category}] {self.message} (agent: {self.agent_id}, run: {self.run_id})"
+
+
+class ToolExecutionError(PraisonAIError):
+    """
+    Tool execution failed.
+    
+    Includes tool name and execution context for better debugging
+    and selective retry policies.
+    """
+    
+    def __init__(
+        self, 
+        message: str, 
+        tool_name: str = "unknown",
+        agent_id: str = "unknown",
+        run_id: Optional[str] = None,
+        error_category: AgentErrorKind = "unknown",
+        is_retryable: bool = True,  # Most tool errors are retryable
+        context: Optional[Dict[str, Any]] = None
+    ):
+        context = context or {}
+        context["tool_name"] = tool_name
+        super().__init__(
+            message, 
+            agent_id=agent_id, 
+            run_id=run_id, 
+            error_category=error_category,
+            is_retryable=is_retryable,
+            context=context
+        )
+        self.tool_name = tool_name
+
+
+class LLMError(PraisonAIError):
+    """
+    LLM interaction failed.
+    
+    Distinguishes between rate limits (retryable) vs model errors (fatal).
+    """
+    
+    def __init__(
+        self, 
+        message: str,
+        model_name: str = "unknown", 
+        agent_id: str = "unknown",
+        run_id: Optional[str] = None,
+        error_category: AgentErrorKind = "unknown",
+        is_retryable: bool = False,  # Default to non-retryable unless specified
+        context: Optional[Dict[str, Any]] = None
+    ):
+        context = context or {}
+        context["model_name"] = model_name
+        super().__init__(
+            message, 
+            agent_id=agent_id, 
+            run_id=run_id, 
+            error_category=error_category,
+            is_retryable=is_retryable,
+            context=context
+        )
+        self.model_name = model_name
+
+
+class BudgetExceededError(PraisonAIError):
+    """
+    Budget limits exceeded (tokens, time, etc).
+    
+    Generally not retryable without intervention.
+    """
+    
+    def __init__(
+        self, 
+        message_or_agent_name, 
+        total_cost_or_budget_type = None,
+        max_budget_or_limit = None,
+        budget_type: str = "tokens",
+        limit: Optional[float] = None,
+        used: Optional[float] = None,
+        agent_id: str = "unknown",
+        run_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ):
+        # Handle backward compatibility: old constructor BudgetExceededError(agent_name, total_cost, max_budget)
+        if (isinstance(message_or_agent_name, str) and 
+            isinstance(total_cost_or_budget_type, (int, float)) and 
+            isinstance(max_budget_or_limit, (int, float)) and
+            budget_type == "tokens"):  # Default value indicates old constructor
+            
+            # Old constructor format
+            agent_name = message_or_agent_name
+            total_cost = float(total_cost_or_budget_type)
+            max_budget = float(max_budget_or_limit)
+            message = f"Agent '{agent_name}' exceeded budget: ${total_cost:.4f} >= ${max_budget:.4f}"
+            
+            context = context or {}
+            context.update({
+                "budget_type": "cost",  # Legacy errors are cost-based
+                "limit": max_budget,
+                "used": total_cost
+            })
+            super().__init__(
+                message, 
+                agent_id=agent_name, 
+                run_id=run_id, 
+                error_category="billing",
+                is_retryable=False,
+                context=context
+            )
+            self.budget_type = "cost"
+            self.limit = max_budget
+            self.used = total_cost
+            self.agent_name = agent_name
+            self.total_cost = total_cost
+            self.max_budget = max_budget
+        else:
+            # New constructor format
+            message = str(message_or_agent_name)
+            if total_cost_or_budget_type is not None and isinstance(total_cost_or_budget_type, str):
+                budget_type = total_cost_or_budget_type
+            if max_budget_or_limit is not None:
+                if limit is None:
+                    limit = max_budget_or_limit
+            
+            context = context or {}
+            context.update({
+                "budget_type": budget_type,
+                "limit": limit,
+                "used": used
+            })
+            super().__init__(
+                message, 
+                agent_id=agent_id, 
+                run_id=run_id, 
+                error_category="billing",
+                is_retryable=False,
+                context=context
+            )
+            self.budget_type = budget_type
+            self.limit = limit
+            self.used = used
+            
+            # Legacy attributes for backward compatibility
+            self.agent_name = agent_id
+            self.total_cost = used
+            self.max_budget = limit
+
+
+class ValidationError(PraisonAIError):
+    """
+    Input validation failed.
+    
+    Usually indicates programming errors, not retryable.
+    """
+    
+    def __init__(
+        self, 
+        message: str,
+        field_name: Optional[str] = None, 
+        agent_id: str = "unknown",
+        run_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ):
+        context = context or {}
+        if field_name:
+            context["field_name"] = field_name
+        super().__init__(
+            message, 
+            agent_id=agent_id, 
+            run_id=run_id, 
+            error_category="format_error",  # Validation errors are format issues
+            is_retryable=False,  # Validation errors need code fixes
+            context=context
+        )
+        self.field_name = field_name
+
+
+class NetworkError(PraisonAIError):
+    """
+    Network/external service error.
+    
+    Often retryable with backoff.
+    """
+    
+    def __init__(
+        self, 
+        message: str,
+        service_name: str = "unknown",
+        status_code: Optional[int] = None,
+        agent_id: str = "unknown",
+        run_id: Optional[str] = None,
+        error_category: AgentErrorKind = "unknown",
+        is_retryable: bool = True,  # Most network errors are retryable
+        context: Optional[Dict[str, Any]] = None
+    ):
+        context = context or {}
+        context.update({
+            "service_name": service_name,
+            "status_code": status_code
+        })
+        super().__init__(
+            message, 
+            agent_id=agent_id, 
+            run_id=run_id, 
+            error_category=error_category,
+            is_retryable=is_retryable,
+            context=context
+        )
+        self.service_name = service_name
+        self.status_code = status_code
+
+
+class HandoffError(PraisonAIError):
+    """
+    Agent handoff/delegation failed.
+    
+    Includes source/target agent context for multi-agent debugging.
+    """
+    
+    def __init__(
+        self, 
+        message: str,
+        source_agent: str = "unknown",
+        target_agent: Optional[str] = None,
+        agent_id: str = "unknown",
+        run_id: Optional[str] = None,
+        error_category: AgentErrorKind = "unknown",
+        is_retryable: bool = False,  # Handoff errors usually need investigation
+        context: Optional[Dict[str, Any]] = None
+    ):
+        context = context or {}
+        context.update({
+            "source_agent": source_agent,
+            "target_agent": target_agent
+        })
+        super().__init__(
+            message, 
+            agent_id=agent_id, 
+            run_id=run_id, 
+            error_category=error_category,
+            is_retryable=is_retryable,
+            context=context
+        )
+        self.source_agent = source_agent
+        self.target_agent = target_agent
+
+
+class PraisonAIConfigError(PraisonAIError):
+    """
+    Configuration error (missing API keys, invalid settings, etc).
+    
+    Usually indicates setup issues that require user action.
+    """
+    
+    def __init__(
+        self,
+        message: str,
+        config_key: Optional[str] = None,
+        agent_id: str = "unknown",
+        run_id: Optional[str] = None,
+        is_retryable: bool = False,  # Config errors need user intervention
+        remediation_hint: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ):
+        context = context or {}
+        if config_key:
+            context.update({"config_key": config_key})
+            if remediation_hint is None:
+                remediation_hint = f"Set {config_key} or run the setup wizard before retrying."
+        if remediation_hint:
+            context["remediation_hint"] = remediation_hint
+            message = f"{message} Remediation: {remediation_hint}"
+        
+        super().__init__(
+            message,
+            agent_id=agent_id,
+            run_id=run_id,
+            error_category="format_error",  # Configuration is a type of format error
+            is_retryable=is_retryable,
+            context=context
+        )
+        self.config_key = config_key
+        self.remediation_hint = remediation_hint
+
+
+# Specialized handoff errors (maintain backward compatibility)
+class HandoffCycleError(HandoffError):
+    """Circular handoff dependency detected."""
+    
+    def __init__(self, message: str, cycle_path: Optional[list] = None, **kwargs):
+        super().__init__(message, **kwargs)
+        if cycle_path:
+            self.context["cycle_path"] = cycle_path
+        # Backward compatibility alias
+        self.chain = cycle_path
+
+
+class HandoffDepthError(HandoffError):
+    """Maximum handoff depth exceeded."""
+    
+    def __init__(self, message: str, max_depth: Optional[int] = None, current_depth: Optional[int] = None, **kwargs):
+        super().__init__(message, **kwargs)
+        self.context.update({
+            "max_depth": max_depth,
+            "current_depth": current_depth
+        })
+        # Backward compatibility aliases
+        self.max_depth = max_depth
+        self.depth = current_depth
+
+
+class HandoffTimeoutError(HandoffError):
+    """Handoff operation timed out."""
+    
+    def __init__(self, message: str, timeout_seconds: Optional[float] = None, **kwargs):
+        super().__init__(message, is_retryable=True, **kwargs)  # Timeouts may be retryable
+        if timeout_seconds:
+            self.context["timeout_seconds"] = timeout_seconds
+        # Backward compatibility alias
+        self.timeout = timeout_seconds
+
+
+class HandoffValidationError(HandoffError):
+    """Raised when a typed handoff payload does not satisfy the declared schema."""
+    
+    def __init__(self, message: str, validation_errors: Optional[list] = None, **kwargs):
+        # Add remediation hint if not already in message
+        if "Check payload" not in message and "schema" not in message.lower():
+            message = f"{message}. Check that your payload matches the declared Pydantic schema."
+        super().__init__(message, is_retryable=False, **kwargs)  # Schema errors need code fixes
+        if validation_errors:
+            self.context["validation_errors"] = validation_errors
+            self.context["remediation"] = "Validate payload against declared schema; ensure required fields and types match"
+        self.validation_errors = validation_errors
+
+
+# Export all error types for easy importing
+__all__ = [
+    "AgentErrorKind",
+    "FailoverDecision",
+    "IdleTimeoutBreaker",
+    "ErrorContextProtocol",
+    "PraisonAIError", 
+    "ToolExecutionError",
+    "LLMError", 
+    "BudgetExceededError",
+    "ValidationError", 
+    "NetworkError",
+    "HandoffError",
+    "HandoffCycleError", 
+    "HandoffDepthError", 
+    "HandoffTimeoutError",
+    "HandoffValidationError",
+    "PraisonAIConfigError"
+]

@@ -1,0 +1,35 @@
+eval_id: 188
+name: squad_score
+description: "Computes SQuAD-style evaluation: exact match + token F1 for QA tasks. Normalizes text (lowercase, remove articles/punctuation) before comparing."
+eval_tags:
+- NLP Metrics
+- RAG
+visible_ui: true
+permissions: {allow_edit: false, allow_copy: true}
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys: [output, expected]
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc: {output: Predicted answer, expected: Gold answer}
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import re
+        from collections import Counter
+        def _norm(t):
+            t = str(t).lower().strip()
+            t = re.sub(r'\b(a|an|the)\b', ' ', t)
+            t = re.sub(r'[^\w\s]', '', t)
+            return ' '.join(t.split())
+        pred, gold = _norm(kwargs.get("output", output or "")), _norm(kwargs.get("expected", expected or ""))
+        em = 1.0 if pred == gold else 0.0
+        pt, gt = pred.split(), gold.split()
+        if not pt or not gt:
+            f1 = 1.0 if pred == gold else 0.0
+        else:
+            c = sum((Counter(pt) & Counter(gt)).values())
+            f1 = 2*c/(len(pt)+len(gt)) if c > 0 else 0.0
+        score = (em + f1) / 2
+        return {"score": float(score), "reason": f"SQuAD: EM={em:.0f}, F1={f1:.4f}"}

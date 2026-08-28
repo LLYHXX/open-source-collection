@@ -1,0 +1,64 @@
+eval_id: 98
+name: evaluate_function_calling
+description: Tests if the model correctly identifies when to trigger a tool/function and includes the right arguments in the
+  function call.
+criteria: "You are evaluating whether the model correctly selects and invokes functions with appropriate arguments.\n\n##\
+  \ Criteria\n\n1. Function selection: The chosen function must match the user's intent from the available functions.\n  \
+  \ - Pass: User asks \"What's the weather?\" and model calls get_weather().\n   - Fail: User asks \"What's the weather?\"\
+  \ and model calls send_email().\n\n2. Argument completeness: All required parameters must be present with appropriate values.\n\
+  \   - Pass: get_weather(city=\"London\", units=\"celsius\") with all required params.\n   - Fail: get_weather() with missing\
+  \ required city parameter.\n\n3. Argument accuracy: Parameter values must correctly reflect the user's specifications.\n\
+  \   - Pass: User says \"in Fahrenheit\" and units=\"fahrenheit\" is passed.\n   - Fail: User says \"in Fahrenheit\" but\
+  \ units=\"celsius\" is passed.\n\n## Anti-bias Rules\n\n- If multiple functions could validly handle the request, selecting\
+  \ any appropriate one should pass.\n- Optional parameters not mentioned by the user may be omitted without penalty.\n- A\
+  \ correctly structured call with fewer optional params scores higher than a malformed call with all params.\n\n## Scoring\n\
+  \nReturn 'Passed' if the correct function is selected with all required arguments present and accurate. Return 'Failed'\
+  \ if the wrong function is chosen, required arguments are missing, or values are incorrect.\n\n## Inputs\n\n<input>{{input}}</input>\n\
+  \n<output>{{output}}</output>"
+eval_tags:
+- Code
+- Agents
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    input: The user's request
+    output: The function call to be evaluated
+  param_modalities:
+    input: &id001
+    - TEXT
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output: *id001
+  rule_prompt: "You are evaluating whether the model correctly selects and invokes functions with appropriate arguments.\n\
+    \n## Criteria\n\n1. Function selection: The chosen function must match the user's intent from the available functions.\n\
+    \   - Pass: User asks \"What's the weather?\" and model calls get_weather().\n   - Fail: User asks \"What's the weather?\"\
+    \ and model calls send_email().\n\n2. Argument completeness: All required parameters must be present with appropriate\
+    \ values.\n   - Pass: get_weather(city=\"London\", units=\"celsius\") with all required params.\n   - Fail: get_weather()\
+    \ with missing required city parameter.\n\n3. Argument accuracy: Parameter values must correctly reflect the user's specifications.\n\
+    \   - Pass: User says \"in Fahrenheit\" and units=\"fahrenheit\" is passed.\n   - Fail: User says \"in Fahrenheit\" but\
+    \ units=\"celsius\" is passed.\n\n## Anti-bias Rules\n\n- If multiple functions could validly handle the request, selecting\
+    \ any appropriate one should pass.\n- Optional parameters not mentioned by the user may be omitted without penalty.\n\
+    - A correctly structured call with fewer optional params scores higher than a malformed call with all params.\n\n## Scoring\n\
+    \nReturn 'Passed' if the correct function is selected with all required arguments present and accurate. Return 'Failed'\
+    \ if the wrong function is chosen, required arguments are missing, or values are incorrect.\n\n## Inputs\n\n<input>{{input}}</input>\n\
+    \n<output>{{output}}</output>"

@@ -1,0 +1,44 @@
+meta {
+  name: 08 - Error - Invalid or Unauthorized Workspace
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{host}}/usage/workspace-eval-summary/?workspace_id=00000000-0000-0000-0000-000000000000&month=1&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  workspace_id: 00000000-0000-0000-0000-000000000000
+  month: 1
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Workspace Evaluation Summary - Invalid Workspace ID
+
+  ### Test Scenario
+  - workspace_id that doesn't exist or user doesn't have access to
+  - Tests workspace access control and validation
+
+  ### Expected Response
+  - Status: 403 Forbidden
+  - Response structure:
+    ```json
+    {
+      "status": false,
+      "message": "Workspace not found or access denied"
+    }
+    ```
+
+  ### Notes
+  - Workspace must exist in the user's organization
+  - Tests cross-organization data isolation
+  - Use a non-existent UUID to test this scenario
+}

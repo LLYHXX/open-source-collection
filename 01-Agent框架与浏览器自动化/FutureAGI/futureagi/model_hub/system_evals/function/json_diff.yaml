@@ -1,0 +1,68 @@
+eval_id: 172
+name: json_diff
+description: Deep structural comparison between two JSON objects. Recursively compares keys and values at all levels, returning
+  a score based on the fraction of matching nodes. Useful for evaluating structured output generation.
+criteria: Measures structural and value-level similarity between two JSON documents.
+eval_tags:
+- Output Format
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config: {}
+  config_params_desc:
+    output: Actual JSON (string or object)
+    expected: Expected JSON (string or object)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        import json
+        def _parse(val):
+            if isinstance(val, str):
+                return json.loads(val)
+            return val
+        def _cmp(a, b):
+            if type(a) != type(b):
+                return 0, 1
+            if isinstance(a, dict):
+                keys = set(list(a.keys()) + list(b.keys()))
+                if not keys:
+                    return 1, 1
+                m, t = 0, 0
+                for k in keys:
+                    t += 1
+                    if k in a and k in b:
+                        sm, st = _cmp(a[k], b[k])
+                        m += sm
+                        t += st - 1
+                return m, max(t, 1)
+            elif isinstance(a, list):
+                ml = max(len(a), len(b))
+                if ml == 0:
+                    return 1, 1
+                m, t = 0, 0
+                for i in range(ml):
+                    t += 1
+                    if i < len(a) and i < len(b):
+                        sm, st = _cmp(a[i], b[i])
+                        m += sm
+                        t += st - 1
+                return m, max(t, 1)
+            else:
+                return (1 if a == b else 0), 1
+        try:
+            actual = _parse(kwargs.get("output", output))
+            exp = _parse(kwargs.get("expected", expected))
+        except Exception as e:
+            return {"score": 0.0, "reason": f"JSON parse error: {e}"}
+        m, t = _cmp(actual, exp)
+        score = m / t if t > 0 else 1.0
+        return {"score": float(score), "reason": f"JSON Diff: {score:.4f} ({m}/{t} matching)"}

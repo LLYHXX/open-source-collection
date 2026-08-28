@@ -1,0 +1,33 @@
+meta {
+  name: Add Run Prompt Column
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{host}}/model-hub/develops/add_run_prompt_column/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_id": "5d5d2b4c-dd95-4d5a-93ed-407b7368cf3a",
+    "name": "rp_0848",
+    "config": {
+      "model": "gpt-3.5-turbo",
+      "temperature": 0.7,
+      "max_tokens": 100,
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is toxicity?"
+        }
+      ]
+    }
+  }
+}

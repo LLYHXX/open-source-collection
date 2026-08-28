@@ -1,0 +1,21 @@
+meta {
+  name: Huggingface Datasets List
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{host}}/model-hub/datasets/huggingface/list/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "search_query": "OpenAI"
+  }
+}

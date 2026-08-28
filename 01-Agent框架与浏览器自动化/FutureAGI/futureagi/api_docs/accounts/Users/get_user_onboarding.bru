@@ -1,0 +1,42 @@
+meta {
+  name: Get User Onboarding Data
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/accounts/onboarding/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  # Get User Onboarding Data
+
+  Retrieve the user's saved onboarding data (role and goals).
+
+  ## Response
+
+  Returns the user's role and selected goals:
+
+  ```json
+  {
+    "success": true,
+    "data": {
+      "role": "Data Scientist",
+      "goals": ["Evaluations", "LLM Observability"],
+      "completed": true
+    }
+  }
+  ```
+
+  ## Notes
+
+  - Requires authentication
+  - Returns empty values if onboarding not completed
+  - Backward compatible with legacy config-based data
+}

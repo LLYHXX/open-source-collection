@@ -1,0 +1,237 @@
+# Installing LoopX
+
+PyPI is the default LoopX release channel. Use Python 3.11 or later in an
+active virtual environment, a managed user environment, or another environment
+whose console scripts are on `PATH`:
+
+```bash
+python3 -m pip install --upgrade loopx
+loopx workflow-skills --install
+loopx doctor
+```
+
+Choose one installation owner and keep it authoritative:
+
+| Use case | Owner | Install or acquire | Upgrade |
+| --- | --- | --- | --- |
+| Normal release | Python package environment | `python3 -m pip install loopx` | `loopx update apply` or the manual pip sequence below |
+| Isolated CLI on an externally managed machine | `pipx` | `pipx install loopx` | `pipx upgrade loopx`, then refresh LoopX host material |
+| Contributor or source qualification | Git checkout | clone/fetch plus `scripts/install-local.sh` | update the checkout explicitly, rerun the installer, validate `loopx-canary` before promotion |
+| No-clone recovery fallback | LoopX archive snapshot | published archive installer | `loopx update apply` |
+
+PyPI is the canonical source for normal releases. A source checkout is a
+development and qualification surface, not a second implicit package channel.
+The archive snapshot remains a recovery path rather than a competing default.
+
+LoopX's Effect Program core runs in a managed, idle-exiting TypeScript runtime
+and requires Node.js 22.6 or later. LoopX starts and reuses that local runtime
+automatically; users do not run a daemon manually. The runtime binds only to
+loopback, authenticates requests with a user-private token, rotates when the
+packaged Effect core changes, and exits after an idle period. `loopx doctor`
+reports it as `ready`, `missing`, `unsupported`, or `probe_failed`; a missing
+or stale runtime fails closed instead of falling back to a second Python rule
+engine. The same doctor projection exposes `runtime_lifecycle.state` as
+`running`, `stopped`, or `unavailable`, plus a public-safe `diagnostic_code`;
+the App can render this projection without inventing a second health model.
+`stopped` is healthy and means the idle-exited runtime will restart on the next
+control-plane request. Validate Node before installing or upgrading LoopX:
+
+```bash
+node --version
+# v22.6.0 or newer
+```
+
+Use `loopx doctor --deep` after installation to start the managed runtime and
+exercise the packaged Effect semantics and native journal checkpoint handler.
+`workflow-skills --install` copies the packaged LoopX workflow skills into the
+user's Codex skill directory and writes a revision readback; it does not change
+project state or grant repository, network, or merge authority. Restart the
+host after first install so it reloads the new skills.
+
+If Python packages are externally managed on the machine, use a dedicated tool
+environment instead of modifying the system interpreter:
+
+```bash
+pipx install loopx
+loopx workflow-skills --install
+loopx doctor
+```
+
+## Native Windows PowerShell 7
+
+The PyPI distribution is also the default native Windows path. From PowerShell
+7, use a Python 3.11+ interpreter and validate the installed console script:
+
+```powershell
+py -3.11 -m pip install --upgrade loopx
+loopx workflow-skills --install
+loopx doctor
+```
+
+Contributors and operators who deliberately need an immutable snapshot from a
+trusted checkout can install the native PowerShell launcher without Bash,
+POSIX symlinks, or WSL:
+
+```powershell
+git clone https://github.com/huangruiteng/loopx.git "$HOME/loopx"
+Set-Location "$HOME/loopx"
+pwsh -NoLogo -NoProfile -File .\scripts\install-windows.ps1 `
+  -Python (Get-Command python).Source `
+  -AddToUserPath
+loopx doctor --deep
+```
+
+The snapshot installer validates the candidate before promotion, writes an
+atomic release pointer, and places `loopx.ps1` plus its release-pointer sidecar
+in `$HOME/.local/bin` by default. `-InstallRoot`, `-BinDir`, and `-SkillsDir`
+remain explicit overrides; a fresh shell discovers a custom install through
+the sidecar, without requiring `LOOPX_CURRENT_RELEASE_FILE`. Use `-SkipSkills`
+when another trusted host manager owns the LoopX skill files, and omit
+`-AddToUserPath` when PATH changes are not authorized.
+
+Native snapshot `loopx update` and automatic rollback fail closed. To upgrade
+or roll back, check out the intended trusted revision, rerun
+`scripts/install-windows.ps1`, then verify `loopx doctor --deep`. The previous
+release directories remain under the selected install root until the operator
+removes them; changing a pointer by hand is not the supported rollback path.
+
+Before removing a native snapshot, run the managed host uninstallers while the
+launcher is still available, then remove the launcher files and snapshot root:
+
+```powershell
+loopx slash-commands --uninstall
+loopx workflow-skills --uninstall
+Remove-Item -LiteralPath "$HOME/.local/bin/loopx.ps1" -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath "$HOME/.local/bin/loopx-current-release.json" -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath "$HOME/.local/share/loopx" -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+If installation used `-AddToUserPath`, remove the chosen `BinDir` from the
+Windows user PATH through Windows Environment Variables after uninstalling.
+Installation and PATH opt-in only expose local command and skill files. They do
+not grant repository, network, credential, external-system, or merge authority,
+and uninstall does not delete project-local `.loopx/`, `.codex/goals/`, or
+evidence state.
+
+## Host Command Surfaces
+
+The workflow-skill command installs the rich Codex workflows and managed
+`$loopx` entry. Install additional command facades only for hosts that need
+them:
+
+```bash
+loopx slash-commands --install
+```
+
+The default command-facade set covers Codex, Claude Code, and OpenCode. Other
+surfaces remain explicit; inspect `loopx slash-commands --help` before enabling
+one. Host integration changes command discovery only. It does not grant LoopX
+permission to write a repository, contact external systems, or bypass a user
+gate.
+
+## Upgrade And Repair
+
+`loopx update` is the channel-aware upgrade entry point. Its actions have the
+same meaning for humans and agents:
+
+```bash
+loopx update check       # read-only freshness and installation-owner check
+loopx update plan        # read-only command, validation, and rollback plan
+loopx update apply       # explicit local-environment mutation
+```
+
+Bare `loopx update` remains a read-only plan. The older `--check`, `--dry-run`,
+and `--execute` spellings remain compatibility aliases, but new instructions
+should use the named actions.
+
+Human-readable output starts with **No update was applied** and a copyable
+**Next Action** command. JSON output exposes the same decision as
+`requested_action`, `changes_applied`, and a typed `next_action` object with
+mutation and explicit-approval fields. Agents should inspect those fields instead
+of inferring authority from prose.
+
+For a PyPI distribution installed by pip, `update apply` asks the exact Python
+interpreter that owns LoopX to upgrade its environment, then starts fresh
+processes to install workflow skills and slash commands, runs doctor, revalidates
+enabled extensions, and restarts managed local LoopX services. It does not
+switch the installation to an archive snapshot.
+
+The equivalent manual sequence is:
+
+```bash
+python3 -m pip install --upgrade loopx
+loopx workflow-skills --install
+loopx slash-commands --install
+loopx doctor
+```
+
+The first command is the package transaction; the remaining commands are the
+LoopX activation and readback contract. Running only `pip install` can leave
+host material from the previous version active. Conversely, `loopx update
+apply` does not replace pip as the owner of dependency resolution, environment
+policy, package indexes, or uninstall.
+
+For an installation owned by another Python package manager, `update plan`
+reports that owner and its command; LoopX fails closed instead of guessing a
+pip mutation. For a live source checkout, it reports the contributor installer
+and never performs `git pull` or rewrites the worktree. Source acquisition and
+repository mutation remain explicit human or authorized-agent actions.
+
+`loopx doctor` reports `install_kind: python_distribution` for this path and
+returns the same pip-native repair sequence when packaged skills are missing or
+stale. It also verifies the required TypeScript Effect runtime before a
+control-plane upgrade is considered healthy. Runtime metadata is fingerprinted
+by the installed sources, so an upgraded LoopX starts a matching process while
+an older process exits after becoming idle. When a release needs to be rolled
+back, reinstall the previously selected version, refresh the packaged host
+material, and validate again:
+
+```bash
+python3 -m pip install "loopx==<previous-version>"
+loopx workflow-skills --install
+loopx slash-commands --install
+loopx doctor
+```
+
+## Archive Fallback
+
+The GitHub Pages installer remains a fallback for machines where an appropriate
+Python package environment is unavailable or the CLI is too damaged to run its
+own repair path:
+
+```bash
+curl -fsSL https://huangruiteng.github.io/loopx/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+loopx doctor
+```
+
+This fallback installs an archive snapshot, wrapper, man page, and host
+materials together. LoopX owns that snapshot lifecycle, so its update path is:
+
+```bash
+loopx update check
+loopx update plan
+loopx update apply
+```
+
+Archive apply retains the atomic release pointer, doctor validation, extension
+readback, managed-service restart, and first-class snapshot rollback. The
+installation-owner projection prevents this path from being mixed with an
+active PyPI executable.
+
+## Uninstall
+
+Remove LoopX-owned host material before uninstalling the Python package:
+
+```bash
+loopx slash-commands --uninstall
+loopx workflow-skills --uninstall
+python3 -m pip uninstall loopx
+```
+
+Both host uninstallers preserve same-name files whose content changed after
+LoopX installed them. Project-local `.loopx/`, `.codex/goals/`, evidence, and
+runtime state are not deleted by package uninstall.
+
+Contributors who need a live canary should use a real checkout and
+`scripts/install-local.sh`; see [Getting Started](getting-started.md).

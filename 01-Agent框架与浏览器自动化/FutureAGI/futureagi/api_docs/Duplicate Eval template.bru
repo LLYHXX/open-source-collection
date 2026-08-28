@@ -1,0 +1,24 @@
+meta {
+  name: Duplicate Eval template
+  type: http
+  seq: 29
+}
+
+post {
+  url: {{host}}/model-hub/duplicate-eval-template/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "eval_template_id": "13be4a24-ee4b-47b9-8111-623bb79dc316",
+    "name": "duplicate_true_false"
+  }
+
+
+}

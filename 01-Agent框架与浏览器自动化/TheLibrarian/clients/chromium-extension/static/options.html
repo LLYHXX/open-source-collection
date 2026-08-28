@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The Librarian — Settings</title>
+    <link rel="stylesheet" href="fonts.css" />
+    <style>
+      /* The Librarian "Reading Room" system (see DESIGN.md) — matches the popup
+         and the dashboard: warm paper + ink, a single verdigris/cyan rubric
+         accent on the one primary action, flat, sharp corners, hairline rules,
+         editorial serif + IBM Plex Mono for machine text (URLs, tokens). */
+      :root {
+        color-scheme: light;
+        --bg: #f5f1e8;
+        --surface: #faf7f0;
+        --ink: #1a1612;
+        --muted: #6f675a;
+        --accent: #3f9c8e;
+        --accent-fg: #faf7f0;
+        --hairline: rgba(26, 22, 18, 0.14);
+        --mono-fill: #ede7d8;
+        --error: #9b3d1f;
+        --display: "Fraunces", Georgia, "Times New Roman", serif;
+        --body: "Newsreader", Georgia, "Times New Roman", serif;
+        --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 3rem;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--body);
+        line-height: 1.55;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding-bottom: 18px;
+        margin-bottom: 8px;
+        border-bottom: 1px solid var(--hairline);
+      }
+      header img {
+        width: 40px;
+        height: 40px;
+        display: block;
+      }
+      h1 {
+        font-family: var(--display);
+        font-size: 22px;
+        font-weight: 500;
+        margin: 0;
+        letter-spacing: 0.01em;
+      }
+      .kicker {
+        display: block;
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      .lede {
+        color: var(--muted);
+        margin: 16px 0 24px;
+      }
+      label {
+        display: block;
+        font-weight: 500;
+        margin: 22px 0 6px;
+      }
+      input {
+        width: 100%;
+        padding: 10px 12px;
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--ink);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-radius: 0;
+      }
+      input:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .hint {
+        font-size: 13px;
+        color: var(--muted);
+        margin: 6px 0 0;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.9em;
+        background: var(--mono-fill);
+        padding: 0.05em 0.35em;
+      }
+      #http-warning {
+        margin-top: 14px;
+        padding: 12px 14px;
+        border: 1px solid var(--error);
+        border-left-width: 3px;
+        border-radius: 0;
+        background: color-mix(in srgb, var(--error) 8%, transparent);
+        font-size: 13.5px;
+      }
+      button {
+        margin-top: 26px;
+        padding: 10px 20px;
+        font-family: var(--display);
+        font-size: 15px;
+        cursor: pointer;
+        border: 1px solid var(--accent);
+        border-radius: 0;
+        background: var(--accent);
+        color: var(--accent-fg);
+        transition: opacity 0.12s ease;
+      }
+      button:hover {
+        opacity: 0.9;
+      }
+      #status {
+        margin-top: 16px;
+        font-family: var(--mono);
+        font-size: 13px;
+        min-height: 1.5em;
+        color: var(--muted);
+      }
+      #status[data-tone="ok"] {
+        color: var(--accent);
+      }
+      #status[data-tone="error"] {
+        color: var(--error);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon128.png" alt="" />
+      <h1>The Librarian<span class="kicker">Web clipper · settings</span></h1>
+    </header>
+    <p class="lede">
+      Mint a capture token on your Librarian dashboard's “Connect a device” page, then paste your
+      server URL and the token below.
+    </p>
+    <form id="options-form">
+      <label for="server-url">Server URL</label>
+      <input
+        id="server-url"
+        type="text"
+        inputmode="url"
+        placeholder="https://librarian.example.com"
+        autocomplete="off"
+      />
+      <p class="hint">
+        Your Librarian server's base address. The clipper posts to <code>/ingest</code>.
+      </p>
+
+      <p id="http-warning" hidden>
+        <strong>Plaintext server.</strong> This is an <code>http://</code> address — your capture
+        token is sent in cleartext, and the extension can only reach an <code>http</code> server on
+        your local network or <code>localhost</code>. A remote server should use
+        <code>https://</code>.
+      </p>
+
+      <label for="token">Capture token</label>
+      <input id="token" type="password" placeholder="lib.…" autocomplete="off" />
+      <p class="hint">
+        Stored only in this browser. Capture-scope only — it cannot reach your agent tools.
+      </p>
+
+      <button type="submit">Save &amp; grant access</button>
+      <p id="status" data-tone="idle"></p>
+    </form>
+    <script src="options.js"></script>
+  </body>
+</html>

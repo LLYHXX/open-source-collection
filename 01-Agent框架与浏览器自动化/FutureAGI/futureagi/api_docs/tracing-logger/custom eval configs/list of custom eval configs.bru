@@ -1,0 +1,31 @@
+meta {
+  name: list of custom eval configs
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}/tracer/custom-eval-config/list_custom_eval_configs/?project_id=cef26532-e0b3-41b2-a876-c13ea4b4c192
+  body: none
+  auth: bearer
+}
+
+params:query {
+  project_id: cef26532-e0b3-41b2-a876-c13ea4b4c192
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "8306c8af-b7e6-484c-8824-bf8b3c1ba80d",
+    "name": "test eval template",
+    "eval_template": "1d8efb9c-e184-4f0c-8567-1bdfb19cdf65",
+    "mapping": {
+      "input": "query"
+    },
+    "config": {}
+  }
+}

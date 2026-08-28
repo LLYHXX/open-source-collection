@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+
+import pytest
+
+"""
+Simple test to verify the improved require_approval decorator.
+"""
+
+import sys
+import os
+
+# Add the praisonai-agents module to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'praisonai-agents')))
+
+def test_improved_decorator():
+    """Test the improved decorator with context management."""
+    print("🧪 Testing Improved Decorator with Context Management")
+    print("=" * 55)
+    
+    try:
+        from praisonaiagents.approval import (
+            require_approval, set_approval_callback, ApprovalDecision,
+            mark_approved, is_already_approved, clear_approval_context
+        )
+        
+        # Clear any previous context
+        clear_approval_context()
+        
+        # Create a test function
+        @require_approval(risk_level="high")
+        def test_function(message="test"):
+            return f"Function executed: {message}"
+        
+        print("✅ Test function decorated successfully")
+        
+        # Test 1: Direct call without approval (should fail)
+        print("\n1. Testing direct call without approval (should fail)...")
+        
+        def auto_deny(function_name, arguments, risk_level):
+            return ApprovalDecision(approved=False, reason='Test denial')
+        
+        set_approval_callback(auto_deny)
+        
+        try:
+            result = test_function("direct call")
+            print(f"❌ Function executed when it should have been denied: {result}")
+            assert False, "Function should have been denied"
+        except PermissionError as e:
+            print(f"✅ Correctly denied: {e}")
+        
+        # Test 2: Mark as approved and call (should succeed)
+        print("\n2. Testing with approval context (should succeed)...")
+        
+        # Approvals are argument-scoped: mark with the same effective args the
+        # call uses so the cache key matches. A bare mark_approved(name) no
+        # longer unlocks arbitrary argument values (that was the sticky-cache
+        # bypass this decorator now prevents).
+        mark_approved("test_function", {"message": "approved context"})
+        
+        try:
+            result = test_function("approved context")
+            print(f"✅ Function executed with approved context: {result}")
+            assert "approved context" in result
+        except Exception as e:
+            print(f"❌ Function failed in approved context: {e}")
+            assert False, f"Function should have worked in approved context: {e}"
+        
+        # Test 3: Clear context and test auto-approval
+        print("\n3. Testing auto-approval callback...")
+        
+        clear_approval_context()
+        
+        def auto_approve(function_name, arguments, risk_level):
+            return ApprovalDecision(approved=True, reason='Test approval')
+        
+        set_approval_callback(auto_approve)
+        
+        try:
+            result = test_function("auto approved")
+            print(f"✅ Function executed with auto-approval: {result}")
+            assert "auto approved" in result
+        except Exception as e:
+            print(f"❌ Function failed with auto-approval: {e}")
+            assert False, f"Function should have worked with auto-approval: {e}"
+        
+        # Test 4: Verify context is working
+        print("\n4. Testing context persistence...")
+        
+        # The auto-approval above recorded the call's effective args, so the
+        # persistence check must use those same args (argument-scoped cache).
+        if is_already_approved("test_function", {"message": "auto approved"}):
+            print("✅ Context correctly shows function as approved")
+        else:
+            print("❌ Context not working correctly")
+            assert False, "Context should show function as approved"
+        
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        assert False, f"Test failed: {e}"
+
+if __name__ == "__main__":
+    test_improved_decorator()
+    print("\n🎉 Improved decorator approach is working correctly!")
+    print("\nKey improvements:")
+    print("- ✅ Context management prevents double approval")
+    print("- ✅ Proper async handling")
+    print("- ✅ Decorator actually enforces approval")
+    print("- ✅ Agent integration marks tools as approved") 

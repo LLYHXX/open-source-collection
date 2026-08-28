@@ -1,0 +1,41 @@
+meta {
+  name: prompt placeholders
+  type: http
+  seq: 26
+}
+
+get {
+  url: {{host}}/model-hub/prompt/placeholders/?prompt_template_version_id=518fd3f3-d45f-4ac6-8023-3385666aab19
+  body: none
+  auth: bearer
+}
+
+params:query {
+  prompt_template_version_id: 518fd3f3-d45f-4ac6-8023-3385666aab19
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "prompt_template_version_id": "518fd3f3-d45f-4ac6-8023-3385666aab19",
+    "details": [
+      {
+        "placeholder_name": "test_placeholder",
+        "messages": [
+          {
+            "type": "pdf_url",
+            "file_url": "https://fi-content-dev.s3.ap-south-1.amazonaws.com/tempcust/90493512-b5f5-4382-a250-11d2e3707d9c",
+            "file_name": "TBT110013567_1007.pdf"
+          },
+          {
+            "type": "text",
+            "message": "take context from pdf and then generate"
+          }
+        ]
+      }
+    ]
+  }
+}

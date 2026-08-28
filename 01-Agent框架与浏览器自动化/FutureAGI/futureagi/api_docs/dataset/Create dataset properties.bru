@@ -1,0 +1,23 @@
+meta {
+  name: Create dataset properties
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/dataset/properties/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "modelId" : "6e6b87c3-ff6a-4fda-b79c-0609b0422f1e",
+    "name" : "test",
+    "explanation" : "test"
+  }
+}

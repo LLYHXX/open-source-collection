@@ -1,0 +1,57 @@
+eval_id: 116
+name: customer_agent_interruption_handling
+description: Monitors whether the bot talks over the user. Uses barge-in detection logs to confirm the bot waits for user
+  to finish speaking before responding.
+criteria: "You are evaluating how well the agent handles interruptions from the customer.\n\n## Criteria\n\n1. Recovery after\
+  \ interruption: The agent should resume logically without restarting from scratch.\n   - Good: Picks up where it left off\
+  \ after acknowledging the interruption.\n   - Bad: Restarts its entire script from the beginning after each interruption.\n\
+  \n2. Acknowledgment: The agent should address the customer's interjection before continuing.\n   - Good: \"I understand\
+  \ your concern about that. To continue with...\"\n   - Bad: Ignores the interruption and continues as if it didn't happen.\n\
+  \n3. Context preservation: Information shared before the interruption should not be lost.\n   - Good: Maintains all context\
+  \ from before the interruption.\n   - Bad: Forgets previously discussed details after being interrupted.\n\n## Anti-bias\
+  \ Rules\n\n- If no interruptions occur, award full score as there are no failures to penalize.\n- Brief pauses or filler\
+  \ words from the customer are NOT interruptions.\n- Simultaneous speech (common in voice) should be evaluated based on recovery,\
+  \ not the overlap itself.\n\n## Scoring\n\nScore 0.0 if the agent ignores interruptions, loses context, or restarts after\
+  \ each one. Score 0.5 if it handles some well but loses context occasionally. Score 1.0 if it smoothly acknowledges every\
+  \ interruption and resumes without context loss.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"
+eval_tags:
+- Agents
+- Audio
+- Conversation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - conversation
+  output: score
+  eval_type_id: AgentEvaluator
+  config_params_desc:
+    conversation: The conversation to be evaluated
+  param_modalities:
+    conversation:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  rule_prompt: "You are evaluating how well the agent handles interruptions from the customer.\n\n## Criteria\n\n1. Recovery\
+    \ after interruption: The agent should resume logically without restarting from scratch.\n   - Good: Picks up where it\
+    \ left off after acknowledging the interruption.\n   - Bad: Restarts its entire script from the beginning after each interruption.\n\
+    \n2. Acknowledgment: The agent should address the customer's interjection before continuing.\n   - Good: \"I understand\
+    \ your concern about that. To continue with...\"\n   - Bad: Ignores the interruption and continues as if it didn't happen.\n\
+    \n3. Context preservation: Information shared before the interruption should not be lost.\n   - Good: Maintains all context\
+    \ from before the interruption.\n   - Bad: Forgets previously discussed details after being interrupted.\n\n## Anti-bias\
+    \ Rules\n\n- If no interruptions occur, award full score as there are no failures to penalize.\n- Brief pauses or filler\
+    \ words from the customer are NOT interruptions.\n- Simultaneous speech (common in voice) should be evaluated based on\
+    \ recovery, not the overlap itself.\n\n## Scoring\n\nScore 0.0 if the agent ignores interruptions, loses context, or restarts\
+    \ after each one. Score 0.5 if it handles some well but loses context occasionally. Score 1.0 if it smoothly acknowledges\
+    \ every interruption and resumes without context loss.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"

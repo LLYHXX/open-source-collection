@@ -1,0 +1,29 @@
+{% extends "billing/base_billing.html" %}
+{% block title %}Usage Paused — Future AGI{% endblock %}
+{% block preheader %}{{ budget_name }} tripped — new requests are being rejected for {{ scope }}.{% endblock %}
+{% block txid %}◦ BUDGET / PAUSED{% endblock %}
+{% block content %}
+<h1 class="hx" style="font-family:'Inter',sans-serif; font-size:26px; line-height:1.2; font-weight:600; color:#fafafa; letter-spacing:-0.015em; margin:0 0 14px 0;">Usage paused by budget rule</h1>
+<p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:0 0 16px 0;">
+  <strong style="color:#fafafa;">{{ budget_name }}</strong> for <span class="mono" style="font-family:'JetBrains Mono',monospace; color:#fafafa;">{{ scope }}</span> tripped its pause rule. New requests for this dimension are being rejected until the budget is raised or the rule is changed.
+</p>
+
+<div class="log" style="background-color:#0a0a0a; border:1px solid #27272a; border-radius:10px; padding:20px 22px; margin:22px 0; font-family:'Inter',sans-serif; color:#c7c7cc;">
+  <p class="log-hdr" style="margin:0 0 14px 0; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:#a1a1aa;">
+    <span style="display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:10px; vertical-align:middle; background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,0.55);"></span>Paused<span style="color:#71717a; font-weight:500; margin-left:6px;">· Requests rejecting</span>
+  </p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td style="padding:7px 0; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:#71717a;">Dimension</td><td style="padding:7px 0; text-align:right; font-family:'Inter',sans-serif; font-size:14px; color:#fafafa; font-weight:500;">{{ scope }}</td></tr>
+    <tr><td style="padding:7px 0; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:#71717a; border-top:1px solid #1a1a1d;">Threshold</td><td style="padding:7px 0; text-align:right; font-family:'JetBrains Mono',monospace; font-size:14px; color:#fafafa; font-weight:500; border-top:1px solid #1a1a1d;">{{ threshold }}</td></tr>
+    <tr><td style="padding:7px 0; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:#71717a; border-top:1px solid #1a1a1d;">Current</td><td style="padding:7px 0; text-align:right; font-family:'JetBrains Mono',monospace; font-size:14px; color:#fafafa; font-weight:500; border-top:1px solid #1a1a1d;">{{ current_usage }}</td></tr>
+  </table>
+</div>
+
+<p class="px" style="font-family:'Inter',sans-serif; font-size:15px; line-height:1.65; color:#c7c7cc; margin:0 0 20px 0;">
+  To resume usage, raise the budget threshold or change the action from <span class="mono" style="font-family:'JetBrains Mono',monospace; color:#fafafa;">pause</span> to <span class="mono" style="font-family:'JetBrains Mono',monospace; color:#fafafa;">warn</span> or <span class="mono" style="font-family:'JetBrains Mono',monospace; color:#fafafa;">notify</span>.
+</p>
+
+<div style="margin: 8px 0 0 0;">
+  {% include "billing/_button.html" with url=base_url|add:"/dashboard/settings/billing" text="Update budget" variant="danger" %}
+</div>
+{% endblock %}

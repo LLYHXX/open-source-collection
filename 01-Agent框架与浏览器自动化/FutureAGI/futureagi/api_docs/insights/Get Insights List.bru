@@ -1,0 +1,20 @@
+meta {
+  name: Get Insights List
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{host}}:{{port}}/model-hub/insight/list/?page=1&search_query=fine
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page: 1
+  search_query: fine
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

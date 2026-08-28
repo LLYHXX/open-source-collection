@@ -1,0 +1,13 @@
+Future AGI
+Copyright 2024-2026 Future AGI, Inc.
+
+This product includes software developed at Future AGI, Inc. (https://futureagi.com).
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this product except in compliance with the License. You may obtain a copy
+of the License at http://www.apache.org/licenses/LICENSE-2.0.
+
+Portions of this product may be licensed under the Future AGI Enterprise
+License 1.0 (see LICENSE-EE). Those portions are contained in directories
+named `ee/` (e.g., `futureagi/ee/`, `frontend/ee/`) and require an active
+paid subscription to use in production.

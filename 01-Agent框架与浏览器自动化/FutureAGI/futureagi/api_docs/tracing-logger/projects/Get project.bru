@@ -1,0 +1,27 @@
+meta {
+  name: Get project
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/tracer/project/:id
+  body: json
+  auth: bearer
+}
+
+params:path {
+  id: 6014e118-8a2f-43e9-84fd-53e1fab43489
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "TEST_PROJECT",
+    "model_type": "Ranking",
+    "trace_type": "experiment"
+  }
+}

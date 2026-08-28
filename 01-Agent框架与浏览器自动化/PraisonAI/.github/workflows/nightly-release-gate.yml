@@ -1,0 +1,144 @@
+name: Nightly Release Gate
+
+# Preflight before PyPI Release (patch bump).
+# Triggers: Core Tests success on main (workflow_run) or cron every 3 days at 00:00 UTC.
+# Dedupe: max one successful patch release every 3 days (see release-gate.js).
+
+on:
+  schedule:
+    - cron: '0 0 */3 * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run preflight only; do not dispatch pypi-release.yml'
+        required: false
+        default: false
+        type: boolean
+  workflow_run:
+    workflows:
+      - Core Tests
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: nightly-release-gate
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.event == 'push' &&
+        !startsWith(github.event.workflow_run.head_commit.message, 'Release v') &&
+        !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):')
+      )
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    steps:
+      - name: Resolve trigger context
+        id: ctx
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "checkout_sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+            echo "source=ci" >> "$GITHUB_OUTPUT"
+            echo "is_ci=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "checkout_sha=main" >> "$GITHUB_OUTPUT"
+            echo "source=nightly" >> "$GITHUB_OUTPUT"
+            echo "is_ci=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ steps.ctx.outputs.checkout_sha }}
+          fetch-depth: 0
+
+      - name: Fetch main and tags
+        run: git fetch --tags origin main
+
+      # Guards the gate logic itself — no workflow ran these selftests before.
+      - name: Selftest release-gate script
+        run: node .github/scripts/release-gate-selftest.js
+
+      - name: Preflight — path changes, CI SHA, dedupe
+        id: preflight
+        uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ steps.ctx.outputs.checkout_sha }}
+          IS_CI: ${{ steps.ctx.outputs.is_ci }}
+        with:
+          github-token: ${{ secrets.GH_TOKEN }}
+          script: |
+            const path = require('path');
+            const rg = require(path.join(process.env.GITHUB_WORKSPACE, '.github/scripts/release-gate.js'));
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const headSha = process.env.HEAD_SHA;
+            const isCi = process.env.IS_CI === 'true';
+
+            const result = await rg.evaluateReleasePreflight(
+              github, owner, repo,
+              { headSha, isCiTrigger: isCi, bump: 'patch' },
+              core
+            );
+
+            core.setOutput('should_release', result.ready ? 'true' : 'false');
+            core.setOutput('reason', result.reasons.join('; '));
+            core.setOutput('head_sha', result.headSha || headSha);
+            core.setOutput('last_tag', result.lastTag || '');
+            core.setOutput('target_agents', result.targetAgents || '');
+            core.setOutput('target_code', result.targetCode || '');
+            core.setOutput('target_wrapper', result.targetWrapper || '');
+
+            core.summary.addRaw('## Release gate preflight\n');
+            core.summary.addRaw(`Ready: ${result.ready}\n`);
+            core.summary.addRaw(`Reason: ${result.reasons.join('; ')}\n`);
+            if (result.targetAgents) {
+              core.summary.addRaw(
+                `Targets: praisonaiagents==${result.targetAgents}, `
+                + `praisonai-code==${result.targetCode}, praisonai==${result.targetWrapper}\n`
+              );
+            }
+            await core.summary.write();
+
+            if (!result.ready) {
+              core.info(`Skip release: ${result.reasons.join('; ')}`);
+            }
+
+      - name: Dry run summary
+        if: inputs.dry_run == true
+        run: |
+          echo "Dry run — preflight only, no pypi-release dispatch."
+          echo "should_release=${{ steps.preflight.outputs.should_release }}"
+          echo "reason=${{ steps.preflight.outputs.reason }}"
+
+      - name: Dispatch PyPI Release (patch)
+        if: steps.preflight.outputs.should_release == 'true' && inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          gh workflow run pypi-release.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main \
+            -f bump=patch \
+            -f source=${{ steps.ctx.outputs.source }} \
+            -f trigger_sha=${{ steps.preflight.outputs.head_sha }} \
+            -f dry_run=false
+          echo "Dispatched pypi-release.yml (patch, source=${{ steps.ctx.outputs.source }})"
+          if [ "${{ steps.ctx.outputs.source }}" = "ci" ]; then
+            echo "Uses pypi-auto environment (no manual approval)."
+          else
+            echo "Uses pypi-auto environment for nightly patch releases."
+          fi

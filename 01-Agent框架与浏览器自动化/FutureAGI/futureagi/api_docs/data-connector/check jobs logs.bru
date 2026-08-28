@@ -1,0 +1,30 @@
+meta {
+  name: check jobs logs
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{host}}/data-connector/jobs/
+  body: json
+  auth: bearer
+}
+
+params:query {
+  ~status_query: null
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "connection_id": "30879ba8-f27e-42c7-a957-f995f10c0b04"
+  }
+}

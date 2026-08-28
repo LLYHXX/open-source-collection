@@ -1,0 +1,10 @@
+.custom-quill .ql-container {
+  border: none;
+  background-color: var(--bg-input);
+}
+
+.custom-quill .ql-editor {
+  border: none;
+  min-height: 150px;
+  background-color: var(--bg-input);
+}

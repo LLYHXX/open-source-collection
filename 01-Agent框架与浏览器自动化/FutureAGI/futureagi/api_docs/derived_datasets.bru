@@ -1,0 +1,21 @@
+meta {
+  name: derived_datasets
+  type: http
+  seq: 5
+}
+
+get {
+  url: http://localhost:8000/model-hub/feedback/get_template/?user_eval_metric_id=0e5abffd-4012-4c15-9e3a-5a0afb8a436b
+  body: none
+  auth: none
+}
+
+params:query {
+  user_eval_metric_id: 0e5abffd-4012-4c15-9e3a-5a0afb8a436b
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+  Content-Type: application/json
+  Cookie: {{xsrf_cookie}}
+}

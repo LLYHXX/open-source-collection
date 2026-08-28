@@ -1,0 +1,15 @@
+meta {
+  name: Delete a column
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{host}}/model-hub/develops/58065dbc-6968-4d82-be0c-cd0e73373961/delete_column/2b69b103-858c-4cd5-a3d6-a316dd6eec70/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

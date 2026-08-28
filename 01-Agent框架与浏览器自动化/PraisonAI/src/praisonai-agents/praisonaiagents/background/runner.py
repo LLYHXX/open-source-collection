@@ -1,0 +1,512 @@
+"""
+Background Runner for PraisonAI Agents.
+
+Manages background task execution.
+"""
+
+import asyncio
+import threading
+from praisonaiagents._logging import get_logger
+from typing import Optional, List, Dict, Any, Callable, Union
+from datetime import datetime
+
+from .task import BackgroundTask, TaskStatus
+from .config import BackgroundConfig
+
+logger = get_logger(__name__)
+
+
+def _safe_on_complete(
+    on_complete: Optional[Callable[["BackgroundTask"], None]],
+    task: "BackgroundTask",
+) -> None:
+    """Invoke ``on_complete`` for a terminal task, swallowing callback errors.
+
+    Shared by every terminal branch (success, failure, timeout, cancellation)
+    so the completion contract holds regardless of how the task ended.
+    """
+    if on_complete is None:
+        return
+    try:
+        on_complete(task)
+    except Exception as cb_error:
+        logger.warning(f"on_complete callback error: {cb_error}")
+
+
+class BackgroundRunner:
+    """
+    Manages background task execution.
+    
+    Provides:
+    - Task submission and queuing
+    - Concurrent execution management
+    - Progress monitoring
+    - Task cancellation
+    
+    Example:
+        runner = BackgroundRunner()
+        
+        # Submit a task
+        task = await runner.submit(
+            func=my_agent.start,
+            args=("Research AI trends",),
+            name="research_task"
+        )
+        
+        # Check status
+        print(task.status)
+        
+        # Wait for result
+        result = await task.wait()
+    """
+    
+    def __init__(self, config: Optional[BackgroundConfig] = None):
+        """
+        Initialize the background runner.
+        
+        Args:
+            config: Configuration for background execution
+        """
+        self.config = config or BackgroundConfig()
+        self._tasks: Dict[str, BackgroundTask] = {}
+        # Lazily create asyncio.Semaphore() to avoid Python 3.9 event loop issues
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._semaphore_lock: threading.Lock = threading.Lock()  # Thread-safe initialization
+        self._running = False
+        self._cleanup_task: Optional[asyncio.Task] = None
+    
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """Get or create the semaphore lazily (Python 3.9 compatible)."""
+        if self._semaphore is None:
+            with self._semaphore_lock:  # Thread-safe initialization
+                if self._semaphore is None:  # Double-check after acquiring lock
+                    self._semaphore = asyncio.Semaphore(self.config.max_concurrent_tasks)
+        return self._semaphore
+    
+    @property
+    def tasks(self) -> List[BackgroundTask]:
+        """Get all tasks."""
+        return list(self._tasks.values())
+    
+    @property
+    def running_tasks(self) -> List[BackgroundTask]:
+        """Get currently running tasks."""
+        return [t for t in self._tasks.values() if t.is_running]
+    
+    @property
+    def pending_tasks(self) -> List[BackgroundTask]:
+        """Get pending tasks."""
+        return [t for t in self._tasks.values() if t.status == TaskStatus.PENDING]
+    
+    async def submit(
+        self,
+        func: Callable,
+        args: tuple = (),
+        kwargs: Optional[Dict[str, Any]] = None,
+        name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        on_complete: Optional[Callable[[BackgroundTask], None]] = None,
+        on_progress: Optional[Callable[[BackgroundTask], None]] = None
+    ) -> BackgroundTask:
+        """
+        Submit a task for background execution.
+        
+        Args:
+            func: Function to execute (can be sync or async)
+            args: Positional arguments for the function
+            kwargs: Keyword arguments for the function
+            name: Optional task name
+            timeout: Optional timeout in seconds
+            on_complete: Callback when task completes
+            on_progress: Callback for progress updates
+            
+        Returns:
+            BackgroundTask object for tracking
+        """
+        kwargs = kwargs or {}
+        
+        task = BackgroundTask(
+            name=name or func.__name__,
+            metadata={
+                "func_name": func.__name__,
+                "timeout": timeout or self.config.default_timeout
+            }
+        )
+        
+        self._tasks[task.id] = task
+        
+        # Create the execution coroutine
+        async def execute():
+            # The semaphore acquisition is inside the ``try`` so cancellation
+            # while queued (waiting for a slot) still routes through the
+            # ``CancelledError`` handler and fires ``on_complete`` — matching
+            # the terminal-notification contract for every other outcome.
+            try:
+                async with self._get_semaphore():
+                    task.start()
+                    logger.info(f"Background task started: {task.name} ({task.id})")
+
+                    # Check if function is async
+                    if asyncio.iscoroutinefunction(func):
+                        result = await asyncio.wait_for(
+                            func(*args, **kwargs),
+                            timeout=timeout or self.config.default_timeout
+                        )
+                    else:
+                        # Run sync function in thread pool
+                        loop = asyncio.get_event_loop()
+                        result = await asyncio.wait_for(
+                            loop.run_in_executor(None, lambda: func(*args, **kwargs)),
+                            timeout=timeout or self.config.default_timeout
+                        )
+
+                    task.complete(result)
+                    logger.info(f"Background task completed: {task.name} ({task.id})")
+
+                    _safe_on_complete(on_complete, task)
+
+                    return result
+
+            except asyncio.TimeoutError:
+                task.fail(f"Task timed out after {timeout}s")
+                logger.warning(f"Background task timed out: {task.name}")
+
+                _safe_on_complete(on_complete, task)
+
+            except asyncio.CancelledError:
+                task.cancel()
+                logger.info(f"Background task cancelled: {task.name}")
+
+                _safe_on_complete(on_complete, task)
+
+                raise
+
+            except Exception as e:
+                task.fail(str(e))
+                logger.error(f"Background task failed: {task.name} - {e}")
+
+                _safe_on_complete(on_complete, task)
+        
+        # Create and store the future
+        task._future = asyncio.create_task(execute())
+        
+        return task
+    
+    async def submit_agent(
+        self,
+        agent: Any,
+        prompt: str,
+        name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        on_complete: Optional[Callable[[BackgroundTask], None]] = None
+    ) -> BackgroundTask:
+        """
+        Submit an agent task for background execution.
+        
+        Args:
+            agent: Agent instance to run
+            prompt: Prompt to send to the agent
+            name: Optional task name
+            timeout: Optional timeout in seconds
+            on_complete: Callback when task completes
+            
+        Returns:
+            BackgroundTask object for tracking
+        """
+        task_name = name or f"agent_{getattr(agent, 'name', 'unknown')}"
+        
+        # Determine the method to call
+        if hasattr(agent, 'start'):
+            func = agent.start
+        elif hasattr(agent, 'chat'):
+            func = agent.chat
+        elif hasattr(agent, 'run'):
+            func = agent.run
+        else:
+            raise ValueError("Agent must have start(), chat(), or run() method")
+        
+        return await self.submit(
+            func=func,
+            args=(prompt,),
+            name=task_name,
+            timeout=timeout,
+            on_complete=on_complete
+        )
+    
+    def get_task(self, task_id: str) -> Optional[BackgroundTask]:
+        """Get a task by ID."""
+        return self._tasks.get(task_id)
+    
+    async def cancel_task(self, task_id: str) -> bool:
+        """
+        Cancel a task.
+        
+        Args:
+            task_id: ID of task to cancel
+            
+        Returns:
+            True if cancelled, False if not found or already completed
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return False
+        
+        if task.is_completed:
+            return False
+        
+        task.cancel()
+        
+        if task._future and not task._future.done():
+            task._future.cancel()
+        
+        return True
+    
+    async def cancel_all(self):
+        """Cancel all running tasks."""
+        for task in self.running_tasks:
+            await self.cancel_task(task.id)
+    
+    async def wait_all(self, timeout: Optional[float] = None) -> List[BackgroundTask]:
+        """
+        Wait for all tasks to complete.
+        
+        Args:
+            timeout: Maximum time to wait
+            
+        Returns:
+            List of completed tasks
+        """
+        futures = [t._future for t in self._tasks.values() if t._future]
+        
+        if not futures:
+            return list(self._tasks.values())
+        
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*futures, return_exceptions=True),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            pass
+        
+        return list(self._tasks.values())
+    
+    def clear_completed(self):
+        """Remove completed tasks from tracking."""
+        completed_ids = [
+            task_id for task_id, task in self._tasks.items()
+            if task.is_completed
+        ]
+        for task_id in completed_ids:
+            del self._tasks[task_id]
+    
+    def list_tasks(self, status: Optional[TaskStatus] = None) -> List[Dict[str, Any]]:
+        """
+        List tasks with optional status filter.
+        
+        Args:
+            status: Optional status to filter by
+            
+        Returns:
+            List of task dictionaries
+        """
+        tasks = self._tasks.values()
+        
+        if status:
+            tasks = [t for t in tasks if t.status == status]
+        
+        return [t.to_dict() for t in tasks]
+    
+    async def start_cleanup_loop(self):
+        """Start the automatic cleanup loop."""
+        if self._cleanup_task is not None:
+            return
+        
+        async def cleanup_loop():
+            while True:
+                await asyncio.sleep(self.config.cleanup_delay)
+                if self.config.auto_cleanup:
+                    self.clear_completed()
+        
+        self._cleanup_task = asyncio.create_task(cleanup_loop())
+    
+    async def stop(self):
+        """Stop the runner and cancel all tasks."""
+        await self.cancel_all()
+        
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+
+    # ── Sync-friendly wrappers ──────────────────────────────────────────
+
+    def submit_sync(
+        self,
+        func: Callable,
+        args: tuple = (),
+        kwargs: Optional[Dict[str, Any]] = None,
+        name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        on_complete: Optional[Callable[[BackgroundTask], None]] = None,
+    ) -> BackgroundTask:
+        """Submit a task from synchronous code.
+
+        Creates a background event loop (once) and schedules the task
+        there.  Returns the ``BackgroundTask`` immediately so callers
+        can poll ``task.status`` / ``task.result`` without blocking.
+
+        Args:
+            func: Function to execute (sync or async)
+            args: Positional arguments for *func*
+            kwargs: Keyword arguments for *func*
+            name: Optional human-readable task name
+            timeout: Optional timeout in seconds
+            on_complete: Callback when task completes
+
+        Returns:
+            BackgroundTask for tracking
+        """
+        loop = _get_bg_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self.submit(
+                func, args=args, kwargs=kwargs,
+                name=name, timeout=timeout, on_complete=on_complete,
+            ),
+            loop,
+        )
+        # Block briefly to get the BackgroundTask object (not the task result).
+        return future.result(timeout=5)
+
+    def cancel_task_sync(self, task_id: str) -> bool:
+        """Cancel a task from synchronous code (or an unrelated event loop).
+
+        Schedules :meth:`cancel_task` on the shared background loop where the
+        task's future lives, so the underlying execution is actually stopped
+        (not merely marked cancelled). Safe to call from within a running
+        event loop because it hops threads via ``run_coroutine_threadsafe``.
+
+        Args:
+            task_id: ID of task to cancel
+
+        Returns:
+            True if cancelled, False if not found or already completed
+        """
+        loop = _get_bg_loop()
+        future = asyncio.run_coroutine_threadsafe(self.cancel_task(task_id), loop)
+        return future.result(timeout=5)
+
+    def submit_agent_sync(
+        self,
+        agent: Any,
+        prompt: str,
+        name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        on_complete: Optional[Callable[[BackgroundTask], None]] = None,
+    ) -> BackgroundTask:
+        """Submit an agent task from synchronous code.
+
+        Convenience wrapper around :meth:`submit_sync` that resolves
+        the agent's callable automatically.
+
+        Args:
+            agent: Agent instance (must have ``start``, ``chat``, or ``run``)
+            prompt: Prompt to send to the agent
+            name: Optional task name
+            timeout: Optional timeout in seconds
+            on_complete: Callback when task completes
+
+        Returns:
+            BackgroundTask for tracking
+        """
+        loop = _get_bg_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self.submit_agent(
+                agent, prompt,
+                name=name, timeout=timeout, on_complete=on_complete,
+            ),
+            loop,
+        )
+        return future.result(timeout=5)
+
+# ── Module-level background event loop (lazy, daemon) ───────────────────
+
+import threading as _threading
+
+_bg_loop: Optional[asyncio.AbstractEventLoop] = None
+_bg_lock = _threading.Lock()
+
+def _get_bg_loop() -> asyncio.AbstractEventLoop:
+    """Return a running event loop on a background daemon thread.
+
+    Created once on first call; reused thereafter.  The thread is a
+    daemon so it won't prevent process exit, but includes graceful shutdown.
+    """
+    global _bg_loop
+    if _bg_loop is not None and _bg_loop.is_running():
+        return _bg_loop
+
+    with _bg_lock:
+        # Double-check after acquiring lock.
+        if _bg_loop is not None and _bg_loop.is_running():
+            return _bg_loop
+
+        _bg_loop = asyncio.new_event_loop()
+
+        t = _threading.Thread(target=_bg_loop.run_forever, daemon=True)
+        t.start()
+
+    return _bg_loop
+
+
+def _shutdown_bg_loop():
+    """Gracefully shutdown the background event loop."""
+    global _bg_loop
+    if _bg_loop is None or not _bg_loop.is_running():
+        return
+
+    async def _cancel_pending():
+        current = asyncio.current_task()
+        pending = [t for t in asyncio.all_tasks() if t is not current]
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_cancel_pending(), _bg_loop)
+        fut.result(timeout=2)
+    except Exception:
+        pass
+    finally:
+        _bg_loop.call_soon_threadsafe(_bg_loop.stop)
+
+
+# Register cleanup on process exit
+import atexit
+atexit.register(_shutdown_bg_loop)
+
+
+# ── Shared process-wide runner ──────────────────────────────────────────
+
+_shared_runner: Optional["BackgroundRunner"] = None
+_shared_runner_lock = _threading.Lock()
+
+
+def get_background_runner() -> "BackgroundRunner":
+    """Return the process-wide shared :class:`BackgroundRunner`.
+
+    Interactive surfaces (REPL/TUI) and bots submit and inspect background
+    tasks through this single instance so ``/tasks`` sees the same tasks
+    regardless of which surface submitted them. Created lazily on first use.
+    """
+    global _shared_runner
+    if _shared_runner is not None:
+        return _shared_runner
+    with _shared_runner_lock:
+        if _shared_runner is None:
+            _shared_runner = BackgroundRunner()
+    return _shared_runner

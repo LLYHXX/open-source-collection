@@ -1,0 +1,15 @@
+meta {
+  name: supported embedding models
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{host}}/model-hub/kb/supported-embedding-models
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

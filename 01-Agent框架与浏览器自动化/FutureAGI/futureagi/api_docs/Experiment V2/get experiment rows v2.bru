@@ -1,0 +1,50 @@
+meta {
+  name: get experiment rows v2
+  type: http
+  seq: 11
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/rows/?page_size=10&current_page_index=0
+  body: none
+  auth: bearer
+}
+
+params:query {
+  page_size: 10
+  current_page_index: 0
+  ~column_config_only: true
+  ~get_diff: true
+  ~search:
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+vars:pre-request {
+  experimentId: c61846df-0583-4a99-8563-d077d7c3364e
+}
+
+docs {
+  ## Get Experiment Rows V2
+
+  Returns experiment dataset rows with column config, cell values, and metadata.
+
+  ### Query Parameters
+  - `page_size` — Rows per page (default 10)
+  - `current_page_index` — Zero-indexed page number (default 0)
+  - `column_config_only` — If "true", returns only column config + status
+  - `get_diff` — If "true", calculates diff values vs base column
+  - `search` — Plain text string for case-insensitive cell search. Filters rows to those containing the search term and returns match indices for highlighting.
+
+  ### Response
+  ```json
+  {
+    "columnConfig": [...],
+    "table": [...],
+    "metadata": {"totalRows": 100, "totalPages": 10},
+    "status": "Completed"
+  }
+  ```
+}

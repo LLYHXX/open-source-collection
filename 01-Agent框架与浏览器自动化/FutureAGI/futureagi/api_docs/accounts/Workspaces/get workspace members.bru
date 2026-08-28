@@ -1,0 +1,23 @@
+meta {
+  name: get workspace members
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{host}}/accounts/workspaces/ed160bc1-c783-4d56-963a-c129549e0c09/members/?workspace_id=ed160bc1-c783-4d56-963a-c129549e0c09
+  body: none
+  auth: bearer
+}
+
+params:query {
+  workspace_id: ed160bc1-c783-4d56-963a-c129549e0c09
+}
+
+headers {
+  ~Authorization: Bearer {{auth.token}}
+}
+
+auth:bearer {
+  token: {{auth.token}}
+}

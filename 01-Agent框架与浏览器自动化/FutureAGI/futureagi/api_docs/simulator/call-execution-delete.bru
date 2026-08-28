@@ -1,0 +1,55 @@
+meta {
+  name: Delete Call Execution
+  type: http
+  seq: 16
+}
+
+delete {
+  url: http://localhost:8000/simulate/call-executions/call-1247/delete/
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  name: Delete Call Execution
+  description: Delete a specific call execution
+  request: {
+    "method": "DELETE",
+    "url": "http://localhost:8000/simulate/call-executions/{call_execution_id}/delete/",
+    "headers": {
+      "Authorization": "Bearer {token}",
+      "Content-Type": "application/json"
+    }
+  }
+  response: {
+    "message": "Call execution deleted successfully."
+  }
+  error_responses: [
+    {
+      "status": 400,
+      "error": "Cannot delete a call execution that is currently ongoing."
+    },
+    {
+      "status": 404,
+      "error": "Organization not found for the user."
+    },
+    {
+      "status": 404,
+      "error": "Call execution not found."
+    },
+    {
+      "status": 500,
+      "error": "Failed to delete call execution: {error_message}"
+    }
+  ]
+  notes: [
+    "This endpoint will delete a specific call execution",
+    "Cannot delete call executions that are currently ongoing",
+    "Requires authentication and organization access",
+    "Returns a success message on successful deletion",
+    "This will also delete associated transcripts and recordings"
+  ]
+}

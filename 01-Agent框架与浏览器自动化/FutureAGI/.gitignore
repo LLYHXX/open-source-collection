@@ -1,0 +1,254 @@
+# ============================================================================
+# Future AGI — root .gitignore
+# The backend has its own .gitignore at `futureagi/.gitignore`; this file
+# covers the repo root and anything not already scoped by a subdirectory.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Environment & secrets — NEVER commit a .env or a populated credentials file
+# ----------------------------------------------------------------------------
+
+.env
+.env.*
+!.env.example
+!.env.*.example
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+
+# Credentials (any file matching these patterns is treated as a secret)
+*_creds.json
+*_credentials.json
+**/credentials/*.json
+Vertex_AI_Creds.json
+Vertex.json
+vertex.json
+
+# Private LLM gateway config — we ship `config.example.yaml`. The real
+# `config.yaml` may contain API keys, provider secrets, routing rules, or
+# Bedrock/Vertex bearer tokens and must not be committed.
+futureagi/agentcc-gateway/config.yaml
+futureagi/agentcc-gateway/config.*.yaml
+!futureagi/agentcc-gateway/config.example.yaml
+!futureagi/agentcc-gateway/config.e2e.yaml
+!futureagi/agentcc-gateway/config.loadtest.yaml
+
+# Private compose overlays (workspace-specific, internal testing, etc.)
+docker-compose.ws*.yml
+docker-compose.local.yml
+docker-compose.recover*.yml
+docker-compose.*.override.yml
+
+# License keys & related (Future AGI Enterprise License artifacts)
+license.key
+license.json
+*.license
+
+# direnv / PyPI credentials — commonly hold exported secrets; `.env.*` does
+# not match `.envrc`. (Carried over from the deleted futureagi/ee/.gitignore.)
+.envrc
+**/.envrc
+.pypirc
+**/.pypirc
+
+# Agent eval-orchestrator scratch output (may embed prompts / responses)
+**/eval_orchestrator/*_test_results.txt
+
+
+# ----------------------------------------------------------------------------
+# Python
+# ----------------------------------------------------------------------------
+
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+
+# uv / virtualenvs / pyenv
+.venv/
+**/.venv*/
+venv/
+**/venv/
+env.bak/
+.uv-cache/
+.python-version
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+coverage/
+htmlcov/
+coverage-reports/
+test-reports/
+test-logs/
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Django / runtime
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# ML model weights & caches (never commit — these are multi-GB artifacts).
+# The weight *files* are caught by extension below; we deliberately do NOT
+# ignore any directory literally named `models/`, because Django apps, Go
+# packages, and frontend pages in this repo use that name for source code.
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+*.onnx
+model_cache/
+embedding_cache/
+checkpoints/
+
+
+# ----------------------------------------------------------------------------
+# Node / frontend
+# ----------------------------------------------------------------------------
+
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.yarn/cache/
+.yarn/install-state.gz
+
+# Vite / Next build outputs
+frontend/dist/
+frontend/build/
+frontend/.next/
+frontend/out/
+frontend/storybook-static/
+.vite/
+
+# Vite dev-server cache artifacts
+*.timestamp-*.mjs
+
+# Lint / type caches
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# Playwright artifacts
+playwright-report/
+test-results/
+
+
+# ----------------------------------------------------------------------------
+# Data & volumes (local Docker-compose bind mounts)
+# ----------------------------------------------------------------------------
+
+minio_data/
+**/minio_data/
+postgres_data/
+clickhouse_data/
+redis_data/
+peerdb_data/
+volumes/
+dumps/
+
+
+# ----------------------------------------------------------------------------
+# Logs & runtime artifacts
+# ----------------------------------------------------------------------------
+
+*.log
+logs/
+**/logs/
+!frontend/src/**/logs/
+!frontend/src/**/logs/**
+**celerybeat-schedule**
+staticfiles/
+media/
+
+# Accidental shell redirects (`yarn build > out.out`, `yarn lint > pre.out`, etc.)
+*.out
+
+
+# ----------------------------------------------------------------------------
+# IDE / editor / OS
+# ----------------------------------------------------------------------------
+
+.vscode/
+.cursor/
+.idea/
+
+# Claude Code — per-user permissions (team agents under .claude/agents/ are tracked)
+.claude/settings.local.json
+**/.claude/settings.local.json
+.claude/CLAUDE.md
+
+# MCP server configs — local dev tooling, not shipped with the repo.
+# If we ever expose a hosted product MCP, that config goes at repo root
+# and should be force-added with `git add -f .mcp.json`.
+.mcp.json
+**/.mcp.json
+.codex-tmp/
+**/.codex-tmp/
+.playwright-mcp/
+**/.playwright-mcp/
+*.swp
+*.swo
+*~
+.DS_Store
+**/.DS_Store
+
+# Process core dumps (crash artifacts from Linux kernel)
+# Ignore files named `core` (and pid/signal-suffixed variants) but keep
+# source directories literally named `core/`.
+core
+!**/core/
+core.[0-9]*
+core-*-[0-9]*
+
+
+# ----------------------------------------------------------------------------
+# Planning / internal docs not for OSS
+# ----------------------------------------------------------------------------
+
+plan/
+planning/
+scratch/
+
+# EE lives in-tree at futureagi/ee. The cloud-private delta is a separate
+# repo (future-agi/ee) checked out at futureagi/ee/cloud/ — everything it
+# owns is under that one directory, so this single rule covers all of it.
+futureagi/ee/cloud/
+# stray local leftover at repo root (old gateway config) — not the ee tree
+/ee/
+
+# Puppeteer / e2e test screenshots — local debugging only.
+frontend/scripts/.artifacts/
+
+# bin/install timestamped logs
+install-*.log
+uninstall-*.log
+*.core
+# Local compose override (developer testing, not shipped)
+docker-compose.override.yml
+
+
+# (The private repo's own .gitignore now lives inside futureagi/ee/cloud/,
+# which is already ignored above — no separate rule needed.)

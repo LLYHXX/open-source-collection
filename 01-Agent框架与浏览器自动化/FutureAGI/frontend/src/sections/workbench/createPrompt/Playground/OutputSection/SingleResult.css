@@ -1,0 +1,37 @@
+.streaming-text {
+  position: relative;
+  font-size: 16px;
+  line-height: 22px;
+  font-family: "Inter", sans-serif;
+}
+
+.streaming-text h1,
+.streaming-text h2,
+.streaming-text h3,
+.streaming-text h4,
+.streaming-text h5,
+.streaming-text h6 {
+  line-height: 32px;
+}
+
+.streaming-text table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+}
+
+.streaming-text table th,
+.streaming-text table td {
+  border: 1px solid var(--border-default);
+  padding: 8px;
+  text-align: left;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0.3;
+  }
+  to {
+    opacity: 1;
+  }
+}

@@ -1,0 +1,163 @@
+meta {
+  name: Get Graph Version
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{host}}/agent-playground/graphs/:id/versions/:version_id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  id: {{graph_id}}
+  version_id: {{version_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  version_id: d9c2878c-c665-477e-8c67-dc19147c8cbc
+  graph_id: 902c81f4-dcd0-4813-8a29-8cdad4eb6a9e
+}
+
+docs {
+  # Get Graph Version
+
+  Get a specific version with full nested structure (nodes → ports, node connections, edges).
+
+  ## Path Parameters
+  - `id`: Graph UUID
+  - `version_id`: Version UUID
+
+  ## Response
+  ```json
+  {
+    "status": true,
+    "result": {
+      "id": "version-uuid",
+      "version_number": 2,
+      "status": "active",
+      "tags": ["production"],
+      "commit_message": "Added summarization step",
+      "created_at": "2024-01-15T10:30:00Z",
+      "nodes": [
+        {
+          "id": "node-uuid-1",
+          "type": "atomic",
+          "name": "Text Input",
+          "config": {},
+          "position": {"x": 100, "y": 200},
+          "node_template_id": "d523c598-1b0b-48f4-91ce-feab764e3ad4",
+          "ref_graph_version_id": null,
+          "ports": [
+            {
+              "id": "port-uuid-1",
+              "key": "text",
+              "display_name": "text",
+              "direction": "output",
+              "data_schema": {"type": "string"},
+              "required": true,
+              "default_value": null,
+              "metadata": {}
+            }
+          ]
+        },
+        {
+          "id": "node-uuid-2",
+          "type": "atomic",
+          "name": "LLM Chat",
+          "config": {"model": "gpt-4", "temperature": 0.7},
+          "position": {"x": 400, "y": 200},
+          "node_template_id": "d523c598-1b0b-48f4-91ce-feab764e3ad4",
+          "ref_graph_version_id": null,
+          "ports": [
+            {
+              "id": "port-uuid-2",
+              "key": "custom",
+              "display_name": "prompt",
+              "direction": "input",
+              "data_schema": {"type": "string"},
+              "required": true,
+              "default_value": null,
+              "metadata": {}
+            },
+            {
+              "id": "port-uuid-3",
+              "key": "response",
+              "display_name": "LLM Chat Response",
+              "direction": "output",
+              "data_schema": {"type": "string"},
+              "required": true,
+              "default_value": null,
+              "metadata": {}
+            }
+          ]
+        },
+        {
+          "id": "node-uuid-3",
+          "type": "subgraph",
+          "name": "Summarizer Pipeline",
+          "config": {},
+          "position": {"x": 700, "y": 200},
+          "node_template_id": null,
+          "ref_graph_version_id": "referenced-version-uuid",
+          "ports": [
+            {
+              "id": "port-uuid-4",
+              "key": "custom",
+              "display_name": "input_text",
+              "direction": "input",
+              "data_schema": {"type": "string"},
+              "required": true,
+              "default_value": null,
+              "metadata": {}
+            },
+            {
+              "id": "port-uuid-5",
+              "key": "custom",
+              "display_name": "summary",
+              "direction": "output",
+              "data_schema": {"type": "string"},
+              "required": true,
+              "default_value": null,
+              "metadata": {}
+            }
+          ]
+        }
+      ],
+      "node_connections": [
+        {
+          "id": "node-connection-uuid-1",
+          "source_node_id": "node-uuid-1",
+          "target_node_id": "node-uuid-2"
+        },
+        {
+          "id": "node-connection-uuid-2",
+          "source_node_id": "node-uuid-2",
+          "target_node_id": "node-uuid-3"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge-uuid-1",
+          "source_port_id": "port-uuid-1",
+          "target_port_id": "port-uuid-2"
+        },
+        {
+          "id": "edge-uuid-2",
+          "source_port_id": "port-uuid-3",
+          "target_port_id": "port-uuid-4"
+        }
+      ]
+    }
+  }
+  ```
+
+  ## Node Types
+  - **atomic**: Uses a `node_template_id` to define behavior
+  - **subgraph**: References another graph's active version via `ref_graph_version_id`
+}

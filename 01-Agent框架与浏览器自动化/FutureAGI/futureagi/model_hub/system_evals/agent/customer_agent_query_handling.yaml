@@ -1,0 +1,64 @@
+eval_id: 114
+name: customer_agent_query_handling
+description: Checks if the bot correctly interprets user queries and gives relevant answers.
+criteria: "You are evaluating whether the agent correctly interprets and responds to customer queries.\n\n## Criteria\n\n\
+  1. Query comprehension: The agent should understand what the customer is asking, even if informally phrased.\n   - Always:\
+  \ Correctly interprets every query regardless of phrasing.\n   - Never: Consistently misunderstands what the customer is\
+  \ asking.\n\n2. Response relevance: Answers should directly address the customer's question.\n   - Always: Every response\
+  \ is targeted and relevant.\n   - Never: Responses are generic, off-topic, or scripted regardless of the question.\n\n3.\
+  \ Unexpected query handling: Out-of-scope questions should be handled gracefully.\n   - Always: Politely redirects or provides\
+  \ the best available help.\n   - Never: Ignores or crashes on unexpected questions.\n\n## Anti-bias Rules\n\n- Asking for\
+  \ clarification when a query is genuinely ambiguous counts as GOOD handling.\n- Redirecting out-of-scope queries politely\
+  \ is appropriate, not a failure.\n- A short relevant answer scores higher than a long irrelevant one.\n\n## Scoring\n\n\
+  Select 'never' if consistently misinterprets queries. Select 'occasionally' if handles some well but misinterprets others.\
+  \ Select 'frequently' if correctly handles most queries. Select 'always' if accurately interprets and helpfully responds\
+  \ to every query.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"
+eval_tags:
+- Agents
+- Conversation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- never
+- occasionally
+- frequently
+- always
+output_type_normalized: deterministic
+config:
+  required_keys:
+  - conversation
+  output: choices
+  eval_type_id: AgentEvaluator
+  param_modalities:
+    conversation:
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+  config_params_desc:
+    conversation: The conversation to be evaluated
+  rule_prompt: "You are evaluating whether the agent correctly interprets and responds to customer queries.\n\n## Criteria\n\
+    \n1. Query comprehension: The agent should understand what the customer is asking, even if informally phrased.\n   - Always:\
+    \ Correctly interprets every query regardless of phrasing.\n   - Never: Consistently misunderstands what the customer\
+    \ is asking.\n\n2. Response relevance: Answers should directly address the customer's question.\n   - Always: Every response\
+    \ is targeted and relevant.\n   - Never: Responses are generic, off-topic, or scripted regardless of the question.\n\n\
+    3. Unexpected query handling: Out-of-scope questions should be handled gracefully.\n   - Always: Politely redirects or\
+    \ provides the best available help.\n   - Never: Ignores or crashes on unexpected questions.\n\n## Anti-bias Rules\n\n\
+    - Asking for clarification when a query is genuinely ambiguous counts as GOOD handling.\n- Redirecting out-of-scope queries\
+    \ politely is appropriate, not a failure.\n- A short relevant answer scores higher than a long irrelevant one.\n\n## Scoring\n\
+    \nSelect 'never' if consistently misinterprets queries. Select 'occasionally' if handles some well but misinterprets others.\
+    \ Select 'frequently' if correctly handles most queries. Select 'always' if accurately interprets and helpfully responds\
+    \ to every query.\n\n## Inputs\n\n<conversation>{{conversation}}</conversation>"
+choice_scores:
+  never: 0.0
+  occasionally: 0.33
+  frequently: 0.66
+  always: 1.0

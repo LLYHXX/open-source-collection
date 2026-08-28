@@ -1,0 +1,22 @@
+meta {
+  name: create-label
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+    {
+      "name": "test-label2",
+      "type": "custom"
+    }
+}

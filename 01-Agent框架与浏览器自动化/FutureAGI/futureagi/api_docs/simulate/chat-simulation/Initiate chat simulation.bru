@@ -1,0 +1,46 @@
+meta {
+  name: Initiate chat simulation
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8000/simulate/call-executions/a8c20307-8673-4e29-8953-520a46bdb1aa/chat/send-message/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "initiate_chat": true
+  }
+}
+
+docs {
+  name: Execute Test with Scenarios
+  description: Execute a test run with specific scenarios
+  request: {
+    "scenario_ids": [
+      "scenario-1",
+      "scenario-2",
+      "scenario-3"
+    ]
+  }
+  response: {
+    "message": "Test execution started successfully",
+    "execution_id": "exec-1f429671-d3bd-4c0f-9cca-36f6d47edfbc",
+    "run_test_id": "1f429671-d3bd-4c0f-9cca-36f6d47edfbc",
+    "status": "started",
+    "total_scenarios": 3,
+    "total_calls": 25,
+    "scenario_ids": [
+      "scenario-1",
+      "scenario-2",
+      "scenario-3"
+    ]
+  }
+}

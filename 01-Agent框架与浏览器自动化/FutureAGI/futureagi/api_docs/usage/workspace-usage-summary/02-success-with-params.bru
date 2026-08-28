@@ -1,0 +1,38 @@
+meta {
+  name: 02 - Success - With Month and Year
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/usage/workspace-usage-summary/?month=1&year=2024
+  body: none
+  auth: bearer
+}
+
+params:query {
+  month: 1
+  year: 2024
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+docs {
+  ## Workspace Usage Summary - Specific Month and Year
+
+  ### Test Scenario
+  - Both month and year parameters provided
+  - Returns usage data for all workspaces in specified period
+
+  ### Expected Response
+  - Status: 200 OK
+  - Response contains workspace-level breakdown for January 2024
+  - Each workspace shows its usage metrics
+
+  ### Notes
+  - When provided, both month and year must be given together
+  - Month must be between 1 and 12
+  - Useful for historical analysis of workspace usage
+}

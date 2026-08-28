@@ -1,0 +1,38 @@
+eval_id: 29
+name: regex
+description: Checks if the text matches a specified regex pattern
+eval_tags:
+- Output Validation
+- Output Format
+visible_ui: false
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - text
+  output: Pass/Fail
+  eval_type_id: CustomCodeEval
+  config:
+    pattern:
+      type: string
+      default: null
+  config_params_desc:
+    text: The input text to be evaluated
+    pattern: The regex pattern to match against the text
+  code: |
+    import re
+
+    def evaluate(input, output, expected, context, **kwargs):
+        text = kwargs.get("text", output or "")
+        pattern = kwargs.get("pattern", "")
+        if not pattern:
+            return {"score": 0.0, "reason": "No regex pattern provided"}
+        text = str(text)
+        match = re.search(pattern, text)
+        if match:
+            return {"score": 1.0, "reason": f"Regex pattern '{pattern}' found in output"}
+        else:
+            return {"score": 0.0, "reason": f"Regex pattern '{pattern}' not found in output"}

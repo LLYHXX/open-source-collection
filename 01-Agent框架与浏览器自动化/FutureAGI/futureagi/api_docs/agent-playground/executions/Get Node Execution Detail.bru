@@ -1,0 +1,94 @@
+meta {
+  name: Get Node Execution Detail
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{host}}/agent-playground/executions/:execution_id/nodes/:node_execution_id/
+  body: none
+  auth: bearer
+}
+
+params:path {
+  execution_id: {{execution_id}}
+  node_execution_id: {{node_execution_id}}
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+vars:pre-request {
+  execution_id: execution-uuid
+  node_execution_id: node-execution-uuid
+}
+
+docs {
+  # Get Node Execution Detail
+
+  Returns detailed inputs and outputs for a specific node execution, organized by port direction.
+
+  ## Path Parameters
+  - `execution_id`: Graph Execution UUID
+  - `node_execution_id`: Node Execution UUID
+
+  ## Response (Success)
+  ```json
+  {
+    "status": true,
+    "result": {
+      "node_execution_id": "node-exec-uuid",
+      "node_id": "node-uuid",
+      "node_name": "LLM Prompt",
+      "node_type": "atomic",
+      "status": "SUCCESS",
+      "started_at": "2024-01-15T10:30:01Z",
+      "completed_at": "2024-01-15T10:30:04Z",
+      "duration_seconds": 3.0,
+      "error_message": null,
+      "inputs": [
+        {
+          "port_id": "port-uuid",
+          "port_key": "prompt",
+          "port_direction": "input",
+          "payload": "What is the capital of France?",
+          "is_valid": true,
+          "validation_errors": null
+        }
+      ],
+      "outputs": [
+        {
+          "port_id": "port-uuid",
+          "port_key": "response",
+          "port_direction": "output",
+          "payload": "The capital of France is Paris.",
+          "is_valid": true,
+          "validation_errors": null
+        }
+      ]
+    }
+  }
+  ```
+
+  ## Response (Error - Execution Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Graph execution not found."
+  }
+  ```
+
+  ## Response (Error - Node Execution Not Found)
+  ```json
+  {
+    "status": false,
+    "result": "Node execution not found."
+  }
+  ```
+
+  ## Notes
+  - Inputs and outputs are grouped separately by port direction
+  - `is_valid` indicates whether the payload passed JSON Schema validation against the port's `data_schema`
+  - `validation_errors` contains details when `is_valid` is false
+}

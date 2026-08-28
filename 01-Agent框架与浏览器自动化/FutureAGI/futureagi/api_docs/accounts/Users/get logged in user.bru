@@ -1,0 +1,27 @@
+meta {
+  name: get logged in user
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{host}}/accounts/redis-key/
+  body: json
+  auth: bearer
+}
+
+headers {
+  ~Authorization: bea
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+
+    "access_token_id": "nZDJoXdK9EDTauvUJM_JGd8SqDdjpVKMgHa9jITTY2g=",
+    "key": "blocked_ip_122.166.153.215"
+  }
+}

@@ -1,0 +1,25 @@
+meta {
+  name: List Replay Sessions
+  type: http
+  seq: 1
+}
+
+get {
+  url: http://localhost:8000/tracer/replay-session/?limit=10&page=1
+  body: none
+  auth: inherit
+}
+
+params:query {
+  limit: 10
+  page: 1
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+}
+
+settings {
+  encodeUrl: false
+  timeout: 0
+}

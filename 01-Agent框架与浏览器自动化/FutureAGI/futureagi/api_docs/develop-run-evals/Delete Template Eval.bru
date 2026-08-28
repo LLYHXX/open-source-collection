@@ -1,0 +1,15 @@
+meta {
+  name: Delete Template Eval
+  type: http
+  seq: 9
+}
+
+delete {
+  url: {{host}}/model-hub/develops/a7462ed0-1191-4eb8-9df8-3d268913885e/delete_template_eval/b9214054-c855-4e27-8064-039ddda99dbc/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

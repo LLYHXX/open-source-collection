@@ -1,0 +1,21 @@
+meta {
+  name: Get Template Result
+  type: http
+  seq: 4
+}
+
+post {
+  url: http://localhost:8000/model-hub/optimize-dataset/{{model_id}}/prompt-template-result/{{optimization_id}}/
+  body: none
+  auth: none
+}
+
+headers {
+  X-Api-Key: {{api_key}}
+  X-Secret-Key: {{secret_key}}
+}
+
+vars:pre-request {
+  model_id: 23e33a4c-36ea-4491-9e06-f4bd7964a639
+  optimization_id: 864b35b3-6de8-4590-838b-19d2cdf84d5f
+}

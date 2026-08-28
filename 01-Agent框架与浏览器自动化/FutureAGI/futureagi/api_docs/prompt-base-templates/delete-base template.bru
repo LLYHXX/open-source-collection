@@ -1,0 +1,15 @@
+meta {
+  name: delete-base template
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{host}}/model-hub/prompt-base-templates/6d4948b2-029d-4834-abf8-c194dc9ad742/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

@@ -1,0 +1,46 @@
+meta {
+  name: stop experiment v2
+  type: http
+  seq: 14
+}
+
+post {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/stop/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+vars:pre-request {
+  experimentId: b7913583-2def-4d7f-8299-6b54870caf17
+}
+
+docs {
+  ## Stop Experiment V2
+
+  Stops a running V2 experiment by cancelling all Temporal workflows
+  (main experiment workflow + all rerun workflows).
+
+  DB cleanup (marking RUNNING cells as ERROR, columns/EDTs as FAILED,
+  experiment as CANCELLED) is handled by each workflow's cancellation handler.
+
+  Only experiments in RUNNING or QUEUED status can be stopped.
+
+  ### Response
+  ```json
+  {
+    "message": "Experiment stop initiated. Cleanup will complete shortly.",
+    "data": {
+      "experiment_id": "06059370-...",
+      "workflows_cancelled": {
+        "main": true,
+        "reruns": 0
+      }
+    },
+    "status": 200
+  }
+  ```
+}

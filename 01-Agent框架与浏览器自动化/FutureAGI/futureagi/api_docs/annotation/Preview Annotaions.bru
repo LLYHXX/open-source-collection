@@ -1,0 +1,21 @@
+meta {
+  name: Preview Annotaions
+  type: http
+  seq: 5
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations/preview_annotations/
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+  Content-Type: application/json
+  Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  {"dataset_id":"8f7628f6-2310-4e72-b3ff-7e9c11c92256","column_ids":["a74c8f3c-c1bb-42ef-8503-6e1530902a6f","7357d4c8-92df-442a-88bd-20ff42c21753","0d4c59b1-0d13-4c92-80f0-fc199d94f4e5"]}
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Preview Run Prompt Column
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{host}}/model-hub/develops/preview_run_prompt_column/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_id": "your-dataset-id",
+    "prompt_template": "Your prompt template here",
+    "model_config": {
+      "model_name": "gpt-3.5-turbo",
+      "temperature": 0.7,
+      "max_tokens": 100
+    },
+    "preview_rows": 5
+  }
+}

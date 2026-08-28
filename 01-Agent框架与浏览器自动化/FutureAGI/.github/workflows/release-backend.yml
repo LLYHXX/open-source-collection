@@ -1,0 +1,57 @@
+# Manual escape hatch for ad-hoc and -dev builds. Stable releases go through
+# release-images.yml (tag-triggered); this wrapper shares the same build via
+# build-image.yml so the two paths cannot drift.
+name: Release backend
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to publish (e.g. v2.1.0-dev)"
+        required: true
+        type: string
+      branch:
+        description: "Branch to build from"
+        required: true
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image: futureagi/future-agi
+      context: ./futureagi
+      dockerfile: ./futureagi/Dockerfile.oss
+      version: ${{ inputs.version }}
+      ref: ${{ inputs.branch }}
+      platforms: linux/amd64
+      push-latest: false
+      free-disk: false
+      cache-scope: backend
+    secrets:
+      dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  verify-oss-boundary:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Verify OSS image boundary
+        env:
+          OSS_IMAGE: futureagi/future-agi:${{ inputs.version }}
+        run: ./scripts/verify-image-contents.sh "${{ inputs.version }}" oss

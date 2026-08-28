@@ -1,0 +1,27 @@
+meta {
+  name: Get all org events
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{host}}:{{port}}/model-hub/events/?modelId=cbc9099d-f644-4dd5-8c4d-123519bca78a
+  body: json
+  auth: bearer
+}
+
+params:query {
+  modelId: cbc9099d-f644-4dd5-8c4d-123519bca78a
+}
+
+headers {
+  ~Authorization:
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {"search":"","columns":["Event Name","Time"],"dateFilter":"2021-11-16:2023-12-16"}
+}

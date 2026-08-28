@@ -1,0 +1,49 @@
+meta {
+  name: Create Observation Span
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/tracer/observation-span/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "b4a51794-d8ec-4a91-9e4e-a47823c14522",
+    "trace": "6a55d986-0d10-454a-bd5f-c07b89b1a02b",
+    "input":{
+      "test_metadata": "observation span number 5"
+    },
+    "project_version": "27b80b8f-283f-4aed-bb00-b4717c17dfe5",
+    "name": "observation_span_test_langchain",
+    "observation_type": "chat",
+    "output": {
+    "llm_output": {
+      "token_usage": {
+        "completion_tokens": 158,
+        "prompt_tokens": 40,
+        "total_tokens": 198,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": 0,
+          "audio_tokens": 0,
+          "reasoning_tokens": 0,
+          "rejected_prediction_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0
+        }
+      },
+      "model_name": "gpt-3.5-turbo",
+      "system_fingerprint": null
+    }
+  }
+  }
+}

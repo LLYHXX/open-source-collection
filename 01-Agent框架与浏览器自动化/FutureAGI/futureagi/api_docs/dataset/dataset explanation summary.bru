@@ -1,0 +1,27 @@
+meta {
+  name: dataset explanation summary
+  type: http
+  seq: 27
+}
+
+get {
+  url: {{host}}/model-hub/datasets/explanation-summary/f76d0463-32a7-4c0f-97ad-7be7c9c71945/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_ids": ["19f1c30a-9071-4a29-b319-b720f571d789"],
+    "base_column_name": "age",
+    "is_winner_chosen": true,
+    "weights": {
+     "tyu": 5
+  }
+
+  }
+}

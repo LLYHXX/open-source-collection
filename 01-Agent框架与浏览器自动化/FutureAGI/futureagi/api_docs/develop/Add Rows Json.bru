@@ -1,0 +1,26 @@
+meta {
+  name: Add Rows Json
+  type: http
+  seq: 29
+}
+
+post {
+  url: {{host}}/model-hub/develops/add_rows_from_file/
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "dataset_id": "f830c597-fdb8-4d50-9aa6-cdf0759096e3"
+  }
+}
+
+body:multipart-form {
+  dataset_id: f830c597-fdb8-4d50-9aa6-cdf0759096e3
+  file: @file(/home/vivek/Desktop/test.json)
+}

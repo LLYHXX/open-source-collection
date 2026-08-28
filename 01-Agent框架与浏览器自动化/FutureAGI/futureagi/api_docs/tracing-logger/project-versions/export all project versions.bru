@@ -1,0 +1,27 @@
+meta {
+  name: export all project versions
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{host}}/tracer/project-version/get_export_data/?project_id=1b4d85f8-d122-46f9-be1c-0875ae70e558
+  body: json
+  auth: bearer
+}
+
+params:query {
+  project_id: 1b4d85f8-d122-46f9-be1c-0875ae70e558
+  ~search_name: eval_project_final_testing_version_2
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project_id": "1b4d85f8-d122-46f9-be1c-0875ae70e558"
+
+  }
+}

@@ -1,0 +1,80 @@
+meta {
+  name: Rerun Call Executions
+  type: http
+  seq: 19
+}
+
+post {
+  url: http://localhost:8000/simulate/test-executions/{{test_execution_id}}/rerun-calls/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "rerun_type": "eval_only",
+    "select_all": true
+  }
+}
+
+docs {
+  name: Rerun Call Executions
+  description: Rerun call executions within a single test execution. Supports both evaluation-only reruns and full call+evaluation reruns.
+  request: {
+    "method": "POST",
+    "url": "http://localhost:8000/simulate/test-executions/{test_execution_id}/rerun-calls/",
+    "headers": {
+      "Authorization": "Bearer {token}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "rerun_type": "eval_only | call_and_eval (required)",
+      "call_execution_ids": ["uuid1", "uuid2"],
+      "select_all": "boolean (default false)"
+    }
+  }
+  response: {
+    "message": "Bulk call execution rerun initiated successfully (eval_only)",
+    "test_execution_id": "uuid",
+    "rerun_type": "eval_only",
+    "total_processed": 5,
+    "successful_reruns": ["call-exec-uuid-1", "call-exec-uuid-2"],
+    "failed_reruns": [],
+    "success_count": 5,
+    "failure_count": 0
+  }
+  error_responses: [
+    {
+      "status": 400,
+      "error": "Invalid request data"
+    },
+    {
+      "status": 400,
+      "error": "No call executions found that can be rerun."
+    },
+    {
+      "status": 404,
+      "error": "Organization not found for the user."
+    },
+    {
+      "status": 404,
+      "error": "Test execution not found."
+    },
+    {
+      "status": 500,
+      "error": "Failed to rerun call executions"
+    }
+  ]
+  notes: [
+    "rerun_type must be either 'eval_only' or 'call_and_eval'",
+    "Either 'select_all' must be true or 'call_execution_ids' must be provided",
+    "When select_all=true and call_execution_ids are provided, those IDs are excluded",
+    "eval_only: saves eval snapshot, clears eval data, re-triggers evaluation tasks. Sets test execution status to EVALUATING",
+    "call_and_eval: saves full call snapshot, clears all call data, creates new CreateCallExecution records. Sets test execution status to PENDING",
+    "Requires authentication and organization access"
+  ]
+}

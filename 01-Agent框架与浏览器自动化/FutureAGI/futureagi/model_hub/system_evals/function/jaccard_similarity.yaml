@@ -1,0 +1,46 @@
+eval_id: 144
+name: jaccard_similarity
+description: Computes Jaccard similarity (intersection over union) between token sets of two texts. Useful for measuring set-level
+  overlap regardless of frequency or order.
+criteria: Measures the ratio of shared tokens to total unique tokens between output and expected text.
+eval_tags:
+- NLP Metrics
+- Output Validation
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+output_type_normalized: percentage
+pass_threshold: 0.5
+config:
+  required_keys:
+  - output
+  - expected
+  output: score
+  eval_type_id: CustomCodeEval
+  config:
+    case_insensitive:
+      type: boolean
+      default: true
+  config_params_desc:
+    output: The generated/output text
+    expected: The expected/reference text
+    case_insensitive: Whether to lowercase before comparing (default true)
+  code: |
+    def evaluate(input, output, expected, context, **kwargs):
+        out_str = str(kwargs.get("output", output or "")).strip()
+        exp_str = str(kwargs.get("expected", expected or "")).strip()
+        case_insensitive = kwargs.get("case_insensitive", True)
+        if case_insensitive:
+            out_str = out_str.lower()
+            exp_str = exp_str.lower()
+        out_set = set(out_str.split())
+        exp_set = set(exp_str.split())
+        if not out_set and not exp_set:
+            return {"score": 1.0, "reason": "Jaccard: 1.0 (both empty)"}
+        union = out_set | exp_set
+        intersection = out_set & exp_set
+        if not union:
+            return {"score": 0.0, "reason": "Jaccard: 0.0"}
+        score = len(intersection) / len(union)
+        return {"score": float(score), "reason": f"Jaccard: {score:.4f} (|inter|={len(intersection)}, |union|={len(union)})"}

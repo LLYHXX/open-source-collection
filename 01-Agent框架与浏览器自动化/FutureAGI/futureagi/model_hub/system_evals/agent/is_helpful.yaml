@@ -1,0 +1,62 @@
+eval_id: 84
+name: is_helpful
+description: Evaluates whether the response answers the user's question effectively.
+criteria: "You are evaluating whether the output effectively addresses the user's question or request.\n\n## Criteria\n\n\
+  1. Relevance: The output should directly answer what was asked, not provide tangential information.\n   - Pass: Directly\
+  \ addresses the user's specific question.\n   - Fail: Provides general information about the topic without answering the\
+  \ specific question.\n\n2. Completeness: All parts of the query should be addressed with enough detail to be actionable.\n\
+  \   - Pass: Covers all sub-questions with sufficient detail.\n   - Fail: Addresses only part of a multi-part question.\n\
+  \n3. Clarity: The response should be understandable without requiring follow-up questions for basic comprehension.\n   -\
+  \ Pass: Clear explanation that a reader can immediately act on.\n   - Fail: Vague or jargon-heavy response requiring further\
+  \ clarification.\n\n## Anti-bias Rules\n\n- A short correct answer scores higher than a long incorrect or tangential one.\n\
+  - Refusing to answer harmful requests IS helpful behavior and should pass.\n- DO NOT penalize answers that address the core\
+  \ question but omit minor sub-points.\n\n## Scoring\n\nReturn 'Passed' if the output directly addresses the query, is sufficiently\
+  \ detailed, and is clear. Return 'Failed' if it misses the question, is incomplete, or is too vague to act on.\n\n## Inputs\n\
+  \n<input>{{input}}</input>\n\n<output>{{output}}</output>"
+eval_tags:
+- NLP Metrics
+- Chatbot behaviors
+visible_ui: true
+permissions:
+  allow_edit: false
+  allow_copy: true
+choices:
+- Passed
+- Failed
+output_type_normalized: pass_fail
+pass_threshold: 0.5
+config:
+  required_keys:
+  - input
+  - output
+  output: Pass/Fail
+  eval_type_id: AgentEvaluator
+  config: {}
+  config_params_desc:
+    input: The user's question
+    output: The response to be evaluated
+  param_modalities:
+    input: &id001
+    - TEXT
+    - AUDIO
+    - JSON
+    - LIST
+    - NUMBER
+    - BOOLEAN
+    - INTEGER
+    - FLOAT
+    - ARRAY
+    - DATETIME
+    output: *id001
+  rule_prompt: "You are evaluating whether the output effectively addresses the user's question or request.\n\n## Criteria\n\
+    \n1. Relevance: The output should directly answer what was asked, not provide tangential information.\n   - Pass: Directly\
+    \ addresses the user's specific question.\n   - Fail: Provides general information about the topic without answering the\
+    \ specific question.\n\n2. Completeness: All parts of the query should be addressed with enough detail to be actionable.\n\
+    \   - Pass: Covers all sub-questions with sufficient detail.\n   - Fail: Addresses only part of a multi-part question.\n\
+    \n3. Clarity: The response should be understandable without requiring follow-up questions for basic comprehension.\n \
+    \  - Pass: Clear explanation that a reader can immediately act on.\n   - Fail: Vague or jargon-heavy response requiring\
+    \ further clarification.\n\n## Anti-bias Rules\n\n- A short correct answer scores higher than a long incorrect or tangential\
+    \ one.\n- Refusing to answer harmful requests IS helpful behavior and should pass.\n- DO NOT penalize answers that address\
+    \ the core question but omit minor sub-points.\n\n## Scoring\n\nReturn 'Passed' if the output directly addresses the query,\
+    \ is sufficiently detailed, and is clear. Return 'Failed' if it misses the question, is incomplete, or is too vague to\
+    \ act on.\n\n## Inputs\n\n<input>{{input}}</input>\n\n<output>{{output}}</output>"

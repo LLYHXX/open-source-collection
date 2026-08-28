@@ -1,0 +1,134 @@
+meta {
+  name: Text Embeddings
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/model/{{api_version}}/embed
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  User-Agent: Bruno/1.0
+}
+
+body:json {
+  {
+    "text": [
+      "Hello world, this is a test sentence for text embedding.",
+      "Another example sentence to demonstrate batch processing."
+    ],
+    "input_type": "text"
+  }
+}
+
+docs {
+  # Text Embeddings
+
+  Generate text embeddings using the configured text embedding model.
+  Supports both single text and batch processing.
+
+  ## Request Body
+
+  ```json
+  {
+    "text": ["string or array of strings"],
+    "input_type": "text"
+  }
+  ```
+
+  ### Parameters
+  - `text` (string|array): Single text string or array of text strings to embed
+  - `input_type` (string): Must be "text" for this endpoint
+
+  ## Response
+
+  ```json
+  {
+    "embeddings": [
+      [0.1, 0.2, 0.3, ...],  // First text embedding
+      [0.4, 0.5, 0.6, ...]   // Second text embedding (if batch)
+    ]
+  }
+  ```
+
+  ### Response Fields
+  - `embeddings` (array): Array of embedding vectors (one per input text)
+
+  ## Status Codes
+  - `200 OK` - Embeddings generated successfully
+  - `400 Bad Request` - Invalid input format or missing required fields
+  - `422 Unprocessable Entity` - Validation error in request body
+  - `500 Internal Server Error` - Model loading or processing error
+
+  ## Examples
+
+  ### Single Text
+  ```json
+  {
+    "text": "Hello world",
+    "input_type": "text"
+  }
+  ```
+
+  ### Batch Processing
+  ```json
+  {
+    "text": [
+      "First sentence",
+      "Second sentence",
+      "Third sentence"
+    ],
+    "input_type": "text"
+  }
+  ```
+
+  ## Use Cases
+  - Text similarity search
+  - Semantic search indexing
+  - Content clustering
+  - Recommendation systems
+  - Document classification
+
+  ## Performance Notes
+  - Batch processing is more efficient than multiple single requests
+  - Embedding dimension depends on the configured model
+  - Response time scales with text length and batch size
+}
+
+tests {
+  test("Status should be 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response should contain embeddings", function() {
+    const data = res.getBody();
+    expect(data.embeddings).to.exist;
+    expect(data.embeddings).to.be.an('array');
+  });
+
+  test("Should return correct number of embeddings", function() {
+    const data = res.getBody();
+    const requestData = JSON.parse(req.getBody());
+    const expectedCount = Array.isArray(requestData.text) ? requestData.text.length : 1;
+    expect(data.embeddings).to.have.lengthOf(expectedCount);
+  });
+
+  test("Each embedding should be an array of numbers", function() {
+    const data = res.getBody();
+    data.embeddings.forEach(embedding => {
+      expect(embedding).to.be.an('array');
+      expect(embedding.length).to.be.greaterThan(0);
+      embedding.forEach(value => {
+        expect(value).to.be.a('number');
+      });
+    });
+  });
+
+  test("Content-Type should be JSON", function() {
+    expect(res.getHeader("content-type")).to.contain("application/json");
+  });
+}

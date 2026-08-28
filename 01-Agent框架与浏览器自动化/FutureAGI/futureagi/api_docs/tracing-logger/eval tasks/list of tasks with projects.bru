@@ -1,0 +1,29 @@
+meta {
+  name: list of tasks with projects
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{host}}/tracer/eval-task/list_eval_tasks_with_project_name/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "project": "809782af-abbb-4134-9baa-409d89c86982",
+    "eval_templates": ["44b4330b-0e99-4caa-b1ec-af0dfeb17700","5577dff4-a7e3-4df7-999d-f5ce3bef7fa0"],
+    "name": "fifth_task",
+    "filters": {
+      "project_id": "809782af-abbb-4134-9baa-409d89c86982",
+      "observation_type": "llm"
+    },
+    "sampling_rate": 70,
+    "run_type": "historical"
+  }
+}

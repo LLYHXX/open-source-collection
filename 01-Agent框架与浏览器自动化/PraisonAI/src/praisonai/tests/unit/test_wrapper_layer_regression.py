@@ -1,0 +1,906 @@
+"""
+Regression tests for wrapper layer bug fixes.
+
+Tests for the fixes implemented in PR #1646 (wrapper layer gaps):
+1. InteractiveRuntime lifecycle is properly managed
+2. Tool resolution is consistent across all entry points
+3. CLI backend validation works correctly across frameworks
+
+Tests for the fixes implemented in PR #1896 (observability & tool cache):
+4. ToolResolver cache `instantiate=True` fast-path fix
+5. Observability finalization on adapter exception paths
+"""
+
+import pytest
+import unittest.mock as mock
+from unittest.mock import MagicMock, patch, call, Mock
+
+
+class TestInteractiveRuntimeLifecycle:
+    """Test InteractiveRuntime is not stopped before agents.start()"""
+
+    @pytest.mark.skip(reason="InteractiveRuntime lifecycle moved to PraisonAIAdapter")
+    def test_interactive_runtime_lifecycle_mock(self):
+        """Legacy test retained for regression tracking."""
+        pass
+
+
+class TestToolResolutionConsistency:
+    """Test that tool resolution is consistent across all entry points"""
+    
+    def test_tool_resolver_instantiate_parameter(self):
+        """Test ToolResolver.resolve() instantiate parameter works correctly"""
+        from praisonai.tool_resolver import ToolResolver
+        
+        resolver = ToolResolver()
+        
+        # Test with a mock class tool
+        class MockTool:
+            def __init__(self):
+                self.instantiated = True
+        
+        with patch.object(resolver, '_resolve_from_praisonai_tools') as mock_resolve:
+            mock_resolve.return_value = MockTool
+            
+            # Without instantiate=True, should return class
+            result = resolver.resolve('mock_tool', instantiate=False)
+            assert result == MockTool
+            
+            # With instantiate=True, should return instance
+            result = resolver.resolve('mock_tool', instantiate=True)
+            assert hasattr(result, 'instantiated')
+            assert result.instantiated is True
+
+    def test_bots_cli_uses_tool_resolver(self):
+        """Test that bots_cli._resolve_tool_by_name uses ToolResolver"""
+        from praisonai.cli.features.bots_cli import BotHandler
+        
+        bots = BotHandler()
+        
+        with patch('praisonai.tool_resolver.ToolResolver') as MockResolver:
+            mock_resolver = MockResolver.return_value
+            mock_resolver.resolve.return_value = MagicMock()
+            
+            result = bots._resolve_tool_by_name('test_tool')
+            
+            # Verify ToolResolver was used
+            MockResolver.assert_called_once()
+            mock_resolver.resolve.assert_called_once_with('test_tool', instantiate=True)
+
+    def test_job_workflow_uses_tool_resolver(self):
+        """Test that job_workflow uses ToolResolver for tool resolution"""
+        from praisonai.cli.features.job_workflow import JobWorkflowExecutor
+        
+        executor = JobWorkflowExecutor({}, "dummy_path.yaml")
+        
+        with patch('praisonai.tool_resolver.ToolResolver') as MockResolver:
+            mock_resolver = MockResolver.return_value
+            mock_resolver.resolve.return_value = "resolved_tool"
+            
+            result = executor._resolve_agent_tools(['test_tool'])
+            
+            # Verify ToolResolver was used
+            MockResolver.assert_called_once()
+            mock_resolver.resolve.assert_called_once_with('test_tool', instantiate=True)
+            assert result == ["resolved_tool"]
+
+
+class TestCliBackendValidation:
+    """Test CLI backend validation across frameworks"""
+    
+    def test_cli_backend_config_resolver(self):
+        """Test the unified CLI backend config resolver"""
+        from praisonai.cli_backends import resolve_cli_backend_config
+        
+        # Test string input
+        with patch('praisonai.cli_backends.registry.resolve_cli_backend') as mock_resolve:
+            mock_resolve.return_value = MagicMock()
+            
+            result = resolve_cli_backend_config("claude-code")
+            mock_resolve.assert_called_once_with("claude-code")
+        
+        # Test dict input
+        with patch('praisonai.cli_backends.registry.resolve_cli_backend') as mock_resolve:
+            mock_resolve.return_value = MagicMock()
+            
+            config = {"id": "claude-code", "overrides": {"timeout": 30}}
+            result = resolve_cli_backend_config(config)
+            mock_resolve.assert_called_once_with("claude-code", overrides={"timeout": 30})
+        
+        # Test invalid dict (missing id)
+        with pytest.raises(ValueError, match="must contain an 'id' field"):
+            resolve_cli_backend_config({"overrides": {"timeout": 30}})
+
+    def test_framework_cli_backend_validation(self):
+        """Test that CLI backend validation works for unsupported frameworks"""
+        from praisonai.agents_generator import AgentsGenerator
+        
+        generator = AgentsGenerator(
+            agent_file=None,
+            framework='autogen',
+            config_list=[{"model": "gpt-4o-mini"}]
+        )
+        
+        # Config with cli_backend on unsupported framework
+        config = {
+            'roles': {
+                'test_agent': {
+                    'role': 'Test Agent',
+                    'goal': 'Test',
+                    'backstory': 'Testing',
+                    'cli_backend': 'claude-code'  # Should trigger validation error
+                }
+            }
+        }
+        
+        # Should raise ValueError for incompatible framework
+        with pytest.raises(ValueError, match="not supported for framework='autogen'"):
+            generator._validate_cli_backend_compatibility(config, 'autogen')
+
+    def test_cli_backend_validation_accepts_praisonai_adapter_name(self):
+        """Runtime features must validate against adapter.name, not the adapter object."""
+        from praisonai.agents_generator import AgentsGenerator
+
+        generator = AgentsGenerator(
+            agent_file=None,
+            framework='praisonai',
+            config_list=[{"model": "gpt-4o-mini"}]
+        )
+        config = {
+            'roles': {
+                'test_agent': {
+                    'role': 'Test Agent',
+                    'goal': 'Test',
+                    'backstory': 'Testing',
+                    'cli_backend': 'claude-code',
+                }
+            }
+        }
+        # Must not raise when framework name is the string 'praisonai'
+        generator._validate_cli_backend_compatibility(config, 'praisonai')
+
+    def test_agent_wrapper_cli_backend_resolution(self):
+        """Test that Agent wrapper resolves CLI backend configs correctly"""
+        from praisonai.agent import Agent
+        
+        # Test that string cli_backend is resolved
+        with patch('praisonai.cli_backends.resolve_cli_backend_config') as mock_resolve:
+            mock_resolve.return_value = MagicMock()
+            
+            agent = Agent(name="test", cli_backend="claude-code")
+            mock_resolve.assert_called_once_with("claude-code")
+        
+        # Test that dict cli_backend is resolved
+        with patch('praisonai.cli_backends.resolve_cli_backend_config') as mock_resolve:
+            mock_resolve.return_value = MagicMock()
+            
+            config = {"id": "claude-code", "overrides": {"timeout": 30}}
+            agent = Agent(name="test", cli_backend=config)
+            mock_resolve.assert_called_once_with(config)
+        
+        # Test that protocol instances pass through unchanged. A CliBackendProtocol
+        # instance is detected via isinstance against the @runtime_checkable
+        # protocol, which requires config + capabilities() as well as
+        # execute()/stream() (see cli_backend/protocols.py). A real class is used
+        # here because @runtime_checkable isinstance does not resolve reliably
+        # against MagicMock's dynamic attributes.
+        class _FakeBackend:
+            config = None
+
+            def capabilities(self):
+                ...
+
+            async def execute(self, prompt, **kwargs):
+                ...
+
+            async def stream(self, prompt, **kwargs):
+                ...
+
+        with patch('praisonai.cli_backends.resolve_cli_backend_config') as mock_resolve:
+            agent = Agent(name="test", cli_backend=_FakeBackend())
+            # Should not call resolver for already-resolved instances
+            mock_resolve.assert_not_called()
+
+        # A look-alike that only exposes execute()/stream() (e.g. a
+        # BaseCLIIntegration coding-CLI tool) must NOT be mistaken for a backend:
+        # it is sent to the resolver, which fails fast.
+        lookalike = MagicMock(spec=["execute", "stream"])
+        with patch('praisonai.cli_backends.resolve_cli_backend_config') as mock_resolve:
+            Agent(name="test", cli_backend=lookalike)
+            mock_resolve.assert_called_once_with(lookalike)
+
+
+# ===== NEW TESTS FOR PR #1896 BUG FIXES =====
+
+class TestToolResolverCacheFix:
+    """Test ToolResolver cache instantiate=True fast-path fix."""
+    
+    def test_cached_tool_instantiation_fast_path(self):
+        """Test that cached classes are instantiated when instantiate=True in fast path."""
+        from praisonai.tool_resolver import ToolResolver
+        
+        # Create a mock class that can be instantiated
+        class MockTool:
+            def __init__(self):
+                self.called = True
+                
+            def __call__(self):
+                return "mock result"
+        
+        resolver = ToolResolver()
+        
+        # Pre-populate cache with a class
+        resolver._resolve_cache["test_tool"] = MockTool
+        
+        # Test fast-path with instantiate=False (should return class)
+        result_class = resolver.resolve("test_tool", instantiate=False)
+        assert result_class is MockTool
+        
+        # Test fast-path with instantiate=True (should return instance)
+        result_instance = resolver.resolve("test_tool", instantiate=True)
+        assert isinstance(result_instance, MockTool)
+        assert result_instance.called is True
+        assert result_instance is not MockTool
+    
+    def test_cached_function_no_instantiation(self):
+        """Test that cached functions are returned as-is regardless of instantiate flag."""
+        from praisonai.tool_resolver import ToolResolver
+        
+        def mock_function():
+            return "function result"
+        
+        resolver = ToolResolver()
+        
+        # Pre-populate cache with a function
+        resolver._resolve_cache["test_func"] = mock_function
+        
+        # Both should return the same function
+        result_false = resolver.resolve("test_func", instantiate=False)
+        result_true = resolver.resolve("test_func", instantiate=True)
+        
+        assert result_false is mock_function
+        assert result_true is mock_function
+    
+    def test_cached_none_value(self):
+        """Test that cached None values (tool not found) are handled correctly."""
+        from praisonai.tool_resolver import ToolResolver
+        
+        resolver = ToolResolver()
+        
+        # Pre-populate cache with None (tool not found)
+        resolver._resolve_cache["nonexistent_tool"] = None
+        
+        # Both should return None
+        result_false = resolver.resolve("nonexistent_tool", instantiate=False)
+        result_true = resolver.resolve("nonexistent_tool", instantiate=True)
+        
+        assert result_false is None
+        assert result_true is None
+
+
+class TestObservabilityFinalization:
+    """Test observability finalization on adapter exception paths."""
+    
+    @patch('praisonai.observability.hooks._end_agentops')
+    def test_finalize_observability_success(self, mock_end_agentops):
+        """Test finalize_observability calls _end_agentops with success status."""
+        from praisonai.observability.hooks import finalize_observability
+        
+        finalize_observability("test_framework", status="Success")
+        
+        mock_end_agentops.assert_called_once_with("Success", None)
+    
+    @patch('praisonai.observability.hooks._end_agentops')
+    def test_finalize_observability_failure(self, mock_end_agentops):
+        """Test finalize_observability calls _end_agentops with failure status."""
+        from praisonai.observability.hooks import finalize_observability
+        
+        finalize_observability("test_framework", status="Failure")
+        
+        mock_end_agentops.assert_called_once_with("Failure", None)
+    
+    @patch('praisonai.observability.hooks._end_agentops')
+    def test_finalize_observability_default_status(self, mock_end_agentops):
+        """Test finalize_observability uses 'Success' as default status."""
+        from praisonai.observability.hooks import finalize_observability
+        
+        finalize_observability("test_framework")
+        
+        mock_end_agentops.assert_called_once_with("Success", None)
+    
+    @patch('praisonai.observability.hooks.logger')
+    def test_end_agentops_import_error_handling(self, mock_logger):
+        """Test _end_agentops handles ImportError gracefully."""
+        from praisonai.observability.hooks import _end_agentops
+        
+        with patch('builtins.__import__', side_effect=ImportError("agentops not found")):
+            _end_agentops("Success")
+            
+        # Should not raise exception and should not log warnings (just returns silently)
+        mock_logger.warning.assert_not_called()
+    
+    @patch('praisonai.observability.hooks.logger')
+    def test_end_agentops_exception_handling(self, mock_logger):
+        """Test _end_agentops handles agentops.end_session exceptions gracefully."""
+        from praisonai.observability.hooks import _end_agentops
+        
+        # Mock agentops module to be available but end_session raises exception
+        mock_agentops = Mock()
+        mock_agentops.end_session.side_effect = Exception("Session end failed")
+        
+        with patch.dict('sys.modules', {'agentops': mock_agentops}):
+            _end_agentops("Success")
+            
+        # Should not raise exception but should log warning
+        mock_agentops.end_session.assert_called_once_with("Success")
+        mock_logger.warning.assert_called_once_with("agentops.end_session failed: %s", mock_agentops.end_session.side_effect)
+
+
+class TestFrameworkAdapterExceptionPaths:
+    """Observability lifecycle ownership.
+
+    The generator (AgentsGenerator) owns init+finalize via the
+    ``observability_session`` context manager, so finalize is paired with init
+    for every adapter — including AutoGen, which previously never finalized and
+    leaked a run on each invocation. Adapters must not finalize themselves.
+    """
+    
+    @patch('praisonai.observability.hooks.finalize_observability')
+    @pytest.mark.skip(reason="AutoGenV4Adapter delegates execution; inspect source test outdated")
+    def test_autogen_v4_adapter_exception_handling(self, mock_finalize):
+        """Test AutoGenV4Adapter calls finalize_observability on exceptions."""
+        # This is a smoke test to verify the structure exists
+        # Real testing would require mocking the entire AutoGen framework
+        try:
+            from praisonai.framework_adapters.autogen_adapter import AutoGenV4Adapter
+            
+            # Verify the class exists and has arun method
+            assert hasattr(AutoGenV4Adapter, 'arun')
+            
+            # Check that the implementation includes try/except blocks
+            import inspect
+            source = inspect.getsource(AutoGenV4Adapter.arun)
+            
+            # Verify exception handling structure exists
+            assert 'try:' in source or 'except:' in source, "AutoGenV4Adapter.arun should have exception handling"
+            assert 'finalize_observability' in source, "AutoGenV4Adapter.arun should call finalize_observability"
+            
+        except ImportError:
+            # Skip if autogen dependencies not available
+            pytest.skip("AutoGen dependencies not available")
+    
+    @patch('praisonai.observability.hooks.finalize_observability')
+    @pytest.mark.skip(reason="AG2Adapter.run is a stub; inspect source test outdated")
+    def test_ag2_adapter_exception_handling(self, mock_finalize):
+        """Test AG2Adapter calls finalize_observability on exceptions."""
+        # This is a smoke test to verify the structure exists
+        try:
+            from praisonai.framework_adapters.autogen_adapter import AG2Adapter
+            
+            # Verify the class exists and has run method
+            assert hasattr(AG2Adapter, 'run')
+            
+            # Check that the implementation includes try/except blocks
+            import inspect
+            source = inspect.getsource(AG2Adapter.run)
+            
+            # Verify exception handling structure exists
+            assert 'try:' in source or 'except:' in source, "AG2Adapter.run should have exception handling"
+            assert 'finalize_observability' in source, "AG2Adapter.run should call finalize_observability"
+            
+        except ImportError:
+            # Skip if AG2 dependencies not available
+            pytest.skip("AG2 dependencies not available")
+    
+    def test_generator_owns_observability_lifecycle(self):
+        """Generator brackets the run with observability_session so init/finalize
+        are always paired for EVERY adapter.
+
+        The observability lifecycle is no longer a by-convention per-adapter
+        call (which let the AutoGen path leak a run on every invocation); it is
+        owned by AgentsGenerator, so both the sync and async kickoff paths must
+        wrap adapter.run/arun in ``observability_session``.
+        """
+        from praisonai.agents_generator import AgentsGenerator
+        import inspect
+
+        sync_source = inspect.getsource(AgentsGenerator.generate_crew_and_kickoff)
+        async_source = inspect.getsource(AgentsGenerator.agenerate_crew_and_kickoff)
+
+        assert 'observability_session' in sync_source, (
+            "generate_crew_and_kickoff should bracket the run with observability_session"
+        )
+        assert 'observability_session' in async_source, (
+            "agenerate_crew_and_kickoff should bracket the run with observability_session"
+        )
+
+    def test_adapters_do_not_finalize_observability(self):
+        """Adapters must not finalize observability themselves.
+
+        Finalizing per-adapter is the exact by-convention pattern Gap 3 removed:
+        the generator owns init+finalize via the context manager, so leaving a
+        stray finalize in an adapter would double-finalize / re-introduce drift.
+        """
+        import inspect
+
+        from praisonai.framework_adapters.crewai_adapter import CrewAIAdapter
+        from praisonai.framework_adapters.praisonai_adapter import PraisonAIAdapter
+
+        assert 'finalize_observability' not in inspect.getsource(CrewAIAdapter.run)
+        assert 'finalize_observability' not in inspect.getsource(PraisonAIAdapter.arun)
+
+    def test_arun_emits_terminal_run_error_on_failure(self):
+        """A failed AgentTeam stream-json run must emit a terminal run.error.
+
+        Regression guard for #3405: without this, a raise from ``team.astart()``
+        detaches the bridge and returns without any terminal event, so
+        ``--output stream-json`` consumers cannot distinguish a failed team run
+        from an incomplete/still-running one. The single-agent path already
+        emits ``run.error`` on failure; the team path must match that contract.
+        """
+        import inspect
+
+        from praisonai.framework_adapters.praisonai_adapter import PraisonAIAdapter
+
+        src = inspect.getsource(PraisonAIAdapter.arun)
+        assert 'emit_run_error' in src, (
+            "arun must emit run.error when team.astart() raises so stream-json "
+            "consumers see a terminal failure event"
+        )
+
+    def test_adapter_setup_runs_inside_observability_session(self):
+        """adapter.setup() must run INSIDE the observability_session.
+
+        Regression guard: an earlier revision opened the session only around
+        adapter.run(), leaving setup (and any setup/import failure) outside
+        observability so setup events were dropped and a failed setup produced
+        no finalized run. _prepare_for_run must therefore NOT call setup, and
+        both kickoff paths must invoke the setup seam within the session.
+        """
+        from praisonai.agents_generator import AgentsGenerator
+        import inspect
+
+        prep_source = inspect.getsource(AgentsGenerator._prepare_for_run)
+        assert '.setup(' not in prep_source, (
+            "_prepare_for_run must not run adapter.setup() outside the session"
+        )
+
+        for name in ("generate_crew_and_kickoff", "agenerate_crew_and_kickoff"):
+            src = inspect.getsource(getattr(AgentsGenerator, name))
+            session_idx = src.index('observability_session')
+            setup_idx = src.index('_run_adapter_setup')
+            assert setup_idx > session_idx, (
+                f"{name} must run _run_adapter_setup inside observability_session"
+            )
+
+
+class TestIssue3251WrapperGaps:
+    """Regression tests for issue #3251 (three wrapper gaps)."""
+
+    def test_gap1_entrypoints_close_generator_via_context_manager(self):
+        """run/arun must own the generator lifecycle with a `with` block so its
+        lazily-allocated tool-timeout executor is released per run instead of
+        leaking daemon threads in long-lived server workers."""
+        import inspect
+        from praisonai import _entrypoint
+
+        for name in ("run", "arun"):
+            src = inspect.getsource(getattr(_entrypoint, name))
+            assert "with AgentsGenerator(" in src, (
+                f"{name} must construct AgentsGenerator inside a `with` block"
+            )
+
+    def test_gap1_generator_is_context_manager(self):
+        """AgentsGenerator must support context-manager teardown."""
+        from praisonai.agents_generator import AgentsGenerator
+
+        assert hasattr(AgentsGenerator, "__enter__")
+        assert hasattr(AgentsGenerator, "__exit__")
+        assert hasattr(AgentsGenerator, "close")
+
+    def test_gap2_lookalike_integration_rejected_at_construction(self):
+        """A BaseCLIIntegration-style look-alike (execute()/stream() but no
+        config/capabilities, returns str) must NOT be mistaken for a
+        CliBackendProtocol; it fails fast with TypeError instead of crashing
+        deep in the agent loop."""
+        from praisonai_code.cli_backends import (
+            resolve_cli_backend_config,
+            _is_cli_backend_instance,
+        )
+
+        class _LookAlike:
+            async def execute(self, prompt, **options):
+                return "plain string"
+
+            async def stream(self, prompt, **options):
+                ...
+
+        look = _LookAlike()
+        assert _is_cli_backend_instance(look) is False
+        with pytest.raises(TypeError, match="CliBackendProtocol"):
+            resolve_cli_backend_config(look)
+
+    def test_gap2_real_protocol_instance_passes_through(self):
+        """A real CliBackendProtocol instance (config + capabilities +
+        execute/stream) is detected and returned unchanged."""
+        from praisonai_code.cli_backends import (
+            resolve_cli_backend_config,
+            _is_cli_backend_instance,
+        )
+
+        class _RealBackend:
+            config = None
+
+            def capabilities(self):
+                ...
+
+            async def execute(self, prompt, **kwargs):
+                ...
+
+            async def stream(self, prompt, **kwargs):
+                ...
+
+        backend = _RealBackend()
+        assert _is_cli_backend_instance(backend) is True
+        assert resolve_cli_backend_config(backend) is backend
+
+    def test_gap3_workflow_path_wrapped_in_observability(self):
+        """Both workflow kickoff branches must bracket the workflow run in an
+        observability_session so AgentOps init/finalize fires for workflow YAMLs
+        too, not only for sequential/hierarchical runs."""
+        import inspect
+        from praisonai.agents_generator import AgentsGenerator
+
+        for name, prep in (
+            ("generate_crew_and_kickoff", "self._prepare_for_run"),
+            ("agenerate_crew_and_kickoff", "self._aprepare_for_run"),
+        ):
+            src = inspect.getsource(getattr(AgentsGenerator, name))
+            # The workflow short-circuit and its observability wrap both appear
+            # before the sequential prep call.
+            prep_idx = src.index(prep)
+            assert src.index("observability_session") < prep_idx, (
+                f"{name} must open observability_session before the sequential prep"
+            )
+            assert src.index("_is_workflow_yaml") < prep_idx, (
+                f"{name} workflow branch must run before sequential prep"
+            )
+
+    def test_gap3_build_yaml_workflow_validates_and_warns(self):
+        """_build_yaml_workflow must fold in cli_backend validation and surface
+        an unenforceable tool_timeout instead of silently dropping both."""
+        import inspect
+        from praisonai.agents_generator import AgentsGenerator
+
+        src = inspect.getsource(AgentsGenerator._build_yaml_workflow)
+        assert "_validate_cli_backend_compatibility" in src, (
+            "workflow build must validate cli_backend compatibility"
+        )
+        assert "_resolve_effective_tool_timeout" in src, (
+            "workflow build must resolve tool_timeout to warn when unenforceable"
+        )
+
+
+class TestIssue3402YamlTeamSessionContinuity:
+    """Regression tests for issue #3402: CLI session continuity for YAML/team runs.
+
+    `praisonai run agents.yaml --continue/--session/--fork` must rehydrate and
+    persist AgentTeam state through the existing core save/restore APIs, matching
+    the single-agent prompt path. The wrapper threads resume_session/auto_save
+    through cli_config; the PraisonAI adapter must consume them.
+    """
+
+    def test_resolve_session_continuity_reads_cli_config(self):
+        from praisonai.framework_adapters.praisonai_adapter import PraisonAIAdapter
+
+        resume, auto_save = PraisonAIAdapter._resolve_session_continuity(
+            {"resume_session": "s1", "auto_save": "s2"}
+        )
+        assert resume == "s1"
+        assert auto_save == "s2"
+
+        assert PraisonAIAdapter._resolve_session_continuity(None) == (None, None)
+        assert PraisonAIAdapter._resolve_session_continuity({}) == (None, None)
+
+    def test_build_team_force_enables_memory_for_active_session(self):
+        """A session run must force shared memory so save/restore_session_state
+        (which require team.shared_memory) can persist/rehydrate team state."""
+        from praisonai.framework_adapters.praisonai_adapter import PraisonAIAdapter
+
+        adapter = PraisonAIAdapter()
+        with patch("praisonaiagents.AgentTeam") as MockTeam:
+            MockTeam.return_value = MagicMock()
+            adapter._build_team({}, {}, [], "gpt-4o-mini", session_active=True)
+            _, kwargs = MockTeam.call_args
+            assert kwargs.get("memory") is True
+
+    def test_build_team_no_session_leaves_memory_off(self):
+        from praisonai.framework_adapters.praisonai_adapter import PraisonAIAdapter
+
+        adapter = PraisonAIAdapter()
+        with patch("praisonaiagents.AgentTeam") as MockTeam:
+            MockTeam.return_value = MagicMock()
+            adapter._build_team({}, {}, [], "gpt-4o-mini")
+            _, kwargs = MockTeam.call_args
+            assert kwargs.get("memory") is False
+
+    def test_extract_cli_config_threads_session_ids(self):
+        """The YAML CLI dispatch must forward resume_session/auto_save into
+        cli_config so the adapter can drive continuity."""
+        from types import SimpleNamespace
+        from praisonai_code.cli.legacy.praison_ai import PraisonAI
+
+        app = PraisonAI.__new__(PraisonAI)
+        app.args = SimpleNamespace(
+            cli_project_sessions=True,
+            resume_session="sess-abc",
+            auto_save="sess-abc",
+            tool_retry_attempts=1,
+        )
+        cli_config = app._extract_cli_config_for_yaml()
+        assert cli_config.get("resume_session") == "sess-abc"
+        assert cli_config.get("auto_save") == "sess-abc"
+
+    def test_arun_wires_restore_and_save(self):
+        """arun must call restore_session_state before astart and
+        save_session_state after, each keyed by the cli_config session ids."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from praisonai.framework_adapters.praisonai_adapter import PraisonAIAdapter
+
+        adapter = PraisonAIAdapter()
+        calls = []
+
+        team = MagicMock()
+        team.agents = []
+        team.restore_session_state.side_effect = (
+            lambda sid: calls.append(("restore", sid)) or True
+        )
+        team.save_session_state.side_effect = (
+            lambda sid: calls.append(("save", sid))
+        )
+
+        async def _astart():
+            calls.append(("astart", None))
+            return "done"
+
+        team.astart = AsyncMock(side_effect=_astart)
+
+        with patch.object(adapter, "_build_agents_and_tasks", return_value=({}, [])), \
+             patch.object(adapter, "_build_team", return_value=team), \
+             patch.object(adapter, "_astart_interactive_runtime",
+                          new=AsyncMock(return_value=None)):
+            asyncio.run(adapter.arun(
+                {}, [{"model": "gpt-4o-mini"}], "topic",
+                cli_config={"resume_session": "sX", "auto_save": "sY"},
+            ))
+
+        assert calls == [("restore", "sX"), ("astart", None), ("save", "sY")]
+
+    def test_capture_and_rehydrate_roundtrips_agent_chat_history(self):
+        """Per-agent chat history must survive save->restore so a resumed team
+        run continues the prior conversation (not just team._state)."""
+        from praisonai.framework_adapters.praisonai_adapter import PraisonAIAdapter
+
+        store = {}
+        agent = MagicMock()
+        agent.display_name = "researcher"
+        agent.name = "researcher"
+        agent.chat_history = [{"role": "user", "content": "hi"}]
+
+        save_team = MagicMock()
+        save_team.agents = [agent]
+        save_team.set_state.side_effect = lambda k, v: store.__setitem__(k, v)
+
+        PraisonAIAdapter._capture_team_chat_history(save_team)
+        assert store  # something was stashed
+
+        fresh_agent = MagicMock()
+        fresh_agent.display_name = "researcher"
+        fresh_agent.name = "researcher"
+        fresh_agent.chat_history = []
+
+        restore_team = MagicMock()
+        restore_team.agents = [fresh_agent]
+        restore_team.get_state.side_effect = lambda k: store.get(k)
+
+        PraisonAIAdapter._rehydrate_team_chat_history(restore_team)
+        assert {"role": "user", "content": "hi"} in fresh_agent.chat_history
+
+    def test_rehydrate_does_not_duplicate_existing_history(self):
+        from praisonai.framework_adapters.praisonai_adapter import PraisonAIAdapter
+
+        agent = MagicMock()
+        agent.display_name = "a"
+        agent.name = "a"
+        agent.chat_history = [{"role": "user", "content": "hi"}]
+
+        team = MagicMock()
+        team.agents = [agent]
+        team.get_state.side_effect = lambda k: {
+            "a": [{"role": "user", "content": "hi"}]
+        } if k == PraisonAIAdapter._SESSION_CHAT_HISTORY_KEY else None
+
+        PraisonAIAdapter._rehydrate_team_chat_history(team)
+        assert agent.chat_history == [{"role": "user", "content": "hi"}]
+
+
+class TestIssue3492WrapperGaps:
+    """Regression tests for issue #3492 (three cross-cutting wrapper gaps)."""
+
+    def test_gap1_agentops_session_scoped_per_run(self):
+        """When the AgentOps SDK exposes ``start_session``, the session handle is
+        stored on the ObservabilityRun (per-run) and ended via that handle, not
+        the process-global ``end_session``."""
+        from praisonai.observability.hooks import (
+            _init_agentops,
+            _end_agentops,
+            ObservabilityRun,
+        )
+
+        session = Mock()
+        fake_agentops = Mock()
+        fake_agentops.start_session.return_value = session
+
+        run = ObservabilityRun()
+        with patch.dict('sys.modules', {'agentops': fake_agentops}), \
+                patch.dict('os.environ', {'AGENTOPS_API_KEY': 'k'}):
+            _init_agentops("praisonai", [], run)
+            assert run.agentops_session is session
+            _end_agentops("Success", run)
+
+        session.end_session.assert_called_once_with("Success")
+        fake_agentops.end_session.assert_not_called()
+
+    def test_gap1_failed_start_session_does_not_cross_finalize(self):
+        """When ``start_session`` is available but yields no usable handle
+        (returns None / raises), teardown must NOT fall back to the package-global
+        ``end_session`` — doing so would truncate a concurrent run's live session."""
+        from praisonai.observability.hooks import (
+            _init_agentops,
+            _end_agentops,
+            ObservabilityRun,
+        )
+
+        fake_agentops = Mock()
+        fake_agentops.start_session.return_value = None  # per-session start failed
+
+        run = ObservabilityRun()
+        with patch.dict('sys.modules', {'agentops': fake_agentops}), \
+                patch.dict('os.environ', {'AGENTOPS_API_KEY': 'k'}):
+            _init_agentops("praisonai", [], run)
+            assert run._agentops_mode == "session"
+            assert run.agentops_session is None
+            _end_agentops("Success", run)
+
+        # Never touched the process-global session belonging to another run.
+        fake_agentops.end_session.assert_not_called()
+
+    def test_gap1_legacy_singleton_path_ends_global_session(self):
+        """Without ``start_session`` (legacy SDK), init uses the singleton and
+        teardown ends the package-global session for that run."""
+        from praisonai.observability.hooks import (
+            _init_agentops,
+            _end_agentops,
+            ObservabilityRun,
+        )
+
+        fake_agentops = Mock(spec=["init", "end_session"])  # no start_session
+
+        run = ObservabilityRun()
+        with patch.dict('sys.modules', {'agentops': fake_agentops}), \
+                patch.dict('os.environ', {'AGENTOPS_API_KEY': 'k'}):
+            _init_agentops("praisonai", [], run)
+            assert run._agentops_mode == "global"
+            _end_agentops("Success", run)
+
+        fake_agentops.end_session.assert_called_once_with("Success")
+
+    def test_gap3_capability_cache_isolated_per_registry(self):
+        """The capability cache is per-registry: two registries that register a
+        different adapter under the same name must not read each other's flags."""
+        from praisonai.framework_adapters.registry import (
+            FrameworkAdapterRegistry,
+            adapter_capability,
+        )
+
+        class _CapAdapter:
+            SUPPORTS_WORKFLOW = True
+
+            def is_available(self):
+                return True
+
+        class _NoCapAdapter:
+            SUPPORTS_WORKFLOW = False
+
+            def is_available(self):
+                return True
+
+        reg_a = FrameworkAdapterRegistry(discover_entry_points=False)
+        reg_b = FrameworkAdapterRegistry(discover_entry_points=False)
+        reg_a.register("shared", _CapAdapter)
+        reg_b.register("shared", _NoCapAdapter)
+
+        # Prime reg_a's cache, then confirm reg_b resolves its OWN adapter's flag.
+        assert adapter_capability("shared", "SUPPORTS_WORKFLOW", registry=reg_a) is True
+        assert adapter_capability("shared", "SUPPORTS_WORKFLOW", registry=reg_b) is False
+        # Re-read reg_a: still its own cached value, not reg_b's.
+        assert adapter_capability("shared", "SUPPORTS_WORKFLOW", registry=reg_a) is True
+
+    def test_gap2_run_sync_or_offload_from_running_loop(self):
+        """From inside a running loop, ``run_sync_or_offload`` must refuse to
+        block the loop by default (raising a clear RuntimeError), while the
+        awaitable sibling and the explicit opt-in still complete the coroutine."""
+        import asyncio
+        import os
+        from unittest import mock
+        from praisonai._async_bridge import (
+            run_sync_or_offload,
+            arun_sync_or_offload,
+        )
+
+        async def _work():
+            return 42
+
+        async def _main_strict():
+            # Strict default: refuse to pin the running loop.
+            with pytest.raises(RuntimeError, match="arun"):
+                run_sync_or_offload(_work())
+            # Awaitable sibling never blocks the loop and completes.
+            return await arun_sync_or_offload(_work())
+
+        # Force strict behaviour regardless of the ambient environment: a
+        # process-level ``PRAISONAI_ALLOW_LOOP_BLOCKING=true`` would otherwise
+        # select the legacy blocking path and this assertion would not raise.
+        with mock.patch.dict(
+            os.environ, {"PRAISONAI_ALLOW_LOOP_BLOCKING": ""}
+        ):
+            assert asyncio.run(_main_strict()) == 42
+
+        async def _main_optin():
+            # Legacy behaviour remains available behind an explicit opt-in.
+            return run_sync_or_offload(_work())
+
+        with mock.patch.dict(
+            os.environ, {"PRAISONAI_ALLOW_LOOP_BLOCKING": "true"}
+        ):
+            assert asyncio.run(_main_optin()) == 42
+
+    def test_gap2_run_sync_or_offload_plain_sync_caller(self):
+        from praisonai._async_bridge import run_sync_or_offload
+
+        async def _work():
+            return "ok"
+
+        assert run_sync_or_offload(_work()) == "ok"
+
+    def test_gap3_adapter_capability_reads_flag_not_name(self):
+        """``adapter_capability`` returns the class flag for a resolvable adapter
+        and None (not a name vote) when the adapter can't be resolved."""
+        from praisonai.framework_adapters.registry import adapter_capability
+
+        assert adapter_capability("praisonai", "SUPPORTS_WORKFLOW") is True
+        # An unregistered/unresolvable name yields None, never a name-based True.
+        assert adapter_capability("no_such_framework_xyz", "SUPPORTS_WORKFLOW") is None
+
+    def test_gap3_runtime_features_refuse_when_unresolvable(self):
+        """When only a name is supplied and the adapter is unresolvable, runtime
+        features must be refused with a clear message instead of a silent
+        name-based downgrade."""
+        from praisonai.agents_generator import AgentsGenerator
+
+        generator = AgentsGenerator(
+            agent_file=None,
+            framework='praisonai',
+            config_list=[{"model": "gpt-4o-mini"}],
+        )
+        config = {
+            'roles': {
+                'a': {
+                    'role': 'A', 'goal': 'g', 'backstory': 'b',
+                    'cli_backend': 'claude-code',
+                }
+            }
+        }
+        with pytest.raises(ValueError, match="Cannot verify runtime-feature support"):
+            generator._validate_cli_backend_compatibility(config, 'no_such_framework_xyz')

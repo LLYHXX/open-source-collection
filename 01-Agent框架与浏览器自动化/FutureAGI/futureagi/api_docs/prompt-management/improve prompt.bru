@@ -1,0 +1,18 @@
+meta {
+  name: improve prompt
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{backend_url}}/model-hub/prompt-templates/improve-prompt/
+  body: json
+  auth: bearer
+}
+
+body:json {
+  {
+      "existing_prompt": "Draft a customer complaint email and offer a resolution",
+      "improvement_requirements": "Dear Customer Service, I am writing to express my dissatisfaction with the recent product I purchased. I would like to request a full refund as I believe the item does not meet the quality standards advertised. Please let me know the next steps to resolve this issue."
+    }
+}

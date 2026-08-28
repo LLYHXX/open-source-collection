@@ -1,0 +1,117 @@
+.clean-data-table .ag-header-viewport {
+  border-bottom: 1px solid var(--border-light) !important;
+  border-top: none !important;
+  border-left: none !important;
+  border-right: none !important;
+}
+
+.clean-data-table .ag-header {
+  border-bottom: none !important;
+}
+
+.clean-data-table .ag-header-cell-resize {
+  width: 8px !important;
+}
+.clean-data-table .ag-header-cell-resize::after {
+  background-color: var(--resize-handle) !important;
+  opacity: 0.5;
+  transition: opacity 120ms ease;
+}
+.clean-data-table .ag-header-cell-resize:hover::after {
+  opacity: 1;
+}
+
+/* Remove right border on header cells */
+.clean-data-table .ag-header-cell {
+  border-right: none !important;
+}
+
+.clean-data-table .ag-cell {
+  border: none !important;
+}
+
+.ipop-cell,
+.session-cell-text > div {
+  width: 100%;
+  align-items: center;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.json-display-string {
+  margin: 8px 0px;
+}
+.session-cell-text > div {
+  padding: 0px 14px;
+}
+
+/* Default: single line with ellipsis for default cell text */
+.default-cell-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Wrap text when row height is not Short */
+.cell-wrap .ipop-cell {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.4;
+  display: block;
+  overflow-y: auto;
+  overflow-x: hidden;
+  height: 100%;
+  padding: 8px 0px;
+}
+
+.cell-wrap .json-display-string {
+  white-space: normal !important;
+  word-break: break-word;
+  line-height: 1.4;
+  overflow: hidden;
+}
+
+.cell-wrap .default-cell-text,
+.cell-wrap .session-cell-text > div {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.4;
+  overflow: hidden;
+  padding: 8px 0px;
+  align-items: flex-start;
+  display: flex;
+}
+
+.cell-wrap .session-cell-text > div {
+  padding: 8px 12px;
+}
+
+/* Trace list polish — pinned column shadow */
+.clean-data-table .ag-pinned-left-cols-container {
+  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.05);
+  z-index: 1;
+}
+
+/* Smooth row hover transition */
+.clean-data-table .ag-row {
+  transition: background-color 150ms ease;
+}
+
+/* Consistent header styling */
+.clean-data-table .ag-header-cell-label {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Consistent cell padding for cells without a custom renderer */
+.clean-data-table .ag-cell-value {
+  padding: 0 12px;
+}
+
+/* Hide AG Grid header menu/filter buttons that show on hover */
+.clean-data-table .ag-header-cell-menu-button,
+.clean-data-table .ag-header-cell-filter-button {
+  display: none !important;
+}

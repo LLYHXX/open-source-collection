@@ -1,0 +1,43 @@
+meta {
+  name: Delete Persona
+  type: http
+  seq: 5
+}
+
+delete {
+  url: http://localhost:8000/simulate/api/personas/:persona_id/
+  auth: bearer
+}
+
+params:path {
+  persona_id: {{persona_id}}
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+docs {
+  name: Delete Persona
+  description: Delete a persona (workspace-level only). System personas cannot be deleted. This is a soft delete.
+
+  Path Parameters:
+  - persona_id: UUID of the persona to delete
+
+  Response Example (Success):
+  {
+    "status": true,
+    "result": {
+      "message": "Persona deleted successfully"
+    }
+  }
+
+  Error Response (System Persona):
+  {
+    "status": false,
+    "result": "System-level personas cannot be deleted",
+    "message": "System-level personas cannot be deleted"
+  }
+
+  Note: This performs a soft delete by setting the 'deleted' flag to true.
+}

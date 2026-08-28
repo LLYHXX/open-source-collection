@@ -1,0 +1,43 @@
+meta {
+  name: Update Evaluation Config
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{host}}/model-hub/prompt-templates/:id/update_evaluation_configs
+  body: json
+  auth: bearer
+}
+
+params:path {
+  id:
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+      "config": {},
+      "mapping": {
+          "input_image": "input_prompt"
+      },
+      "id": "93424b43-505e-4e69-bcf9-d8bd5d1ac918",
+      "name": "nnn",
+      "model": "turing_small",
+      "errorLocalizer": true,
+      "kb_id": "bb0e191b-8abb-4d65-b454-920c2f395a1b"
+  }
+}
+
+tests {
+  /*
+  Test cases;
+
+  1. Add new evaluations
+  2. Verified new evaluations are getting created successfully
+  3. Verified user able to create more than 1 evaluation with different name but same template
+  */
+}

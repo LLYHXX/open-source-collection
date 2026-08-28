@@ -1,0 +1,22 @@
+meta {
+  name: Get_base_eval_templates
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{host}}/model-hub/get-eval-templates
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "current_page_index": 3,
+    "page_size": 2
+  }
+}

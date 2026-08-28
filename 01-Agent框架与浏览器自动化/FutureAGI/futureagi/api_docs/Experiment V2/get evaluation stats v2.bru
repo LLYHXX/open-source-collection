@@ -1,0 +1,50 @@
+meta {
+  name: get evaluation stats v2
+  type: http
+  seq: 18
+}
+
+get {
+  url: http://localhost:8000/model-hub/experiments/v2/{{experimentId}}/evaluations/{{evaluationId}}/stats/
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+docs {
+  ## Get Evaluation Stats V2
+
+  Returns statistics for a specific evaluation within an experiment.
+
+  ### Path Parameters
+  - `experimentId` — Experiment UUID
+  - `evaluationId` — Evaluation (UserEvalMetric) UUID
+
+  ### Response
+  ```json
+  {
+    "experiment_id": "uuid",
+    "evaluation_id": "uuid",
+    "evaluation_name": "...",
+    "evaluation_columns": [
+      {
+        "column_name": "...",
+        "column_id": "uuid",
+        "total_rows": 100,
+        "success_rate": 95.0,
+        "avg_response_time": 1.2,
+        "token_usage": {
+          "avg_completion_tokens": 50,
+          "avg_prompt_tokens": 100,
+          "avg_total_tokens": 150,
+          "total_tokens": 15000
+        },
+        "avg_score": {...}
+      }
+    ]
+  }
+  ```
+}

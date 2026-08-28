@@ -1,0 +1,48 @@
+meta {
+  name: 17 - Deleted Version (Error)
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "{{deleted_version_id}}",
+    "label_ids": ["{{prod_label_id}}"]
+  }
+}
+
+docs {
+  # Deleted Version - Error Case
+
+  ## Test Scenario
+  Attempt to assign labels to a version that has been soft-deleted.
+
+  ## Prerequisites
+  - Version exists but has deleted=True
+
+  ## Expected Behavior
+  - Status: 400 Bad Request
+  - Deleted versions should not be modifiable
+
+  ## Expected Response
+  ```json
+  {
+    "status": false,
+    "result": "Error assigning multiple labels: Template version does not exist"
+  }
+  ```
+
+  ## Test Coverage
+  - Soft delete respect
+  - Deleted version handling
+}

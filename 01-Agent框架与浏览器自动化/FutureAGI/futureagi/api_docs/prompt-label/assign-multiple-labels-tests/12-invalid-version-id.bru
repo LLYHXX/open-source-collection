@@ -1,0 +1,45 @@
+meta {
+  name: 12 - Invalid Version ID Format (Error)
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{host}}/model-hub/prompt-labels/assign-multiple-labels/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "template_version_id": "not-a-valid-uuid",
+    "label_ids": ["{{prod_label_id}}"]
+  }
+}
+
+docs {
+  # Invalid Version ID Format - Error Case
+
+  ## Test Scenario
+  Send invalid UUID format for template_version_id.
+
+  ## Expected Behavior
+  - Status: 400 Bad Request
+  - Error about invalid UUID or version not found
+
+  ## Expected Response
+  ```json
+  {
+    "status": false,
+    "result": "Error assigning multiple labels: ..."
+  }
+  ```
+
+  ## Test Coverage
+  - UUID format validation
+  - Invalid input handling
+}

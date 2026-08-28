@@ -1,0 +1,21 @@
+meta {
+  name: Update Cells
+  type: http
+  seq: 7
+}
+
+post {
+  url: http://localhost:8000/model-hub/annotations/9cf3c683-553f-4ea6-9e17-e178e405ea1c/update_cells/
+  body: json
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{access_token}}
+  content-type: application/json
+  Cookie: {{xsrf_cookie}}
+}
+
+body:json {
+  {"label_values":[{"row_id":"513f2543-3f3d-4285-8154-7d981c919413","value":"user 2","label_id":"1f920701-b9da-48ac-a224-bf01ce3b699d"}],"response_field_values":[{"row_id":"513f2543-3f3d-4285-8154-7d981c919413","value":"cell 1","column_id":"53709116-efe9-40b5-bd4d-c1b2f098cac4"}]}
+}
