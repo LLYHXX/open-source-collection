@@ -1,9 +1,10 @@
 """安卓靶场：Android SDK 模拟器（AVD）全生命周期管理，用于 APP/小程序漏洞挖掘。
 
-设计（Windows 优先，工具为主 · 确定性操作）：
-- 环境自检：ANDROID_HOME / %LOCALAPPDATA%\\Android\\Sdk / 内置 backend\\android-sdk 逐级探测
+设计（Windows / Linux 双平台，工具为主 · 确定性操作）：
+- 环境自检：ANDROID_HOME / %LOCALAPPDATA%\\Android\\Sdk（Win）或 ~/Android/Sdk 等（Linux）
+  / 内置 android-sdk 逐级探测；Linux 额外检测 /dev/kvm 硬件加速
 - 一键引导（bootstrap）：自动下载 JDK17 + Android cmdline-tools + platform-tools + emulator
-  （写入 license 文件免交互，全程后台 job 进度上报）
+  （按平台选 Windows zip / Linux tar.gz，写入 license 文件免交互，后台 job 进度上报）
 - 系统镜像：sdkmanager 安装推荐镜像（google_apis 系可 adb root，便于装 CA 证书）
 - AVD 创建：avdmanager + config.ini 定制内存(hw.ramSize)/核心(hw.cpu.ncore)/分辨率/密度
 - 启动：emulator 独立进程，可自动挂 mitmproxy 抓包代理（-http-proxy 指向 127.0.0.1:8082）
@@ -18,7 +19,11 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
+import sys
+import tarfile
+import tempfile
 import threading
 import time
 import uuid
@@ -27,6 +32,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+IS_WIN = os.name == "nt"
 
 # ===== 用户可控参数白名单（所有进入子进程/adb 的参数必须先过白名单）=====
 # .bat 经 cmd /c 执行，& | < > ^ 等 cmd 元字符可被解释为命令分隔符，
@@ -41,10 +48,40 @@ RE_SDK_PKG = re.compile(r"^[A-Za-z0-9;._\-]{1,200}$")
 # 内置 SDK 目录（bootstrap 默认安装位置）
 BUNDLED_SDK_DIR = Path(__file__).resolve().parents[2] / "android-sdk"
 
-CMDLINE_TOOLS_URL = ("https://dl.google.com/android/repository/"
-                     "commandlinetools-win-11076708_latest.zip")
-JDK_URL = ("https://github.com/adoptium/temurin17-binaries/releases/download/"
-           "jdk-17.0.13%2B11/OpenJDK17U-jdk_x64_windows_hotspot_17.0.13_11.zip")
+def _platform_key() -> str:
+    """win / linux（其余 POSIX 一律按 linux 处理）。"""
+    return "win" if IS_WIN else "linux"
+
+# 各平台下载源（bootstrap 按 _platform_key 选取）
+CMDLINE_TOOLS_URLS = {
+    "win": ("https://dl.google.com/android/repository/"
+            "commandlinetools-win-11076708_latest.zip"),
+    "linux": ("https://dl.google.com/android/repository/"
+              "commandlinetools-linux-11076708_latest.zip"),
+}
+JDK_URLS = {
+    "win": ("https://github.com/adoptium/temurin17-binaries/releases/download/"
+            "jdk-17.0.13%2B11/OpenJDK17U-jdk_x64_windows_hotspot_17.0.13_11.zip"),
+    "linux": ("https://github.com/adoptium/temurin17-binaries/releases/download/"
+              "jdk-17.0.13%2B11/OpenJDK17U-jdk_x64_linux_hotspot_17.0.13_11.tar.gz"),
+}
+
+# 各平台工具相对路径（逻辑名 -> 平台相对路径）
+TOOL_RELS = {
+    "sdkmanager": {"win": "cmdline-tools/latest/bin/sdkmanager.bat",
+                   "linux": "cmdline-tools/latest/bin/sdkmanager"},
+    "avdmanager": {"win": "cmdline-tools/latest/bin/avdmanager.bat",
+                   "linux": "cmdline-tools/latest/bin/avdmanager"},
+    "adb": {"win": "platform-tools/adb.exe",
+            "linux": "platform-tools/adb"},
+    "emulator": {"win": "emulator/emulator.exe",
+                 "linux": "emulator/emulator"},
+}
+
+
+def _tool_rel(name: str) -> str:
+    """按当前平台取工具相对路径。"""
+    return TOOL_RELS[name][_platform_key()]
 
 # 推荐系统镜像（google_apis 系支持 adb root）
 RECOMMENDED_IMAGES = [
@@ -130,10 +167,15 @@ def _sdk_candidates() -> list[Path]:
     if env:
         out.append(Path(env))
     out.append(BUNDLED_SDK_DIR)
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        out.append(Path(local) / "Android" / "Sdk")
-    out.append(Path("C:/Android/Sdk"))
+    if IS_WIN:
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            out.append(Path(local) / "Android" / "Sdk")
+        out.append(Path("C:/Android/Sdk"))
+    else:
+        out.append(Path.home() / "Android" / "Sdk")
+        out.append(Path("/opt/android-sdk"))
+        out.append(Path("/usr/lib/android-sdk"))
     # 去重保序
     seen, uniq = set(), []
     for p in out:
@@ -144,7 +186,9 @@ def _sdk_candidates() -> list[Path]:
     return uniq
 
 
-def _find_tool(sdk: Path | None, rel: str) -> Path | None:
+def _find_tool(sdk: Path | None, name: str) -> Path | None:
+    """按逻辑名（sdkmanager/avdmanager/adb/emulator）在 SDK 候选目录下定位工具。"""
+    rel = _tool_rel(name)
     cands: list[Path] = []
     if sdk:
         cands.append(sdk / rel)
@@ -159,16 +203,28 @@ def _find_tool(sdk: Path | None, rel: str) -> Path | None:
 def _java_home() -> Path | None:
     """优先内置 jdk（BUNDLED_SDK_DIR/jdk），其次 JAVA_HOME / PATH 探测。"""
     bundled = BUNDLED_SDK_DIR / "jdk"
-    if (bundled / "bin" / "java.exe").is_file():
+    exe = "java.exe" if IS_WIN else "java"
+    if (bundled / "bin" / exe).is_file():
         return bundled
     jh = os.environ.get("JAVA_HOME")
-    if jh and (Path(jh) / "bin" / "java.exe").is_file():
+    if jh and (Path(jh) / "bin" / exe).is_file():
         return Path(jh)
     return None
 
 
+def _kvm_status() -> tuple[bool | None, str]:
+    """虚拟化加速状态：(None=Windows 由 WHPX/HAXM 自动处理) / (True|False, 说明)。"""
+    if IS_WIN:
+        return None, ""
+    kvm = Path("/dev/kvm")
+    if kvm.exists() and os.access(kvm, os.R_OK | os.W_OK):
+        return True, ""
+    return False, ("未检测到可用的 /dev/kvm：需在 BIOS 开启 VT-x/AMD-V 并加载 kvm 内核模块"
+                   "（容器部署还需挂载 /dev/kvm）。无 KVM 时模拟器仅能纯软件运行，速度极慢")
+
+
 def detect_environment() -> dict:
-    """环境自检：SDK/JDK/各工具可用性 + 镜像与 AVD 概况。"""
+    """环境自检：SDK/JDK/各工具可用性 + 虚拟化加速 + 镜像与 AVD 概况。"""
     sdk = next((c for c in _sdk_candidates() if c.is_dir()), None)
     java = _java_home()
     if java:
@@ -180,19 +236,23 @@ def detect_environment() -> dict:
         except Exception:  # noqa: BLE001
             java_ok = False
     tools = {
-        "sdkmanager": _find_tool(sdk, "cmdline-tools/latest/bin/sdkmanager.bat"),
-        "avdmanager": _find_tool(sdk, "cmdline-tools/latest/bin/avdmanager.bat"),
-        "adb": _find_tool(sdk, "platform-tools/adb.exe"),
-        "emulator": _find_tool(sdk, "emulator/emulator.exe"),
+        "sdkmanager": _find_tool(sdk, "sdkmanager"),
+        "avdmanager": _find_tool(sdk, "avdmanager"),
+        "adb": _find_tool(sdk, "adb"),
+        "emulator": _find_tool(sdk, "emulator"),
     }
+    kvm_ok, kvm_note = _kvm_status()
     installed_images = _installed_images(sdk)
     return {
+        "platform": "windows" if IS_WIN else ("linux" if sys.platform.startswith("linux") else "posix"),
         "sdk_path": str(sdk) if sdk else "",
         "sdk_found": sdk is not None,
         "java_ok": java_ok,
         "java_path": str(java) if java else "",
         "tools": {k: str(v) if v else "" for k, v in tools.items()},
         "tools_ready": all(tools.values()),
+        "kvm_ok": kvm_ok,
+        "kvm_note": kvm_note,
         "installed_images": installed_images,
         "recommended_images": RECOMMENDED_IMAGES,
         "avds": list_avds(tools["emulator"]) if tools["emulator"] else [],
@@ -217,18 +277,21 @@ def _installed_images(sdk: Path | None) -> list[str]:
 
 # ===== 子进程封装 =====
 
-def _run_bat(bat: Path, args: list[str], timeout: int = 600,
-             env_extra: dict | None = None) -> tuple[int, str]:
-    """cmd /c 调 .bat（Windows 下 .bat 需经 cmd）。"""
+def _run_tool(tool: Path, args: list[str], timeout: int = 600,
+              env_extra: dict | None = None) -> tuple[int, str]:
+    """执行 SDK 工具：Windows 下 .bat 经 cmd /c，其余直接 exec。"""
     env = os.environ.copy()
     java = _java_home()
     if java:
         env["JAVA_HOME"] = str(java)
-        env["PATH"] = f"{java}\\bin;" + env.get("PATH", "")
+        env["PATH"] = f"{java / 'bin'}{os.pathsep}" + env.get("PATH", "")
     if env_extra:
         env.update(env_extra)
-    proc = subprocess.run(["cmd", "/c", str(bat), *args],
-                          capture_output=True, timeout=timeout, env=env)
+    if IS_WIN and tool.suffix.lower() == ".bat":
+        cmd = ["cmd", "/c", str(tool), *args]
+    else:
+        cmd = [str(tool), *args]
+    proc = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
     out = (proc.stdout or b"").decode("utf-8", "replace") + \
           (proc.stderr or b"").decode("utf-8", "replace")
     return proc.returncode, out
@@ -276,6 +339,17 @@ def _unzip(zip_path: Path, dest: Path) -> None:
         z.extractall(dest)
 
 
+def _ensure_exec_bits(root: Path) -> None:
+    """Linux/macOS：Python zipfile 解压不保留执行位，补 bin/ 目录下文件为可执行。"""
+    if IS_WIN:
+        return
+    for bin_dir in root.rglob("bin"):
+        if bin_dir.is_dir():
+            for f in bin_dir.iterdir():
+                if f.is_file():
+                    f.chmod(f.stat().st_mode | 0o111)
+
+
 def _write_licenses(sdk: Path) -> None:
     lic_dir = sdk / "licenses"
     lic_dir.mkdir(parents=True, exist_ok=True)
@@ -287,47 +361,53 @@ def _bootstrap_job(jid: str, include_emulator: bool) -> None:
     try:
         sdk = BUNDLED_SDK_DIR
         sdk.mkdir(parents=True, exist_ok=True)
+        plat = _platform_key()
 
         # 1) JDK（sdkmanager 依赖）
         if not _java_home():
-            job_update(jid, log="下载 JDK 17 (Temurin, ~190MB)...")
-            jdk_zip = sdk / "_jdk.zip"
-            _download(JDK_URL, jdk_zip, jid, "JDK")
+            suffix = ".zip" if plat == "win" else ".tar.gz"
+            job_update(jid, log=f"下载 JDK 17 (Temurin {plat}, ~190MB)...")
+            jdk_pkg = sdk / f"_jdk{suffix}"
+            _download(JDK_URLS[plat], jdk_pkg, jid, "JDK")
             job_update(jid, progress=20, log="解压 JDK...")
-            _unzip(jdk_zip, sdk / "_jdk_tmp")
-            jdk_zip.unlink(missing_ok=True)
+            jdk_tmp = sdk / "_jdk_tmp"
+            if plat == "win":
+                _unzip(jdk_pkg, jdk_tmp)
+            else:
+                with tarfile.open(jdk_pkg) as t:  # tar.gz 保留执行位
+                    t.extractall(jdk_tmp)
+            jdk_pkg.unlink(missing_ok=True)
             # Temurin 解压出 jdk-17.x.y+z 目录，规整为 sdk/jdk
-            extracted = list((sdk / "_jdk_tmp").glob("jdk-*"))
+            extracted = list(jdk_tmp.glob("jdk-*"))
             if extracted:
                 target = sdk / "jdk"
                 if target.exists():
-                    import shutil
                     shutil.rmtree(target)
                 extracted[0].rename(target)
-            import shutil as _sh
-            _sh.rmtree(sdk / "_jdk_tmp", ignore_errors=True)
+            shutil.rmtree(jdk_tmp, ignore_errors=True)
             job_update(jid, progress=30, log="JDK 就绪")
         else:
             job_update(jid, progress=30, log="已有 JDK，跳过下载")
 
         # 2) cmdline-tools
-        sm = _find_tool(sdk, "cmdline-tools/latest/bin/sdkmanager.bat")
+        sm = _find_tool(sdk, "sdkmanager")
         if not sm:
             job_update(jid, progress=35, log="下载 Android cmdline-tools (~150MB)...")
             clt_zip = sdk / "_clt.zip"
-            _download(CMDLINE_TOOLS_URL, clt_zip, jid, "cmdline-tools")
+            _download(CMDLINE_TOOLS_URLS[plat], clt_zip, jid, "cmdline-tools")
             job_update(jid, progress=55, log="解压 cmdline-tools...")
-            _unzip(clt_zip, sdk / "_clt_tmp")
+            clt_tmp = sdk / "_clt_tmp"
+            _unzip(clt_zip, clt_tmp)
             clt_zip.unlink(missing_ok=True)
-            src = sdk / "_clt_tmp" / "cmdline-tools"
+            src = clt_tmp / "cmdline-tools"
             dst = sdk / "cmdline-tools" / "latest"
             dst.parent.mkdir(parents=True, exist_ok=True)
             if src.is_dir():
                 src.rename(dst)
-            import shutil as _sh2
-            _sh2.rmtree(sdk / "_clt_tmp", ignore_errors=True)
+            _ensure_exec_bits(dst)
+            shutil.rmtree(clt_tmp, ignore_errors=True)
             _write_licenses(sdk)
-        sm = _find_tool(sdk, "cmdline-tools/latest/bin/sdkmanager.bat")
+        sm = _find_tool(sdk, "sdkmanager")
         if not sm:
             raise RuntimeError("cmdline-tools 安装失败")
 
@@ -336,7 +416,7 @@ def _bootstrap_job(jid: str, include_emulator: bool) -> None:
         if include_emulator:
             pkgs.append("emulator")
         job_update(jid, progress=60, log=f"sdkmanager 安装 {' '.join(pkgs)} ...")
-        code, out = _run_bat(sm, ["--install", *pkgs], timeout=1800)
+        code, out = _run_tool(sm, ["--install", *pkgs], timeout=1800)
         if code != 0:
             raise RuntimeError(f"sdkmanager 失败: {out[-500:]}")
         job_update(jid, status="done", progress=100,
@@ -360,11 +440,11 @@ def _install_image_job(jid: str, pkg: str) -> None:
     try:
         if not RE_SDK_PKG.match(pkg):
             raise RuntimeError(f"非法安装包标识: {pkg}")
-        sm = _find_tool(None, "cmdline-tools/latest/bin/sdkmanager.bat")
+        sm = _find_tool(None, "sdkmanager")
         if not sm:
             raise RuntimeError("SDK 未就绪，请先执行一键引导")
         job_update(jid, log=f"sdkmanager --install {pkg}（体积较大，请耐心等待）...")
-        code, out = _run_bat(sm, ["--install", pkg], timeout=3600)
+        code, out = _run_tool(sm, ["--install", pkg], timeout=3600)
         if code != 0:
             raise RuntimeError(f"镜像安装失败: {out[-500:]}")
         job_update(jid, status="done", progress=100, log=f"镜像 {pkg} 安装完成")
@@ -375,7 +455,7 @@ def _install_image_job(jid: str, pkg: str) -> None:
 # ===== AVD 管理 =====
 
 def list_avds(emulator_exe: Path | str | None = None) -> list[str]:
-    emu = emulator_exe or _find_tool(None, "emulator/emulator.exe")
+    emu = emulator_exe or _find_tool(None, "emulator")
     if not emu:
         return []
     try:
@@ -391,7 +471,7 @@ def list_avds(emulator_exe: Path | str | None = None) -> list[str]:
 def create_avd(name: str, image: str, memory_mb: int = 2048, cores: int = 2,
                width: int = 1080, height: int = 2340, density: int = 440) -> dict:
     """创建 AVD 并写 config.ini 定制硬件参数。"""
-    avdm = _find_tool(None, "cmdline-tools/latest/bin/avdmanager.bat")
+    avdm = _find_tool(None, "avdmanager")
     if not avdm:
         raise RuntimeError("avdmanager 不可用，请先执行一键引导")
     if not (name and RE_AVD_NAME.match(name)):
@@ -403,8 +483,8 @@ def create_avd(name: str, image: str, memory_mb: int = 2048, cores: int = 2,
     if not (1 <= cores <= 16):
         raise ValueError("CPU 核心数须在 1~16 之间")
 
-    code, out = _run_bat(avdm, ["create", "avd", "-n", name, "-k", image,
-                                "-d", "pixel_4"], timeout=300)
+    code, out = _run_tool(avdm, ["create", "avd", "-n", name, "-k", image,
+                                 "-d", "pixel_4"], timeout=300)
     # avdmanager 对已存在 AVD 返回非 0
     if code != 0 and "already exists" not in out.lower():
         raise RuntimeError(f"创建 AVD 失败: {out[-500:]}")
@@ -447,10 +527,10 @@ def delete_avd(name: str) -> dict:
     running = _procs.get(name)
     if running and running.poll() is None:
         raise RuntimeError(f"AVD {name} 正在运行，请先停止")
-    avdm = _find_tool(None, "cmdline-tools/latest/bin/avdmanager.bat")
+    avdm = _find_tool(None, "avdmanager")
     if not avdm:
         raise RuntimeError("avdmanager 不可用")
-    code, out = _run_bat(avdm, ["delete", "avd", "-n", name], timeout=60)
+    code, out = _run_tool(avdm, ["delete", "avd", "-n", name], timeout=60)
     if code != 0:
         raise RuntimeError(f"删除 AVD 失败: {out[-300:]}")
     return {"deleted": name}
@@ -479,7 +559,7 @@ def start_avd(name: str, *, headless: bool = False, proxy_port: int = 0,
     """启动 AVD；proxy_port>0 时挂 mitmproxy 抓包代理，install_cert 时自动装系统证书。"""
     if not RE_AVD_NAME.match(name):
         raise ValueError("非法 AVD 名称")
-    emu = _find_tool(None, "emulator/emulator.exe")
+    emu = _find_tool(None, "emulator")
     if not emu:
         raise RuntimeError("emulator 不可用，请先执行一键引导")
     with _procs_lock:
@@ -499,12 +579,14 @@ def start_avd(name: str, *, headless: bool = False, proxy_port: int = 0,
         args += ["-http-proxy", f"http://127.0.0.1:{proxy_port}",
                  "-writable-system"]
 
-    creationflags = 0
-    if os.name == "nt":
-        creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    popen_kwargs: dict = {}
+    if IS_WIN:
+        popen_kwargs["creationflags"] = (subprocess.DETACHED_PROCESS |
+                                         subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        popen_kwargs["start_new_session"] = True  # 脱离终端进程组，服务退出不影响
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            creationflags=creationflags)
+                            stderr=subprocess.DEVNULL, **popen_kwargs)
     with _procs_lock:
         _procs[name] = {"proc": proc, "port": port}
 
@@ -519,7 +601,7 @@ def start_avd(name: str, *, headless: bool = False, proxy_port: int = 0,
 
 def _wait_and_install_cert(name: str, port: int, max_wait: int = 300) -> None:
     """等待模拟器 boot 完成，然后 root + 装 mitmproxy CA 到系统证书目录。"""
-    adb = _find_tool(None, "platform-tools/adb.exe")
+    adb = _find_tool(None, "adb")
     if not adb:
         return
     serial = f"emulator-{port}"
@@ -564,7 +646,8 @@ def _install_mitm_cert(adb: Path, serial: str) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"installed": False, "reason": f"证书解析失败: {e}"}
     remote_name = f"{hash_name}.0"
-    tmp = Path(os.environ.get("TEMP", ".")) / remote_name
+    tmp_dir = Path(tempfile.mkdtemp(prefix="ah_cert_"))
+    tmp = tmp_dir / remote_name
     tmp.write_bytes(pem)
     steps = [
         ["root"],
@@ -574,13 +657,16 @@ def _install_mitm_cert(adb: Path, serial: str) -> dict:
         ["shell", "chmod", "644", f"/system/etc/security/cacerts/{remote_name}"],
     ]
     results = []
-    for s in steps:
-        try:
-            code, out = _run_exe(adb, ["-s", serial, *s], timeout=120)
-            results.append({"cmd": " ".join(s), "code": code,
-                            "out": out[-200:] if out else ""})
-        except Exception as e:  # noqa: BLE001
-            results.append({"cmd": " ".join(s), "code": -1, "out": str(e)})
+    try:
+        for s in steps:
+            try:
+                code, out = _run_exe(adb, ["-s", serial, *s], timeout=120)
+                results.append({"cmd": " ".join(s), "code": code,
+                                "out": out[-200:] if out else ""})
+            except Exception as e:  # noqa: BLE001
+                results.append({"cmd": " ".join(s), "code": -1, "out": str(e)})
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
     ok = any(r["cmd"] == "push" and r["code"] == 0 for r in results)
     return {"installed": ok, "cert_name": remote_name, "steps": results}
 
@@ -593,7 +679,7 @@ def stop_avd(name: str) -> dict:
             with _procs_lock:
                 _procs.pop(name, None)
         return {"stopped": name, "note": "未由本服务启动或已退出"}
-    adb = _find_tool(None, "platform-tools/adb.exe")
+    adb = _find_tool(None, "adb")
     if adb:
         try:
             _run_exe(adb, ["-s", f"emulator-{rec['port']}", "emu", "kill"],
@@ -620,7 +706,7 @@ def is_running(name: str) -> bool:
 # ===== adb / APP 管理 =====
 
 def adb_devices() -> list[dict]:
-    adb = _find_tool(None, "platform-tools/adb.exe")
+    adb = _find_tool(None, "adb")
     if not adb:
         raise RuntimeError("adb 不可用，请先执行一键引导")
     code, out = _run_exe(adb, ["devices", "-l"], timeout=30)
@@ -643,7 +729,7 @@ def adb_devices() -> list[dict]:
 
 
 def install_apk(serial: str, apk_path: str) -> dict:
-    adb = _find_tool(None, "platform-tools/adb.exe")
+    adb = _find_tool(None, "adb")
     if not adb:
         raise RuntimeError("adb 不可用")
     if not apk_path.lower().endswith(".apk"):
@@ -665,7 +751,7 @@ def launch_app(serial: str, package: str, activity: str = "") -> dict:
         raise ValueError("非法包名")
     if activity and not RE_ACTIVITY.match(activity):
         raise ValueError("非法 Activity 名")
-    adb = _find_tool(None, "platform-tools/adb.exe")
+    adb = _find_tool(None, "adb")
     if not adb:
         raise RuntimeError("adb 不可用")
     if activity:
@@ -690,7 +776,7 @@ def uninstall_app(serial: str, package: str) -> dict:
     # 包名白名单校验
     if not RE_ADB_PKG.match(package):
         raise ValueError("非法包名")
-    adb = _find_tool(None, "platform-tools/adb.exe")
+    adb = _find_tool(None, "adb")
     if not adb:
         raise RuntimeError("adb 不可用")
     code, out = _run_exe(adb, ["-s", serial, "uninstall", package], timeout=120)
@@ -698,7 +784,7 @@ def uninstall_app(serial: str, package: str) -> dict:
 
 
 def list_packages(serial: str, third_party: bool = True) -> list[str]:
-    adb = _find_tool(None, "platform-tools/adb.exe")
+    adb = _find_tool(None, "adb")
     if not adb:
         raise RuntimeError("adb 不可用")
     args = ["-s", serial, "shell", "pm", "list",

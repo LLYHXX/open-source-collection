@@ -9,7 +9,14 @@ services:
       - backend/.env
     volumes:
       - aififteen_hunter_data:/app/data
+      # - ./backend/android-sdk:/app/android-sdk   # 移动靶场 SDK 缓存（启用模拟器时取消注释）
     restart: unless-stopped
+    # ===== 移动靶场（Android 模拟器）可选启用 =====
+    # Linux 宿主机开启 KVM 后，取消以下注释并 `docker compose up -d`，
+    # 再到「安卓靶场」页执行一键引导（容器内自动下载 linux 版 JDK/SDK）：
+    # privileged: true
+    # devices:
+    #   - /dev/kvm
 
 volumes:
   aififteen_hunter_data:

@@ -55,6 +55,25 @@ stop.bat         :: 一键停止（按端口杀进程）
 
 首次运行自动 `npm install` + `pip install --target=vendor`，之后秒起。唯一必填项：`backend/.env` 里的 `LLM_API_KEY`（引擎模式不依赖模型质量，最低配 Key 即可）。
 
+### Linux / macOS 一键启动（与 Windows 同级支持）
+
+`start.sh` 与 `start.bat` 能力对齐，依赖同样装进 `backend/vendor`（不污染系统）：
+
+```bash
+chmod +x start.sh stop.sh
+./start.sh          # 开发模式：后端 18800 + 前端 5173
+./start.sh prod     # 生产模式：构建前端由后端托管，访问 http://localhost:18800
+./stop.sh           # 一键停止（先按 pid 停，再按端口兜底清理）
+```
+
+**安卓靶场（移动靶场）在 Linux 原生环境下完整可用**，且 KVM 硬件加速比 Windows 的 WHPX/HAXM 更成熟：
+
+- 前置条件：BIOS 开启 VT-x/AMD-V，内核加载 kvm 模块（`sudo modprobe kvm_intel` 或 `kvm_amd`），当前用户可读写 `/dev/kvm`（加入 `kvm` 组：`sudo usermod -aG kvm $USER`）
+- 「安卓靶场」页一键引导会自动下载 Linux 版 JDK 17 与 cmdline-tools（与 Windows 同一页面、同一流程）
+- 环境自检会报告 `kvm_ok` 状态，未就绪时给出具体修复提示；无 KVM 时模拟器仅能纯软件运行（极慢，不建议）
+
+Docker 容器内启用移动靶场见 `docker-compose.yml` 中的注释块（`privileged` + `/dev/kvm` 挂载，宿主机需已开启 KVM）。
+
 ### Docker 离线包（目标服务器无外网时）
 
 在有网机器上打一个离线包，拷到目标服务器解压即用：
