@@ -317,6 +317,54 @@ aififteen Hunter 内置 APScheduler 定时任务调度：
 | `BROWSER_HEADLESS` | | `true` | 无头模式 |
 | `WAF_ENABLED` | | `true` | WAF 检测 |
 | `CORS_ORIGINS` | | `*` | 跨域（生产建议限制域名） |
+| `ENGINE_PLUGIN_TIMEOUT` | | `300` | 引擎单插件超时秒 |
+| `ENGINE_MAX_CONCURRENCY` | | `4` | 引擎插件并发数 |
+| `ENGINE_WEAKPWD_ENABLED` | | `false` | 弱口令探测（有副作用） |
+| `ENGINE_UPLOAD_PROBE` | | `false` | 上传探测（有副作用） |
+
+## 自研检测引擎（v0.2 内核）
+
+从「工具调用器」升级为「有自己规则的扫描引擎」——确定性优先，LLM 只做兜底。
+
+**流水线**：指纹前置 → 插件 match 过滤 → 并发 detect（单插件超时隔离）→ 误报过滤（WAF 页/404 伪装/登录跳转）→ verify 独立复现（检测命中≠漏洞）→ CVSS 3.1 自动定级 → 入库
+
+**三条黄金原则**：
+1. 检测与验证强制分离：每个插件必须有独立 `verify()`，复现成功才算确认
+2. 指纹前置按需检测：先识别组件/框架/端点，再匹配对应插件，不全量乱扫
+3. 超时/异常全兜底：单插件报错不影响整个引擎
+
+**内置 10 类确定性检测插件**（`backend/app/engine/detectors/`，每个漏洞一个插件，格式统一）：
+
+| 插件 | 漏洞类型 | 判定方式 |
+|---|---|---|
+| sqli.error_bool | SQL 注入 | 报错指纹 + 布尔双探针响应差异 |
+| xss.reflect | XSS | 唯一 marker 反射 + 危险上下文 |
+| rce.echo_sleep | 命令注入 | echo marker 回显 + sleep 时延差 |
+| traversal.file_read | 目录遍历 | 穿越序列 + 系统文件指纹 |
+| ssrf.internal_probe | SSRF | 回环地址探测 + 内部服务指纹 |
+| infoleak.sensitive_files | 信息泄露 | .git/.env/备份/调试端点特征 |
+| idor.enumerate | IDOR | ID 邻近枚举 + 响应差异（idor_traverse） |
+| authbypass.traverse | 越权 | 管理员/用户/匿名三身份对比（auth_traverse） |
+| weakpwd.common_creds | 弱口令 | 有限组合探测（默认关闭） |
+| upload.type_bypass | 文件上传 | 无害双后缀测试（默认关闭） |
+
+**误报过滤特征库**：WAF 拦截页（12+ 特征）、404 伪装页（基线对比）、登录跳转、相同页假差异 —— 方案目标误报率 ≤15%。
+
+**验证沙箱**：`engine/sandbox.py` 预留 Docker 隔离重放接口（镜像未内置时自动降级直连复现）。
+
+**Go 高性能组件**：`engine/golang/fp_scanner/`（纯标准库指纹扫描），编译后由 Python subprocess 调用，二进制缺失自动降级 Python 实现：
+
+```bash
+cd backend/app/engine/golang/fp_scanner
+go build -o ../bin/fp_scanner .        # Windows: go build -o ../bin/fp_scanner.exe .
+```
+
+**API**：
+- `POST /api/tasks/{id}/engine-scan?url=...&admin_cookie=...&user_cookie=...` 启动引擎扫描（URL 经统一 SSRF 校验）
+- `GET /api/tasks/engine/detectors` 插件清单
+- Worker/Agent 可直接调用 `engine_scan` / `engine_list_detectors` 武器
+
+**定时任务/全自动**：新建任务时 `mode=engine`，`POST /tasks/{id}/start` 与定时任务调度均自动走引擎流水线（FOFA 收集 → 引擎检测 → 入库），全程无 LLM 参与（除 Reviewer 初审）。
 
 ## 使用流程
 

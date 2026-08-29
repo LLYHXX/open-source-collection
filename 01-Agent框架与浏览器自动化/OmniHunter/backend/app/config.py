@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     waf_enabled: bool = True
     cors_origins: str = "*"
 
+    # === 自研检测引擎（engine/）===
+    engine_plugin_timeout: int = 300  # 单插件 detect/verify 总超时秒
+    engine_request_timeout: int = 10  # 单请求超时秒
+    engine_max_concurrency: int = 4   # 插件并发数
+    engine_weakpwd_enabled: bool = False  # 弱口令探测（有副作用，默认关）
+    engine_upload_probe: bool = False     # 上传探测（有副作用，默认关）
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

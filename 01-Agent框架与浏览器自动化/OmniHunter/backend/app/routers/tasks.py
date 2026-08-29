@@ -236,6 +236,47 @@ async def start_multi_agent(task_id: str, url: str,
         message=f"已对 {url} 启动多 agent 合作（workflow={workflow_name}）")
 
 
+@router.post("/{task_id}/engine-scan", response_model=StandardResponse)
+async def start_engine_scan(task_id: str, url: str,
+                            admin_cookie: str = "",
+                            user_cookie: str = "",
+                            db: Session = Depends(get_db)):
+    """自研检测引擎流水线：指纹前置 → 确定性插件检测 → 独立复现
+    → CVSS 自动定级 → 入库。
+
+    admin_cookie/user_cookie 可选，提供后启用三身份越权遍历
+    （auth_traverse 确定性检测）。task.mode="engine" 时
+    /tasks/{id}/start 与定时任务也走同一条引擎流水线。
+    """
+    _validate_target_url(url)
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+
+    async def _bg():
+        db2 = SessionLocal()
+        try:
+            orch = Orchestrator(db2)
+            await orch.run_engine_pipeline(
+                task, url,
+                admin_cookie=admin_cookie, user_cookie=user_cookie)
+        finally:
+            db2.close()
+
+    asyncio.create_task(_bg())
+    return StandardResponse(message=f"已对 {url} 启动自研引擎扫描")
+
+
+@router.get("/engine/detectors", response_model=StandardResponse)
+def list_engine_detectors():
+    """列出引擎检测插件清单（id/类型/是否无副作用）。"""
+    from ..engine import ScanEngine
+    return StandardResponse(
+        message="ok",
+        data={"detectors": ScanEngine().list_detectors()},
+    )
+
+
 @router.get("/workflows/preset", response_model=StandardResponse)
 def list_preset_workflows():
     """列出预置 workflow 模板（前端拖拽编排用）。"""

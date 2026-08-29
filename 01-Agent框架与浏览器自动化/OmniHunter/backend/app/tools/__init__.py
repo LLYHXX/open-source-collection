@@ -321,9 +321,12 @@ def register_all(reg, settings) -> None:
     reg.register(
         "waf_bypass_payload_hints", anti_waf_tool.waf_bypass_payload_hints,
         "WAF 绕过 payload 提示（sqli/xss/cmd_injection 内联注释/编码/分块等）",
-        {"type": "object",
-         "properties": {"vuln_type": {"type": "string"}}},
+        {"type": "object", "properties": {"vuln_type": {"type": "string"}}},
     )
+
+    # === 自研检测引擎（确定性规则优先，LLM 只做兜底）===
+    from ..engine import register_engine_tools
+    register_engine_tools(reg, settings)
 
 
 def which(name: str) -> str | None:

@@ -40,6 +40,96 @@ class Orchestrator:
         # 避免 SQLite 高频 commit 拖慢事件密集的流水线
         self.db.flush()
 
+    # ===== 自研引擎流水线（确定性优先，LLM 只做兜底初审）=====
+    async def run_engine_pipeline(self, task: Task, url: str,
+                                  admin_cookie: str = "",
+                                  user_cookie: str = ""):
+        """自研检测引擎流水线：指纹前置 → 确定性插件检测 → 独立复现
+        → CVSS 自动定级 → Reviewer 仅做极理性抽检 → 入库。
+
+        引擎输出的都是 verify 复现过的确认漏洞，Reviewer 只按 strict 模式
+        校准严重性，不重新测试（对齐方案第四步：Reviewer 改规则审核员）。
+        task.mode == "engine" 时 run_task 分流到此；定时任务模板同样生效。
+        admin_cookie/user_cookie 提供后启用三身份越权遍历。
+        """
+        from ..agents.reviewer import ReviewerAgent
+        from ..engine import ScanEngine
+
+        extra: dict = {}
+        if admin_cookie or user_cookie:
+            extra["sessions"] = {
+                "admin": {"cookie": admin_cookie},
+                "user": {"cookie": user_cookie},
+            }
+
+        target = Target(task_id=task.id, url=url)
+        self.db.add(target)
+        self.db.commit()
+
+        run = AgentRun(
+            target_id=target.id, agent_role="engine",
+            stage="engine", status="running",
+        )
+        self.db.add(run)
+        self.db.commit()
+
+        try:
+            engine = ScanEngine(self.settings)
+
+            async def engine_emit(level: str, content: str):
+                self.emit(run.id, target.id, "engine", level, content)
+
+            result = await engine.scan(url, emit=engine_emit, extra=extra)
+            findings = result.get("findings", [])
+
+            # 入库：引擎已 verify+CVSS 定级，Reviewer 只抽检校准
+            vulns_for_review = [{
+                "vuln_type": f.get("vuln_type", ""),
+                "severity": f.get("severity", "medium"),
+                "title": f.get("title", ""),
+                "detail": f.get("detail", ""),
+                "payload": f.get("payload", ""),
+                "evidence": f.get("evidence", ""),
+                "repro": f.get("url", ""),
+                "verified": f.get("verified", True),
+                "confidence": f.get("confidence", 0.7),
+            } for f in findings]
+
+            if vulns_for_review:
+                reviewer = ReviewerAgent(
+                    run.id, target=target,
+                    llm=LLMClient(settings=self.settings),
+                    on_event=self.emit, strict=self.settings.reviewer_strict,
+                )
+                rout = await reviewer.run({"vulns": vulns_for_review})
+                reviewed = rout.get("vulns", vulns_for_review)
+            else:
+                reviewed = []
+
+            for v in reviewed:
+                if v.get("status") == "discard":
+                    continue
+                self.db.add(Vuln(
+                    task_id=task.id, target_id=target.id, target_url=url,
+                    vuln_type=v.get("vuln_type", ""),
+                    severity=v.get("severity", "medium"),
+                    title=v.get("title", ""), detail=v.get("detail", ""),
+                    payload=v.get("payload", ""), evidence=v.get("evidence", ""),
+                    repro=v.get("repro", ""), status="ai_reviewed",
+                    confidence=v.get("confidence", 0.7),
+                ))
+            self.db.commit()
+            run.status = "done"
+            run.summary = (f"engine: {result.get('stats', {})}")
+        except Exception as e:  # noqa: BLE001
+            run.status = "failed"
+            run.error = str(e)
+            self.emit(run.id, target.id, "engine", "error",
+                      f"engine pipeline 异常: {e}")
+        finally:
+            run.finished_at = datetime.utcnow()
+            self.db.commit()
+
     # ===== 主流程 =====
     async def run_task(self, task_id: str):
         task = self.db.get(Task, task_id)
@@ -47,6 +137,20 @@ class Orchestrator:
             return
         task.status = "collecting"
         self.db.commit()
+
+        # 引擎模式：手工/FOFA 目标全部走自研引擎流水线（定时任务同通道）
+        if task.mode == "engine":
+            task.status = "running"
+            self.db.commit()
+            urls = [u.strip() for u in (task.manual_targets or "").splitlines()
+                    if u.strip()]
+            if not urls and task.source in ("fofa", "both"):
+                urls = await self._engine_collect_urls(task)
+            for u in urls:
+                await self.run_engine_pipeline(task, u)
+            task.status = "review"
+            self.db.commit()
+            return
 
         targets = await self._collect(task)
 
@@ -60,6 +164,33 @@ class Orchestrator:
 
         task.status = "review"
         self.db.commit()
+
+    async def _engine_collect_urls(self, task: Task) -> list[str]:
+        """引擎模式 FOFA 收集：复用 CollectorAgent._fofa_collect，
+        纯确定性查询不烧 LLM（nl_intent 模式才会用到）。"""
+        from ..agents.collector import CollectorAgent
+
+        run = AgentRun(target_id="", agent_role="collector",
+                       stage="collect", status="running")
+        self.db.add(run)
+        self.db.commit()
+        agent = CollectorAgent(run.id, llm=LLMClient(settings=self.settings),
+                               settings=self.settings)
+        urls: list[str] = []
+        try:
+            items = await agent._fofa_collect(_task_brief(task))
+            urls = [i.get("url", "") for i in items if i.get("url")]
+            run.status = "done"
+            run.summary = f"engine collect: {len(urls)} urls"
+        except Exception as e:  # noqa: BLE001
+            run.status = "failed"
+            run.error = str(e)
+            self.emit(run.id, "", "collector", "error",
+                      f"engine FOFA 收集失败: {e}")
+        finally:
+            run.finished_at = datetime.utcnow()
+            self.db.commit()
+        return urls
 
     async def _collect(self, task: Task) -> list[Target]:
         from ..agents.collector import CollectorAgent
