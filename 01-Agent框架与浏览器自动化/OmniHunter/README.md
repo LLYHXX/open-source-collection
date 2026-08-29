@@ -55,6 +55,20 @@ stop.bat         :: 一键停止（按端口杀进程）
 
 首次运行自动 `npm install` + `pip install --target=vendor`，之后秒起。唯一必填项：`backend/.env` 里的 `LLM_API_KEY`（引擎模式不依赖模型质量，最低配 Key 即可）。
 
+### 桌面图形化启动壳（纯 Tkinter 零第三方 GUI 依赖）
+
+不喜欢开终端/命令行？双击 `start_gui.bat` 会弹出一个桌面控制窗口，内置启动服务、停止服务、打开 Web 界面、查看运行日志、一键打开数据目录按钮；服务进程由壳进程托管，关壳自动杀服务不留残留。
+
+```bat
+start_gui.bat        :: Windows 桌面壳（开发模式，对应 start.bat dev）
+start_gui.bat prod   :: Windows 桌面壳（生产模式，对应 start.bat prod）
+
+# Linux / macOS：
+./start_gui.sh       # 或 ./start_gui.sh prod
+```
+
+> 实现文件 `gui_launcher.py`：Python 标准库 `tkinter`，无需 PyQt/webview/Electron；Web 界面仍由系统默认浏览器渲染，体验等价原生桌面 GUI。若需完全内嵌窗口（不调用系统浏览器），可把启动逻辑替换为 `pip install tkinterwebview` + `webview.create_window()` 单函数调用。
+
 ### Linux / macOS 一键启动（与 Windows 同级支持）
 
 `start.sh` 与 `start.bat` 能力对齐，依赖同样装进 `backend/vendor`（不污染系统）：

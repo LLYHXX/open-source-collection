@@ -57,10 +57,30 @@ export const api = {
     http.get('/vulns', { params: { task_id: taskId, status } }).then((r) => r.data),
   reviewVuln: (id: string, data: any) => http.patch(`/vulns/${id}`, data).then((r) => r.data),
   deleteVuln: (id: string) => http.delete(`/vulns/${id}`).then((r) => r.data),
-  // intel
+  // intel / memory
   listIntel: (kind?: string) =>
     http.get('/intel', { params: { kind } }).then((r) => r.data),
-  retireIntel: (id: string) => http.delete(`/intel/${id}`).then((r) => r.data),
+  queryIntel: (params: any) => http.get('/intel', { params }).then((r) => r.data),
+  getIntel: (id: string) => http.get(`/intel/${id}`).then((r) => r.data),
+  createIntel: (data: any) => http.post('/intel', data).then((r) => r.data),
+  updateIntel: (id: string, data: any) => http.put(`/intel/${id}`, data).then((r) => r.data),
+  retireIntel: (id: string, hard = false) =>
+    http.delete(`/intel/${id}`, { params: { hard } }).then((r) => r.data),
+  intelStats: () => http.get('/intel/stats/summary').then((r) => r.data),
+  intelExportJson: (params: any) => {
+    const q = new URLSearchParams(params || {}).toString()
+    window.open(`/api/intel/export/json${q ? '?' + q : ''}`, '_blank')
+  },
+  intelExportCsv: (params: any) => {
+    const q = new URLSearchParams(params || {}).toString()
+    window.open(`/api/intel/export/csv${q ? '?' + q : ''}`, '_blank')
+  },
+  intelImport: (file: File, mode = 'merge') => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('mode', mode)
+    return http.post('/intel/import', fd, { timeout: 120000 }).then((r) => r.data)
+  },
   // external 外接工具集成 + POC 扩展（持续挖掘）
   externalUpload: (file: File, host = '') => {
     const fd = new FormData()

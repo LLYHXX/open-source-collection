@@ -101,9 +101,22 @@ class IntelOut(BaseModel):
     confidence: float
     hits: int
     lifecycle: str
+    source: str = ""
+    created_at: str = ""
+    updated_at: str = ""
 
     class Config:
         from_attributes = True
+
+
+class IntelIn(BaseModel):
+    """新增 / 编辑情报条目。"""
+    kind: str = ""
+    key: str = ""
+    value: str = ""
+    confidence: float = 0.6
+    source: str = ""
+    lifecycle: str = "active"
 
 
 # ===== Setting =====
