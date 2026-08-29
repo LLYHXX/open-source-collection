@@ -29,8 +29,16 @@ async function del(id: string) {
   ElMessage.success('已删除')
   await load()
 }
-function sevType(s: string) {
-  return { info: 'info', low: 'info', medium: 'warning', high: 'danger', critical: 'danger' }[s] || 'info'
+function statusType(s: string) {
+  return (
+    {
+      pending: 'info',
+      ai_reviewed: 'primary',
+      approved: 'success',
+      submitted: 'success',
+      rejected: 'danger',
+    }[s] || 'info'
+  )
 }
 function fmt(t: string) {
   return t ? new Date(t).toLocaleString() : ''
@@ -45,18 +53,29 @@ onMounted(load)
       <el-button @click="load">刷新</el-button>
     </div>
     <el-table :data="list" border style="margin-top: 16px" size="small">
-      <el-table-column prop="vuln_type" label="类型" width="150" />
-      <el-table-column label="级别" width="90">
+      <el-table-column label="级别" width="96">
         <template #default="{ row }">
-          <el-tag :type="sevType(row.severity)">{{ row.severity }}</el-tag>
+          <span :class="`sev-tag sev-${row.severity || 'info'}`">{{ row.severity }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="title" label="标题" />
-      <el-table-column prop="target_url" label="目标" width="240" />
-      <el-table-column label="置信度" width="90">
-        <template #default="{ row }">{{ (row.confidence * 100).toFixed(0) }}%</template>
+      <el-table-column prop="vuln_type" label="类型" width="150" />
+      <el-table-column prop="title" label="标题" show-overflow-tooltip />
+      <el-table-column prop="target_url" label="目标" width="230" show-overflow-tooltip />
+      <el-table-column label="置信度" width="100">
+        <template #default="{ row }">
+          <el-progress
+            :percentage="Math.round((row.confidence || 0) * 100)"
+            :stroke-width="8"
+            :color="row.confidence >= 0.8 ? '#34d399' : row.confidence >= 0.6 ? '#fbbf24' : '#64748b'"
+            style="width: 80px"
+          />
+        </template>
       </el-table-column>
-      <el-table-column prop="status" label="状态" width="120" />
+      <el-table-column label="状态" width="110">
+        <template #default="{ row }">
+          <el-tag :type="statusType(row.status)" size="small" effect="dark">{{ row.status }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="创建" width="160">
         <template #default="{ row }">{{ fmt(row.created_at) }}</template>
       </el-table-column>

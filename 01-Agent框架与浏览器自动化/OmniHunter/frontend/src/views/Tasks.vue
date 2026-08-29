@@ -9,7 +9,7 @@ const tasks = ref<any[]>([])
 const dialog = ref(false)
 const form = ref({
   name: '',
-  mode: 'EduSRC',
+  mode: 'engine',
   vuln_types:
     'sql_injection,rce,unauthorized_access,idor,file_upload,captcha_bypass,backdoor_compromised',
   source: 'manual',
@@ -60,6 +60,20 @@ function statusType(s: string) {
 onMounted(load)
 </script>
 
+<style scoped>
+.mode-tip {
+  width: 100%;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #8b94a8;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.07);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+}
+</style>
+
 <template>
   <div>
     <div style="display: flex; justify-content: space-between; align-items: center">
@@ -68,7 +82,13 @@ onMounted(load)
     </div>
     <el-table :data="tasks" border style="margin-top: 16px" @row-click="goDetail">
       <el-table-column prop="name" label="任务名" />
-      <el-table-column prop="mode" label="模式" width="110" />
+      <el-table-column label="模式" width="110">
+        <template #default="{ row }">
+          <el-tag :type="row.mode === 'engine' ? 'success' : 'info'" effect="dark" size="small">
+            {{ row.mode === 'engine' ? '自研引擎' : row.mode }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="source" label="来源" width="110" />
       <el-table-column prop="collect_method" label="搜集方式" width="120" />
       <el-table-column label="状态" width="120">
@@ -90,10 +110,18 @@ onMounted(load)
       <el-form :model="form" label-width="110px">
         <el-form-item label="任务名称"><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="任务模式">
-          <el-select v-model="form.mode">
-            <el-option label="EduSRC" value="EduSRC" />
-            <el-option label="企业SRC" value="企业SRC" />
-          </el-select>
+          <el-radio-group v-model="form.mode">
+            <el-radio-button value="engine">自研引擎</el-radio-button>
+            <el-radio-button value="EduSRC">EduSRC</el-radio-button>
+            <el-radio-button value="企业SRC">企业SRC</el-radio-button>
+          </el-radio-group>
+          <div v-if="form.mode === 'engine'" class="mode-tip">
+            全自动流水线：FOFA/清单收集 → 引擎确定性检测 → 独立复现 → CVSS 定级，
+            全程不依赖大模型质量，最低配 LLM 即可运行。
+          </div>
+          <div v-else class="mode-tip">
+            多 Agent 流水线：Collector → Recon → Worker → Verifier → Reviewer，LLM 参与 ReAct 决策。
+          </div>
         </el-form-item>
         <el-form-item label="漏洞类型">
           <el-input v-model="form.vuln_types" type="textarea" :rows="2" />

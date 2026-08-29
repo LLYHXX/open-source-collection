@@ -267,6 +267,38 @@ async def start_engine_scan(task_id: str, url: str,
     return StandardResponse(message=f"已对 {url} 启动自研引擎扫描")
 
 
+@router.post("/engine-scan-url", response_model=StandardResponse)
+async def engine_scan_url(url: str,
+                          admin_cookie: str = "",
+                          user_cookie: str = "",
+                          db: Session = Depends(get_db)):
+    """免建任务直接引擎扫描单 URL（控制台/第三方便捷入口）。
+
+    后台执行，结果与其他漏洞一样入库，在「漏洞」页复审。
+    """
+    _validate_target_url(url)
+
+    async def _bg():
+        db2 = SessionLocal()
+        try:
+            orch = Orchestrator(db2)
+            from ..models import Task
+            quick_task = Task(
+                name=f"快速引擎扫描 {url[:60]}", mode="engine",
+                source="manual", manual_targets=url, status="running",
+            )
+            db2.add(quick_task)
+            db2.commit()
+            await orch.run_engine_pipeline(
+                quick_task, url,
+                admin_cookie=admin_cookie, user_cookie=user_cookie)
+        finally:
+            db2.close()
+
+    asyncio.create_task(_bg())
+    return StandardResponse(message=f"已对 {url} 启动引擎扫描（免建任务，结果见漏洞页）")
+
+
 @router.get("/engine/detectors", response_model=StandardResponse)
 def list_engine_detectors():
     """列出引擎检测插件清单（id/类型/是否无副作用）。"""

@@ -86,4 +86,14 @@ export const api = {
   // system 系统
   version: () => http.get('/system/version').then((r) => r.data),
   systemUpdate: () => http.post('/system/update').then((r) => r.data),
+  // 自研检测引擎
+  engineDetectors: () => http.get('/tasks/engine/detectors').then((r) => r.data),
+  engineScan: (url: string, adminCookie = '', userCookie = '') =>
+    http
+      .post(
+        `/tasks/engine-scan-url?url=${encodeURIComponent(url)}` +
+          `&admin_cookie=${encodeURIComponent(adminCookie)}` +
+          `&user_cookie=${encodeURIComponent(userCookie)}`,
+      )
+      .then((r) => r.data),
 }

@@ -1,3 +1,4 @@
+/* ============ aififteen Hunter 全局设计令牌（深色安全运营风） ============ */
 * {
   box-sizing: border-box;
 }
@@ -9,16 +10,183 @@ body,
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Microsoft YaHei', sans-serif;
+  background: #0b1020;
+  color: #e5eaf3;
 }
+
+/* Element Plus 暗色变量覆盖（组件自动适配深色） */
+:root {
+  --el-color-primary: #3b82f6;
+  --el-color-primary-light-3: #60a5fa;
+  --el-color-primary-light-5: #3b82f688;
+  --el-color-primary-light-7: #3b82f644;
+  --el-color-primary-light-8: #3b82f633;
+  --el-color-primary-light-9: #3b82f622;
+  --el-color-primary-dark-2: #2563eb;
+  --el-color-success: #34d399;
+  --el-color-warning: #fbbf24;
+  --el-color-danger: #f87171;
+  --el-color-error: #f87171;
+  --el-color-info: #64748b;
+  --el-bg-color: #111832;
+  --el-bg-color-page: #0b1020;
+  --el-bg-color-overlay: #182142;
+  --el-fill-color-blank: #111832;
+  --el-fill-color: #1a2344;
+  --el-fill-color-light: #182038;
+  --el-fill-color-lighter: #141c36;
+  --el-text-color-primary: #e5eaf3;
+  --el-text-color-regular: #c3cbdb;
+  --el-text-color-secondary: #8b94a8;
+  --el-text-color-placeholder: #5a6478;
+  --el-border-color: rgba(148, 163, 184, 0.16);
+  --el-border-color-light: rgba(148, 163, 184, 0.12);
+  --el-border-color-lighter: rgba(148, 163, 184, 0.09);
+  --el-border-color-extra-light: rgba(148, 163, 184, 0.06);
+  --el-mask-color: rgba(5, 8, 18, 0.75);
+  --el-box-shadow: 0 8px 28px rgba(0, 0, 0, 0.42);
+  --el-box-shadow-light: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* 页面背景：深空渐变 + 网格纹理 */
+#app::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 900px 480px at 85% -10%, rgba(59, 130, 246, 0.14), transparent),
+    radial-gradient(ellipse 700px 420px at -10% 110%, rgba(34, 211, 238, 0.08), transparent);
+}
+
+/* ============ 通用工具类 ============ */
 .muted {
-  color: #909399;
+  color: #8b94a8;
   font-size: 13px;
 }
 .mono {
   font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
 }
 .page-title {
-  font-size: 18px;
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: 0.5px;
+  background: linear-gradient(90deg, #e5eaf3, #93c5fd);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ============ Element Plus 组件深色微调 ============ */
+.el-card {
+  border-radius: 14px !important;
+  border: 1px solid rgba(148, 163, 184, 0.12) !important;
+  background: linear-gradient(160deg, #141c36, #111832) !important;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35) !important;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.el-card:hover {
+  box-shadow: 0 10px 32px rgba(59, 130, 246, 0.12) !important;
+}
+.el-card__header {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1) !important;
   font-weight: 600;
-  margin: 0 0 16px;
+}
+.el-table {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: rgba(59, 130, 246, 0.07);
+  --el-table-header-text-color: #93c5fd;
+  --el-table-row-hover-bg-color: rgba(59, 130, 246, 0.08);
+  --el-table-border-color: rgba(148, 163, 184, 0.1);
+}
+.el-table .el-table__row {
+  cursor: default;
+}
+.el-dialog {
+  border-radius: 14px !important;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+.el-button {
+  border-radius: 8px !important;
+}
+.el-tag {
+  border-radius: 6px !important;
+  border-width: 0 !important;
+}
+.el-descriptions {
+  --el-descriptions-item-bordered-label-background: rgba(59, 130, 246, 0.08);
+}
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  border-radius: 8px !important;
+}
+
+/* ============ 徽章/统计 ============ */
+.sev-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+}
+.sev-critical { background: linear-gradient(135deg, #dc2626, #7f1d1d); }
+.sev-high     { background: linear-gradient(135deg, #f97316, #c2410c); }
+.sev-medium   { background: linear-gradient(135deg, #fbbf24, #b45309); }
+.sev-low      { background: linear-gradient(135deg, #38bdf8, #0369a1); }
+.sev-info     { background: linear-gradient(135deg, #64748b, #334155); }
+
+.stat-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  padding: 18px 20px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: linear-gradient(160deg, #141c36, #111832);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.stat-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(59, 130, 246, 0.4);
+}
+.stat-card::after {
+  content: '';
+  position: absolute;
+  right: -22px;
+  top: -22px;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  opacity: 0.16;
+  background: currentColor;
+}
+.stat-num {
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 引擎插件网格 */
+.plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+.plugin-item {
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(59, 130, 246, 0.04);
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+.plugin-item:hover {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(59, 130, 246, 0.09);
 }

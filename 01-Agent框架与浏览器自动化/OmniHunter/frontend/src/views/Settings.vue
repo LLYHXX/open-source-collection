@@ -65,6 +65,25 @@ onMounted(() => {
     </el-card>
 
     <el-card style="margin-bottom: 16px">
+      <template #header>引擎与模型策略（工具为主 · Agent 为辅）</template>
+      <el-alert type="success" :closable="false" show-icon>
+        <template #title>检测、复现、定级全部由自研引擎确定性完成 —— 任意最低配 LLM 都能跑通全流程</template>
+        引擎内置 10 类确定性检测插件（SQLi / XSS / RCE / 目录遍历 / SSRF / 信息泄露 / IDOR / 越权 / 弱口令 / 文件上传），
+        每个检测结果都经独立 verify() 复现 + CVSS 3.1 自动定级，检出率不随模型质量波动。
+        大模型只负责 Payload 变异与复杂场景兜底（Worker ReAct），换最便宜的模型即可。
+      </el-alert>
+      <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap">
+        <el-tag effect="dark" type="success" size="small">LLM_MODEL=deepseek-chat 即可</el-tag>
+        <el-tag effect="dark" type="primary" size="small">任务模式选「自研引擎」全程免 LLM 检测</el-tag>
+        <el-tag effect="dark" type="info" size="small">副作用插件（弱口令/上传）默认关闭</el-tag>
+      </div>
+      <p class="muted" style="margin-top: 10px">
+        引擎调优键：ENGINE_PLUGIN_TIMEOUT（单插件超时）、ENGINE_MAX_CONCURRENCY（并发）、
+        ENGINE_WEAKPWD_ENABLED / ENGINE_UPLOAD_PROBE（副作用开关），可用下方动态配置覆盖 .env。
+      </p>
+    </el-card>
+
+    <el-card style="margin-bottom: 16px">
       <template #header>系统更新（增量拉取，不重新下载）</template>
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px">
         <span class="muted">版本：{{ version?.data?.version || '-' }}</span>
