@@ -85,13 +85,14 @@ def _job_gc() -> None:
                 _jobs.pop(jid, None)
 
 
-def job_create(title: str) -> str:
+def job_create(title: str, owner: str = "") -> str:
     _job_gc()
     # uuid 生成 jid：同毫秒并发不碰撞，且不可被猜测关联他人 job
     jid = f"job_{uuid.uuid4().hex[:12]}"
     with _jobs_lock:
         _jobs[jid] = {"title": title, "status": "running", "progress": 0,
-                      "log": "", "created_at": time.time(), "updated_at": time.time()}
+                      "log": "", "created_at": time.time(), "updated_at": time.time(),
+                      "owner": owner}
     return jid
 
 
@@ -110,10 +111,15 @@ def job_update(jid: str, *, status: str | None = None, progress: int | None = No
         j["updated_at"] = time.time()
 
 
-def job_get(jid: str) -> dict | None:
+def job_get(jid: str, owner: str = "") -> dict | None:
+    """读取 job；owner 非空时校验归属，不匹配按不存在处理（不泄露存在性）。"""
     with _jobs_lock:
         j = _jobs.get(jid)
-        return dict(j) if j else None
+        if not j:
+            return None
+        if owner and j.get("owner") and j["owner"] != owner:
+            return None
+        return dict(j)
 
 
 # ===== SDK 环境检测 =====
@@ -242,8 +248,8 @@ def _run_exe(exe: Path, args: list[str], timeout: int = 120) -> tuple[int, str]:
 
 # ===== 一键引导（JDK + cmdline-tools + platform-tools + emulator）=====
 
-def bootstrap_async(include_emulator: bool = True) -> str:
-    jid = job_create("Android SDK 一键引导")
+def bootstrap_async(include_emulator: bool = True, owner: str = "") -> str:
+    jid = job_create("Android SDK 一键引导", owner=owner)
     t = threading.Thread(target=_bootstrap_job, args=(jid, include_emulator),
                          daemon=True, name=f"android-bootstrap-{jid}")
     t.start()
@@ -342,8 +348,8 @@ def _bootstrap_job(jid: str, include_emulator: bool) -> None:
 
 # ===== 系统镜像 =====
 
-def install_image_async(pkg: str) -> str:
-    jid = job_create(f"安装系统镜像 {pkg}")
+def install_image_async(pkg: str, owner: str = "") -> str:
+    jid = job_create(f"安装系统镜像 {pkg}", owner=owner)
     t = threading.Thread(target=_install_image_job, args=(jid, pkg),
                          daemon=True, name=f"android-image-{jid}")
     t.start()

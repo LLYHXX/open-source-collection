@@ -5,6 +5,8 @@
 - POC 扩展：已知 POC 生成确定性变体并复验，命中产出确认漏洞，
   泄露响应继续提取子目标（持续挖掘闭环）
 """
+import ipaddress
+import re
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,6 +29,20 @@ router = APIRouter(tags=["external"],
 # 上传大小限制（10MB）
 _MAX_UPLOAD = 10 * 1024 * 1024
 
+# host 检索键白名单：域名标签 / IPv4 / IPv6（防脏数据污染情报库检索）
+_RE_HOST_LABEL = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$")
+
+
+def _valid_host_key(host: str) -> bool:
+    if not host or len(host) > 253:
+        return False
+    try:
+        ipaddress.ip_address(host)  # 严格校验 IPv4/IPv6
+        return True
+    except ValueError:
+        pass
+    return all(_RE_HOST_LABEL.match(p) for p in host.split("."))
+
 
 @router.post("/external/upload", response_model=StandardResponse)
 async def external_upload(file: UploadFile = File(...),
@@ -42,6 +58,11 @@ async def external_upload(file: UploadFile = File(...),
             success=False,
             message=f"不支持的文件类型，支持: "
                     f"{', '.join(sorted(external_tools.SUPPORTED_SUFFIXES))}")
+    host = (host or "").strip()
+    if host and not _valid_host_key(host):
+        return StandardResponse(
+            success=False,
+            message="host 格式非法（仅允许域名或 IP，作为情报检索键）")
     content_bytes = await file.read()
     if len(content_bytes) > _MAX_UPLOAD:
         return StandardResponse(success=False, message="文件超过 10MB 限制")

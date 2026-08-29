@@ -42,6 +42,19 @@ async def lifespan(app: FastAPI):
             db.close()
     except Exception as e:  # noqa: BLE001
         print(f"[aififteen Hunter] 动态配置加载失败（不阻塞启动）: {e}")
+    # 启动期安全自检：公网令牌强度守护（仅告警，不阻塞启动）
+    try:
+        _tok = settings.api_token or ""
+        if not _tok:
+            print("[aififteen Hunter] 安全提示: API_TOKEN 未设置，公网访问将仅"
+                  "依赖登录会话（X-Access-Session），公网部署请设置 ≥16 位随机令牌")
+        elif len(_tok) < 16:
+            print("[aififteen Hunter] 安全提示: API_TOKEN 强度不足（<16 位），"
+                  "公网部署存在被暴力猜解风险，建议更换为随机长令牌")
+        else:
+            print("[aififteen Hunter] 安全自检通过: API_TOKEN 已配置且强度达标")
+    except Exception as e:  # noqa: BLE001
+        print(f"[aififteen Hunter] 安全自检跳过: {e}")
     init_scheduler()  # 载入定时任务并启动 APScheduler
     # 预置主流 SRC 报告模板（补天/EDUSRC/漏洞盒子/CNVD/CNNVD/企业自检/通用）
     try:

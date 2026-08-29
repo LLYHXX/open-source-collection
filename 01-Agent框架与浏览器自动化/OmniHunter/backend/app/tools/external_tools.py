@@ -20,6 +20,11 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+try:  # 带配额的安全 XML 解析器（backend/vendor 注入；缺失时降级为预检 + 标准解析）
+    from defusedxml import ElementTree as _SafeET
+except ImportError:  # pragma: no cover
+    _SafeET = None
+
 # 敏感字段关键词（命中即标记）
 SENSITIVE_KEYWORDS = (
     "password", "passwd", "pwd", "secret", "token", "api_key", "apikey",
@@ -63,16 +68,19 @@ def _strip_ns(tag: str) -> str:
 
 def _parse_pdm(filename: str, content: str) -> dict:
     """解析 PowerDesigner 物理数据模型（XML）：表/列/类型/注释。"""
-    # 防 XML 实体炸弹（billion laughs / quadratic blowup）：ElementTree 对
-    # 内部实体指数展开无限额，PDM 为纯 XML 正常不含 DTD，
-    # 含 DOCTYPE/ENTITY 声明的输入一律拒绝
+    # 防 XML 实体炸弹（billion laughs / quadratic blowup）：第一道防线——
+    # PDM 为纯 XML 正常不含 DTD，含 DOCTYPE/ENTITY 声明的输入一律拒绝；
+    # 第二道防线——优先用 defusedxml（禁止实体/DTD 且带配额）解析
     if re.search(r"<!\s*(DOCTYPE|ENTITY)", content[:65536], re.IGNORECASE):
         return {"kind": "db_schema",
                 "summary": "PDM 解析拒绝：文件包含 DTD/ENTITY 声明（潜在实体炸弹）",
                 "intel_items": []}
     try:
-        root = ET.fromstring(content.encode("utf-8", "replace"))
-    except ET.ParseError as e:
+        if _SafeET is not None:
+            root = _SafeET.fromstring(content.encode("utf-8", "replace"))
+        else:
+            root = ET.fromstring(content.encode("utf-8", "replace"))
+    except Exception as e:  # noqa: BLE001  ParseError / DefusedXmlException
         return {"kind": "db_schema", "summary": f"PDM 解析失败: {e}",
                 "intel_items": []}
 

@@ -4,14 +4,20 @@
 流量回灌攻击探测流水线（复用 AI2 的 traffic_tool）。
 """
 import asyncio
+import hashlib
 import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from ..auth import verify_token
+from ..core.access_control import (
+    get_client_ip,
+    is_local_ip,
+    validate_session,
+)
 from ..database import get_db
 from ..schemas import (AndroidAppLaunch, AndroidAvdCreate, AndroidAvdStart,
                        AndroidImageInstall, StandardResponse)
@@ -21,6 +27,23 @@ router = APIRouter(prefix="/android", tags=["android"],
                    dependencies=[Depends(verify_token)])
 
 
+def _owner_of(request: Request) -> str:
+    """当前请求的归属标识（用于后台 job 绑定，防跨会话读取任务日志）。
+
+    身份来源与访问控制分层一致：本地 IP / 有效登录会话 / API Token。
+    会话与令牌只存哈希（job 内容会经 API 回显，绝不落原始凭据）。
+    """
+    if is_local_ip(get_client_ip(request)):
+        return "local"
+    sess = request.headers.get("X-Access-Session", "")
+    if sess and validate_session(sess):
+        return "sess:" + hashlib.sha256(sess.encode()).hexdigest()[:16]
+    bearer = request.headers.get("Authorization", "")
+    if bearer.lower().startswith("bearer "):
+        return "tok:" + hashlib.sha256(bearer[7:].strip().encode()).hexdigest()[:16]
+    return "anon"
+
+
 @router.get("/status", response_model=StandardResponse)
 def android_status():
     """环境自检：SDK/JDK/工具链/镜像/AVD 概况（无 SDK 时优雅降级，可直接引导安装）。"""
@@ -28,16 +51,18 @@ def android_status():
 
 
 @router.post("/bootstrap", response_model=StandardResponse)
-def android_bootstrap(include_emulator: bool = True):
+def android_bootstrap(request: Request, include_emulator: bool = True):
     """一键引导：自动下载 JDK17 + cmdline-tools + platform-tools + emulator（后台任务）。"""
-    jid = emu.bootstrap_async(include_emulator=include_emulator)
+    jid = emu.bootstrap_async(include_emulator=include_emulator,
+                              owner=_owner_of(request))
     return StandardResponse(success=True, message="引导任务已启动",
                             data={"job_id": jid})
 
 
 @router.get("/jobs/{job_id}", response_model=StandardResponse)
-def android_job(job_id: str):
-    job = emu.job_get(job_id)
+def android_job(job_id: str, request: Request):
+    # 归属校验：非本人（会话/令牌）任务按不存在处理，防跨会话读取日志
+    job = emu.job_get(job_id, owner=_owner_of(request))
     if not job:
         return StandardResponse(success=False, message="任务不存在或已过期")
     return StandardResponse(success=True, message=job["status"],
@@ -45,9 +70,9 @@ def android_job(job_id: str):
 
 
 @router.post("/images/install", response_model=StandardResponse)
-def android_install_image(payload: AndroidImageInstall):
+def android_install_image(payload: AndroidImageInstall, request: Request):
     """安装系统镜像（后台任务，体积约 1.3~1.8GB）。"""
-    jid = emu.install_image_async(payload.pkg)
+    jid = emu.install_image_async(payload.pkg, owner=_owner_of(request))
     return StandardResponse(success=True, message="镜像安装任务已启动",
                             data={"job_id": jid})
 
