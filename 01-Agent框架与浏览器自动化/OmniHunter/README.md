@@ -43,6 +43,34 @@ flowchart LR
 
 ## 部署指南
 
+### 零门槛一键启动（Windows，推荐本地使用）
+
+双击 `start.bat` 即可，脚本自动完成：检查 Python/Node → 依赖装进 `backend/vendor`（不污染系统）→ 生成 `.env` → 起后端 `18800` + 前端 `5173` → 自动打开浏览器。
+
+```bat
+start.bat        :: 开发模式：后端 18800 + 前端 5173（改代码热重载）
+start.bat prod   :: 生产模式：构建前端由后端托管，只需访问 http://localhost:18800
+stop.bat         :: 一键停止（按端口杀进程）
+```
+
+首次运行自动 `npm install` + `pip install --target=vendor`，之后秒起。唯一必填项：`backend/.env` 里的 `LLM_API_KEY`（引擎模式不依赖模型质量，最低配 Key 即可）。
+
+### Docker 离线包（目标服务器无外网时）
+
+在有网机器上打一个离线包，拷到目标服务器解压即用：
+
+```bat
+deploy\pack-offline.bat    :: 构建镜像 → docker save → 连同 compose/模板/导入脚本打成 zip
+```
+
+目标服务器（只需装 Docker）：
+
+```bat
+:: 解压 aififteen-hunter-offline.zip 后：
+edit .env                   :: 填 LLM_API_KEY
+load-and-up.bat             :: docker load + compose up -d + 自动开浏览器
+```
+
 ### 方式一：Docker Compose 一键部署（推荐生产环境）
 
 #### 1. 前置要求

@@ -1,6 +1,7 @@
 services:
   aififteen_hunter:
     build: .
+    image: aififteen-hunter:latest
     container_name: aififteen_hunter
     ports:
       - "18800:18800"
