@@ -130,14 +130,20 @@ onMounted(load)
           <el-select v-model="form.source">
             <el-option label="手动清单" value="manual" />
             <el-option label="FOFA自动搜" value="fofa" />
-            <el-option label="两者" value="both" />
+            <el-option label="360 Quake" value="quake" />
+            <el-option label="Hunter鹰图" value="hunter" />
+            <el-option label="ZoomEye" value="zoomeye" />
+            <el-option label="Shodan" value="shodan" />
+            <el-option label="Censys" value="censys" />
+            <el-option label="全平台并发" value="all" />
+            <el-option label="手动+FOFA" value="both" />
             <el-option label="单站协作" value="single" />
           </el-select>
         </el-form-item>
         <el-form-item label="搜集方式">
           <el-select v-model="form.collect_method">
             <el-option label="自动判断" value="auto" />
-            <el-option label="FOFA语法" value="fofa_syntax" />
+            <el-option label="平台语法" value="fofa_syntax" />
             <el-option label="自然语言意图" value="nl_intent" />
           </el-select>
         </el-form-item>
@@ -146,10 +152,10 @@ onMounted(load)
             v-model="form.collect_query"
             type="textarea"
             :rows="2"
-            placeholder='如 body="管理" && org="China Education..." 或 "找高校统一身份认证系统"'
+            placeholder='平台语法如 title="后台管理"，或自然语言如 "找高校统一身份认证系统"'
           />
         </el-form-item>
-        <el-form-item v-if="form.source !== 'fofa'" label="手动清单">
+        <el-form-item v-if="['manual', 'single', 'both'].includes(form.source)" label="手动清单">
           <el-input v-model="form.manual_targets" type="textarea" :rows="4" placeholder="每行一个 URL" />
         </el-form-item>
       </el-form>

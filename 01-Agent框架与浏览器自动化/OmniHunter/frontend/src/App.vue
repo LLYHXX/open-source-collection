@@ -15,6 +15,8 @@ const menuItems = [
   { index: '/vulns', title: '漏洞', icon: 'Warning' },
   { index: '/reports', title: '报告', icon: 'Document' },
   { index: '/intel', title: '情报库', icon: 'Coin' },
+  { index: '/hunting', title: '持续挖掘', icon: 'MagicStick' },
+  { index: '/androidlab', title: '移动靶场', icon: 'Cellphone' },
   { index: '/settings', title: '设置', icon: 'Setting' },
 ]
 

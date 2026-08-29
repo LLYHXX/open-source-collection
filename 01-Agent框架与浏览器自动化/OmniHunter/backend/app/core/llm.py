@@ -1,6 +1,11 @@
-"""LLM 客户端：OpenAI 兼容协议 + tool calling，借鉴 AutoHunter 的 tool_compat 兼容策略。
+"""LLM 客户端：多模型多协议 + tool calling，借鉴 AutoHunter 的 tool_compat 兼容策略。
 
-兼容模式：
+支持协议（llm_protocol / llm_small_protocol）：
+- openai    : 所有 OpenAI 兼容端点（DeepSeek / Qwen / Kimi / GLM / OpenRouter /
+              硅基流动 / Ollama / LM Studio / Gemini OpenAI 兼容端点 ...）
+- anthropic : Claude 官方 messages 协议（tool calling 走提示词模拟）
+
+兼容模式（tool_compat，仅 openai 协议生效）：
 - native: 仅使用原生 function calling（模型必须支持）
 - prompt: 强制提示词模拟（哑模型用）
 - auto  : 原生优先，失败回退提示词模拟
@@ -8,6 +13,7 @@
 import json
 from typing import Any, Callable
 
+import httpx
 from openai import OpenAI
 
 from ..config import get_settings
@@ -15,12 +21,28 @@ from ..config import get_settings
 
 class LLMClient:
     def __init__(self, settings=None, api_key: str | None = None,
-                 base_url: str | None = None, model: str | None = None):
+                 base_url: str | None = None, model: str | None = None,
+                 protocol: str | None = None):
         self.settings = settings or get_settings()
         self.api_key = api_key or self.settings.llm_api_key or "empty"
         self.base_url = base_url or self.settings.llm_base_url
         self.model = model or self.settings.llm_model
+        self.protocol = (protocol or self.settings.llm_protocol or "openai").lower()
         self._client: OpenAI | None = None
+
+    @classmethod
+    def small(cls, settings=None) -> "LLMClient":
+        """小模型层客户端；未配置小模型时回退大模型。"""
+        s = settings or get_settings()
+        if not s.llm_small_model:
+            return cls(settings=s)
+        return cls(
+            settings=s,
+            api_key=s.llm_small_api_key or "empty",
+            base_url=s.llm_small_base_url or s.llm_base_url,
+            model=s.llm_small_model,
+            protocol=s.llm_small_protocol,
+        )
 
     @property
     def client(self) -> OpenAI:
@@ -29,10 +51,44 @@ class LLMClient:
         return self._client
 
     def chat(self, messages: list[dict], temperature: float = 0.3) -> str:
+        if self.protocol == "anthropic":
+            return self._chat_anthropic(messages, temperature)
         resp = self.client.chat.completions.create(
             model=self.model, messages=messages, temperature=temperature
         )
         return resp.choices[0].message.content or ""
+
+    def _chat_anthropic(self, messages: list[dict], temperature: float) -> str:
+        """Claude messages 协议（httpx 同步实现，不引入 anthropic SDK）。"""
+        system_parts = [m["content"] for m in messages if m.get("role") == "system"]
+        turns = [m for m in messages if m.get("role") != "system"]
+        # base_url 兼容：主域或带 /v1 结尾均可
+        base = self.base_url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[: -len("/v1")]
+        resp = httpx.post(
+            f"{base}/v1/messages",
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": self.model,
+                "max_tokens": 4096,
+                "temperature": temperature,
+                "system": "\n\n".join(system_parts) or None,
+                "messages": [{"role": m["role"], "content": m["content"]}
+                             for m in turns],
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return "".join(
+            block.get("text", "") for block in data.get("content", [])
+            if block.get("type") == "text"
+        )
 
     def chat_json(self, messages: list[dict], temperature: float = 0.2) -> Any:
         text = self.chat(messages, temperature=temperature)
@@ -53,7 +109,8 @@ class LLMClient:
         on_step 回调每一步用于事件流上报。
         """
         compat = self.settings.tool_compat
-        use_native = compat != "prompt"
+        # anthropic 协议暂走提示词模拟工具调用；openai 协议按 compat 决定
+        use_native = self.protocol == "openai" and compat != "prompt"
         history = list(messages)
         last_text = ""
 

@@ -26,6 +26,22 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # 应用动态配置（Setting 表，优先级高于 .env）——重启后依然生效
+    try:
+        from .config import apply_dynamic_overrides
+        from .database import SessionLocal
+        from .models import Setting
+        db = SessionLocal()
+        try:
+            from sqlalchemy import select
+            overrides = {s.key: s.value for s in db.scalars(select(Setting))}
+            applied = apply_dynamic_overrides(overrides)
+            if applied:
+                print(f"[aififteen Hunter] 已应用 {len(applied)} 项动态配置")
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"[aififteen Hunter] 动态配置加载失败（不阻塞启动）: {e}")
     init_scheduler()  # 载入定时任务并启动 APScheduler
     # 预置主流 SRC 报告模板（补天/EDUSRC/漏洞盒子/CNVD/CNNVD/企业自检/通用）
     try:
@@ -67,6 +83,14 @@ app.include_router(settings_router.router, prefix="/api")
 app.include_router(schedules_router.router, prefix="/api")
 app.include_router(reports_router.router, prefix="/api")
 app.include_router(system_router.router, prefix="/api")
+
+# 移动靶场（安卓模拟器，可选依赖缺失时接口优雅降级）
+from .routers import android as android_router  # noqa: E402
+app.include_router(android_router.router, prefix="/api")
+
+# 外接工具集成 + POC 扩展持续挖掘
+from .routers import external as external_router  # noqa: E402
+app.include_router(external_router.router, prefix="/api")
 
 
 @app.get("/api/health")

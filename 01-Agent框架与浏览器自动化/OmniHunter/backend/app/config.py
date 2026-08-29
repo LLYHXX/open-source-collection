@@ -9,12 +9,22 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    # === LLM ===
+    # === LLM（大模型：关键决策层）===
+    # protocol=openai 兼容所有 OpenAI 兼容端点：
+    #   DeepSeek / 通义Qwen / Kimi / 智谱GLM / OpenRouter / 硅基流动 /
+    #   Ollama(http://127.0.0.1:11434/v1) / LM Studio / Gemini OpenAI 兼容端点
+    # protocol=anthropic 走 Claude 官方 messages 协议（base_url 填主域，默认 https://api.anthropic.com）
     llm_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_model: str = "deepseek-chat"
-    llm_protocol: str = "auto"  # auto / openai_chat / anthropic_messages
+    llm_protocol: str = "openai"  # openai / anthropic
     tool_compat: str = "auto"  # auto / prompt / native
+
+    # === LLM 小模型层（低 Token 轻量分析；留空回退大模型）===
+    llm_small_api_key: str = ""
+    llm_small_base_url: str = ""
+    llm_small_model: str = ""
+    llm_small_protocol: str = "openai"  # openai / anthropic
 
     # === 资产测绘 ===
     fofa_key: str = ""
@@ -56,6 +66,11 @@ class Settings(BaseSettings):
     engine_weakpwd_enabled: bool = False  # 弱口令探测（有副作用，默认关）
     engine_upload_probe: bool = False     # 上传探测（有副作用，默认关）
 
+    # 持续挖掘（信息泄露自动深挖）
+    engine_followup_enabled: bool = True  # 确认信息泄露后自动提取子目标递归扫描
+    engine_max_depth: int = 2             # follow-up 最大递归深度（1=只挖一层）
+    followup_max_urls: int = 50           # 单任务 follow-up URL 总量上限（防失控）
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
@@ -68,3 +83,33 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def apply_dynamic_overrides(overrides: dict[str, str] | None) -> list[str]:
+    """把动态配置（Setting 表键值）覆盖到当前 settings 实例，立即生效。
+
+    键不区分大小写（统一小写后匹配字段名）；未知键忽略。
+    值按字段类型转换（str/int/float/bool），转换失败丢弃该键。
+    返回成功应用的键列表。
+    """
+    s = get_settings()
+    fields = type(s).model_fields
+    applied: list[str] = []
+    for k, v in (overrides or {}).items():
+        name = str(k).strip().lower()
+        if name not in fields:
+            continue
+        try:
+            ann = fields[name].annotation
+            if ann is bool:
+                setattr(s, name, str(v).strip().lower() in ("1", "true", "yes", "on"))
+            elif ann is int:
+                setattr(s, name, int(str(v).strip()))
+            elif ann is float:
+                setattr(s, name, float(str(v).strip()))
+            else:
+                setattr(s, name, str(v))
+            applied.append(name)
+        except (ValueError, TypeError):
+            continue
+    return applied

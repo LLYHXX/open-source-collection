@@ -112,6 +112,53 @@ class SettingUpdate(BaseModel):
     value: str
 
 
+class AssetPlatformTestIn(BaseModel):
+    """资产测绘平台连通性测试请求。"""
+    platform: str  # fofa / quake / hunter / zoomeye / shodan / censys
+    query: str = ""  # 留空用平台默认测试语句
+
+
+class AndroidImageInstall(BaseModel):
+    """安卓系统镜像安装请求（sdkmanager 包名）。"""
+    pkg: str
+
+
+class AndroidAvdCreate(BaseModel):
+    """创建安卓虚拟机（AVD），硬件参数可自定义。"""
+    name: str
+    image: str  # system-images;android-30;google_apis;x86_64
+    memory_mb: int = 2048   # 256~16384
+    cores: int = 2          # 1~16
+    width: int = 1080
+    height: int = 2340
+    density: int = 440
+
+
+class AndroidAvdStart(BaseModel):
+    """启动 AVD 参数。"""
+    headless: bool = False          # 无界面模式（服务器部署用）
+    proxy: bool = True              # 挂 mitmproxy 抓包代理
+    proxy_port: int = 8082
+    install_cert: bool = True       # 自动 root + 装 mitmproxy CA 到系统证书
+    memory_mb: int | None = None    # 覆盖创建时的配置
+    cores: int | None = None
+
+
+class AndroidAppLaunch(BaseModel):
+    """APP 启动/卸载请求。"""
+    serial: str       # 如 emulator-5554
+    package: str      # 如 com.example.app
+    activity: str = ""
+
+
+class PocExpandIn(BaseModel):
+    """POC 扩展分析请求（持续挖掘）。"""
+    target_url: str            # 目标站点（用于 SSRF 校验与子目标过滤）
+    poc_text: str              # POC 描述（含 http URL 或 curl 命令）
+    match_regex: str = ""      # 命中判定正则（响应特征），留空只报可达性
+    task_id: str = ""          # 提供时确认漏洞自动入库
+
+
 class SettingOut(BaseModel):
     key: str
     value: str

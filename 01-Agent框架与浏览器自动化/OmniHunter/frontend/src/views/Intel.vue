@@ -5,6 +5,8 @@ import { api } from '@/api'
 
 const list = ref<any[]>([])
 const filter = ref('')
+const hostInput = ref('')
+const lastResult = ref('')
 
 async function load() {
   list.value = await api.listIntel(filter.value || undefined)
@@ -13,6 +15,16 @@ async function retire(id: string) {
   await api.retireIntel(id)
   ElMessage.success('已退役')
   await load()
+}
+async function onFileChange(file: any) {
+  try {
+    const res: any = await api.externalUpload(file.raw, hostInput.value || '')
+    lastResult.value = res.message
+    res.success ? ElMessage.success(res.message) : ElMessage.error(res.message)
+    await load()
+  } catch (e: any) {
+    ElMessage.error('上传失败: ' + (e.response?.data?.detail || e.message || e))
+  }
 }
 function fmt(t: string) {
   return t ? new Date(t).toLocaleString() : ''
@@ -26,6 +38,25 @@ onMounted(load)
     <p class="muted">
       验证过的凭证 / 端点 / 指纹 / 技术栈沉淀于此，带置信度与生命周期，后续 Worker 自动复用（借鉴 agentmemory）。
     </p>
+
+    <el-card style="margin-bottom: 16px">
+      <template #header>外接工具集成（PowerDesigner / PowerBuilder / SQL / 配置文件）</template>
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
+        <template #title>专业开发工具产物 → 情报 → 引擎消费</template>
+        上传 <b>.pdm</b>（PowerDesigner 数据模型，解析库表/字段/敏感列）、<b>.srw/.srd/.srf 等</b>（PowerBuilder
+        源码，审计拼接 SQL / 动态 SQL 注入 sink）、<b>.sql</b>（建表脚本）、<b>.env/.pem/.key</b>（凭据）。
+        解析结果入情报库，SQL 注入利用 / IDOR 定位时按 host 自动关联。
+      </el-alert>
+      <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap">
+        <el-input v-model="hostInput" placeholder="关联 host（如 target.com，留空用文件名）" style="width: 300px" />
+        <el-upload :auto-upload="false" :on-change="onFileChange" :show-file-list="false"
+          accept=".pdm,.sql,.srd,.srw,.srf,.srs,.sra,.srp,.sru,.srj,.env,.ini,.conf,.config,.pem,.key">
+          <el-button type="primary">选择文件并解析</el-button>
+        </el-upload>
+      </div>
+      <p v-if="lastResult" class="muted" style="margin-top: 10px">{{ lastResult }}</p>
+    </el-card>
+
     <div style="margin: 12px 0">
       <el-select v-model="filter" placeholder="按类型筛选" clearable style="width: 200px" @change="load">
         <el-option label="凭证" value="credential" />
@@ -33,6 +64,8 @@ onMounted(load)
         <el-option label="指纹" value="fingerprint" />
         <el-option label="技术栈" value="techstack" />
         <el-option label="泄露" value="leak" />
+        <el-option label="数据库模型" value="db_schema" />
+        <el-option label="PB审计" value="pb_audit" />
       </el-select>
       <el-button @click="load" style="margin-left: 8px">刷新</el-button>
     </div>

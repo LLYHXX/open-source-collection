@@ -14,7 +14,7 @@ from datetime import datetime
 from sqlalchemy import select
 
 from ..config import get_settings
-from ..models import AgentMessage, AgentRun, Task, Target, Vuln
+from ..models import AgentMessage, AgentRun, Intel, Task, Target, Vuln
 from . import state_machine
 from .llm import LLMClient
 from .memory import MemoryStore
@@ -43,7 +43,9 @@ class Orchestrator:
     # ===== 自研引擎流水线（确定性优先，LLM 只做兜底初审）=====
     async def run_engine_pipeline(self, task: Task, url: str,
                                   admin_cookie: str = "",
-                                  user_cookie: str = ""):
+                                  user_cookie: str = "",
+                                  _visited: set | None = None,
+                                  depth: int = 0):
         """自研检测引擎流水线：指纹前置 → 确定性插件检测 → 独立复现
         → CVSS 自动定级 → Reviewer 仅做极理性抽检 → 入库。
 
@@ -51,6 +53,9 @@ class Orchestrator:
         校准严重性，不重新测试（对齐方案第四步：Reviewer 改规则审核员）。
         task.mode == "engine" 时 run_task 分流到此；定时任务模板同样生效。
         admin_cookie/user_cookie 提供后启用三身份越权遍历。
+
+        持续挖掘：确认信息泄露后自动提取子目标（目录列表链接/备份文件/
+        泄露凭据）递归深挖，深度与总量受配置限制防失控。
         """
         from ..agents.reviewer import ReviewerAgent
         from ..engine import ScanEngine
@@ -119,6 +124,13 @@ class Orchestrator:
                     confidence=v.get("confidence", 0.7),
                 ))
             self.db.commit()
+
+            # 持续挖掘：确认信息泄露 → 提取子目标递归深挖（确定性，受深度/总量限制）
+            if self.settings.engine_followup_enabled and \
+                    depth < self.settings.engine_max_depth:
+                await self._engine_followup(task, url, findings,
+                                            run.id, _visited, depth)
+
             run.status = "done"
             run.summary = (f"engine: {result.get('stats', {})}")
         except Exception as e:  # noqa: BLE001
@@ -129,6 +141,55 @@ class Orchestrator:
         finally:
             run.finished_at = datetime.utcnow()
             self.db.commit()
+
+    async def _engine_followup(self, task: Task, url: str,
+                               findings: list[dict], run_id: str,
+                               _visited: set | None, depth: int) -> None:
+        """持续挖掘：从确认的信息泄露漏洞提取子目标与凭据，递归深挖。
+
+        - 目录列表链接 / 备份文件衍生路径 / 显式 URL → 下一轮引擎扫描
+        - 泄露凭据 / 内网地址 → Intel 情报库（脱敏）
+        防失控：同域过滤 + visited 去重 + followup_max_urls 总量上限。
+        """
+        from urllib.parse import urlparse
+
+        from ..engine.leak_exploit import extract_followups
+
+        visited = _visited if _visited is not None else {url}
+        candidates: list[str] = []
+        for f in findings:
+            if f.get("vuln_type") != "info_leak":
+                continue
+            fu = extract_followups(f, url)
+            for c in fu.get("creds", []):
+                self.db.add(Intel(kind="credential", key=c.get("name", "unknown"),
+                                  value=c.get("masked", ""), confidence=0.6,
+                                  source=f"leak:{url}"))
+            if fu.get("private_ips"):
+                self.db.add(Intel(
+                    kind="leak", key=urlparse(url).netloc,
+                    value=f"内网地址: {', '.join(fu['private_ips'][:10])}",
+                    confidence=0.7, source=f"leak:{url}"))
+            for u in fu.get("urls", []):
+                if u not in visited and len(candidates) < self.settings.followup_max_urls:
+                    visited.add(u)
+                    candidates.append(u)
+            for note in fu.get("notes", [])[:3]:
+                self.emit(run_id, "", "engine", "info",
+                          f"[持续挖掘] {url}: {note}")
+        self.db.commit()
+        if not candidates:
+            return
+        self.emit(run_id, "", "engine", "info",
+                  f"[持续挖掘] 从泄露中提取 {len(candidates)} 个子目标，"
+                  f"递归扫描（深度 {depth + 1}/{self.settings.engine_max_depth}）")
+        for u in candidates:
+            try:
+                await self.run_engine_pipeline(task, u, _visited=visited,
+                                               depth=depth + 1)
+            except Exception as e:  # noqa: BLE001 —— 单子目标失败不中断深挖
+                self.emit(run_id, "", "engine", "error",
+                          f"[持续挖掘] 子目标失败 {u}: {e}")
 
     # ===== 主流程 =====
     async def run_task(self, task_id: str):
@@ -166,7 +227,7 @@ class Orchestrator:
         self.db.commit()
 
     async def _engine_collect_urls(self, task: Task) -> list[str]:
-        """引擎模式 FOFA 收集：复用 CollectorAgent._fofa_collect，
+        """引擎模式资产平台收集：复用 CollectorAgent._platform_collect，
         纯确定性查询不烧 LLM（nl_intent 模式才会用到）。"""
         from ..agents.collector import CollectorAgent
 
@@ -178,7 +239,7 @@ class Orchestrator:
                                settings=self.settings)
         urls: list[str] = []
         try:
-            items = await agent._fofa_collect(_task_brief(task))
+            items = await agent._platform_collect(_task_brief(task))
             urls = [i.get("url", "") for i in items if i.get("url")]
             run.status = "done"
             run.summary = f"engine collect: {len(urls)} urls"
@@ -186,7 +247,7 @@ class Orchestrator:
             run.status = "failed"
             run.error = str(e)
             self.emit(run.id, "", "collector", "error",
-                      f"engine FOFA 收集失败: {e}")
+                      f"engine 资产平台收集失败: {e}")
         finally:
             run.finished_at = datetime.utcnow()
             self.db.commit()

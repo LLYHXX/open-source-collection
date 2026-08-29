@@ -394,6 +394,14 @@ go build -o ../bin/fp_scanner .        # Windows: go build -o ../bin/fp_scanner.
 
 **定时任务/全自动**：新建任务时 `mode=engine`，`POST /tasks/{id}/start` 与定时任务调度均自动走引擎流水线（FOFA 收集 → 引擎检测 → 入库），全程无 LLM 参与（除 Reviewer 初审）。
 
+**持续挖掘（信息泄露自动深挖 + POC 扩展分析）**：
+
+- 信息泄露自动深挖：引擎确认 info_leak 后自动提取子目标 URL / 凭据（脱敏）/ 内网 IP 入情报库，并递归扫描子目标（深度 `engine_max_depth`、总量 `followup_max_urls`、同域过滤三重防失控）
+- POC 扩展分析：「持续挖掘」页粘贴已知 POC（URL/curl）+ 命中正则，自动生成后缀/前缀/大小写/参数值/编码/同目录扩散 6 类变体并确定性复验，命中产出确认漏洞，命中响应继续提取子目标（闭环）
+- 外接工具集成：情报库页上传 PowerDesigner(.pdm)/PowerBuilder(.sr*)/.sql/.env/.pem 产物，确定性解析为 `db_schema`/`pb_audit`/`credential` 情报，供引擎按 host 关联消费
+- API：`POST /api/poc-expand`（POC 与目标强制同 host + SSRF 校验）、`POST /api/external/upload`
+- 详细使用文档：[docs/持续挖掘功能使用文档.md](docs/持续挖掘功能使用文档.md)
+
 ## 使用流程
 
 1. **控制台 → 任务 → 新建**：填名称、来源（FOFA/手动/单站）、漏洞类型。
