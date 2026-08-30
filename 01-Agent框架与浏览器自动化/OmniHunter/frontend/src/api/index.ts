@@ -1,7 +1,9 @@
 import axios from 'axios'
 import { detailToCn, httpErrMessage } from '@/i18n/cn'
 
-const http = axios.create({ baseURL: '/api', timeout: 30000 })
+// 默认 120s：SQLite 写入 / CVE 资产搜索 / Agent LLM 调用可能较长；
+// 超长接口（如 refreshCves、searchCveAssets、单站协作、POC 扩展）继续在调用点覆写 timeout。
+const http = axios.create({ baseURL: '/api', timeout: 120000 })
 
 http.interceptors.request.use((config) => {
   const token = localStorage.getItem('aififteen_hunter_token')
@@ -202,23 +204,24 @@ export const api = {
     http.post('/miner/candidates/approve', { ids }).then((r) => r.data),
   rejectMinerCandidates: (ids: string[]) =>
     http.post('/miner/candidates/reject', { ids }).then((r) => r.data),
-  // ===== CVE 库 =====
+  // ===== CVE 库（涉及网络IO、大量写入，全局 120s 不够时再在调用点覆写）=====
   listCves: (params: { keyword?: string; severity?: string; source?: string;
                         page?: number; page_size?: number } = {}) =>
-    http.get('/cves', { params }).then((r) => r.data),
-  cveStats: () => http.get('/cves/stats').then((r) => r.data),
-  getCve: (cveId: string) => http.get(`/cves/${encodeURIComponent(cveId)}`).then((r) => r.data),
+    http.get('/cves', { params, timeout: 180000 }).then((r) => r.data),
+  cveStats: () => http.get('/cves/stats', { timeout: 60000 }).then((r) => r.data),
+  getCve: (cveId: string) => http.get(`/cves/${encodeURIComponent(cveId)}`,
+    { timeout: 60000 }).then((r) => r.data),
   refreshCves: (data: { days: number; source: string }) =>
-    http.post('/cves/refresh', data, { timeout: 300000 }).then((r) => r.data),
+    http.post('/cves/refresh', data, { timeout: 600000 }).then((r) => r.data),
   searchCveAssets: (data: { cve_id: string; platforms?: string[]; max_results?: number }) =>
-    http.post('/cves/search-assets', data, { timeout: 300000 }).then((r) => r.data),
+    http.post('/cves/search-assets', data, { timeout: 600000 }).then((r) => r.data),
   listCveAssetHits: (params: { cve_id?: string; scan_status?: string;
                                 page?: number; page_size?: number } = {}) =>
-    http.get('/cves/asset-hits', { params }).then((r) => r.data),
+    http.get('/cves/asset-hits', { params, timeout: 180000 }).then((r) => r.data),
   cveScan: (data: { cve_id: string; hit_ids?: string[]; pipeline?: string }) =>
-    http.post('/cves/scan', data).then((r) => r.data),
+    http.post('/cves/scan', data, { timeout: 60000 }).then((r) => r.data),
   deleteCveAssetHit: (hitId: string) =>
-    http.delete(`/cves/asset-hits/${hitId}`).then((r) => r.data),
+    http.delete(`/cves/asset-hits/${hitId}`, { timeout: 60000 }).then((r) => r.data),
   deleteCve: (cveId: string) =>
-    http.delete(`/cves/${encodeURIComponent(cveId)}`).then((r) => r.data),
+    http.delete(`/cves/${encodeURIComponent(cveId)}`, { timeout: 60000 }).then((r) => r.data),
 }

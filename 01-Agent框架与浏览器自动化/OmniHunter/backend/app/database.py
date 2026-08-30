@@ -47,11 +47,56 @@ def get_db():
         db.close()
 
 
+def _sqlite_add_column_with_retry(tname: str, col, type_str: str, default_clause: str, nullable_clause: str) -> None:
+    """单条 ADD COLUMN：SQLite 3.35+ NOT NULL+DEFAULT 优先级→降级→重试锁。
+    单条失败最终会 raise RuntimeError，避免"静默忽略"→后续所有操作炸 500。"""
+    import time as _time
+    # 按约束从强到弱尝试：(NOT NULL+DEFAULT, NOT NULL 仅当无 DEFAULT, DEFAULT 仅当可空, 完全裸)
+    attempts: list[tuple[str, str]] = []
+    if nullable_clause and default_clause:
+        attempts.append(("strong", f'ALTER TABLE "{tname}" ADD COLUMN "{col.name}" {type_str}{default_clause}{nullable_clause}'))
+    if nullable_clause:
+        attempts.append(("not-null", f'ALTER TABLE "{tname}" ADD COLUMN "{col.name}" {type_str}{nullable_clause}'))
+    if default_clause:
+        attempts.append(("default", f'ALTER TABLE "{tname}" ADD COLUMN "{col.name}" {type_str}{default_clause}'))
+    attempts.append(("bare", f'ALTER TABLE "{tname}" ADD COLUMN "{col.name}" {type_str}'))
+
+    from sqlalchemy.dialects import sqlite as _sqlite_dialect  # noqa: F401
+    last_exc: Exception | None = None
+    for label, stmt in attempts:
+        # 每条尝试都做 3 次锁重试（database is locked 是用户高频问题：GUI 启动器双开、debug 多进程）
+        for retry in range(3):
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(stmt))
+                log.info("[migrate] 表 %s 新增列 %s 方式=%s  OK", tname, col.name, label)
+                return
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                low = str(e).lower()
+                is_lock = "locked" in low
+                is_constraint = "constraint" in low or "not null" in low or "default" in low
+                if not is_lock and not is_constraint and "duplicate" not in low:
+                    log.warning("[migrate] 表 %s 列 %s 方式=%s 非预期异常: %s", tname, col.name, label, e)
+                if is_lock and retry < 2:
+                    wait = (retry + 1) * 0.5
+                    log.warning("[migrate] 表 %s 列 %s 数据库被锁，%.1fs 后重试 (retry=%d/2): %s",
+                                tname, col.name, wait, retry + 1, e)
+                    _time.sleep(wait)
+                    continue
+                break  # 下一种尝试方式
+    # 全部失败（含裸语句仍然锁/不支持）
+    raise RuntimeError(
+        f"[migrate] 致命：无法为表 {tname} 新增列 {col.name}（SQLite ADD COLUMN 全部降级方式均失败）。"
+        f" 请关闭所有正在访问本数据库的进程后重试。最近错误: {type(last_exc).__name__}: {last_exc}"
+    )
+
+
 def _sqlite_alter_add_missing_columns() -> None:
     """SQLite 兼容迁移：create_all 后对每张已存在表对比模型列，缺就 ALTER TABLE ADD。
 
     SQLite 只支持 ADD COLUMN 一种 ALTER；不改列类型、不移除列，
-    保证旧数据 0 破坏。幂等，可重复调用。
+    保证旧数据 0 破坏。幂等，可重复调用。失败则 fail-fast，绝不"静默忽略"。
     """
     if not settings.database_url.startswith("sqlite"):
         return
@@ -59,58 +104,43 @@ def _sqlite_alter_add_missing_columns() -> None:
     # 避免在 init_db 之前还没 import models；这里延迟引用
     from sqlalchemy.orm import class_mapper
 
-    with engine.begin() as conn:
-        for cls in Base.__subclasses__():
-            try:
-                mapper = class_mapper(cls)
-            except Exception:  # noqa: BLE001 非映射类（如 Mixin）忽略
+    for cls in Base.__subclasses__():
+        try:
+            mapper = class_mapper(cls)
+        except Exception:  # noqa: BLE001 非映射类（如 Mixin）忽略
+            continue
+        table = mapper.local_table
+        if table is None:
+            continue
+        tname = table.name
+        if not insp.has_table(tname):
+            continue  # create_all 会新建，不用 alter
+        existing_cols = {c["name"] for c in insp.get_columns(tname)}
+        for col in table.columns:
+            if col.name in existing_cols:
                 continue
-            table = mapper.local_table
-            if table is None:
+            # SQLite 不支持 primary key / unique 约束加在 ADD COLUMN 上（除了 integer pk）
+            # 所以若列是 pk 或复杂约束跳过（create_all 会创建整张表，不会来到这个分支）
+            if col.primary_key:
                 continue
-            tname = table.name
-            if not insp.has_table(tname):
-                continue  # create_all 会新建，不用 alter
-            existing_cols = {c["name"] for c in insp.get_columns(tname)}
-            for col in table.columns:
-                if col.name in existing_cols:
-                    continue
-                # SQLite 不支持 primary key / unique 约束加在 ADD COLUMN 上（除了 integer pk）
-                # 所以若列是 pk 或复杂约束跳过（create_all 会创建整张表，不会来到这个分支）
-                if col.primary_key:
-                    continue
-                # 构造类型字符串：取 col.type.compile(dialect=sqlite)
-                from sqlalchemy.dialects import sqlite as _sqlite_dialect
-                type_str = col.type.compile(dialect=_sqlite_dialect.dialect())
-                default_clause = ""
-                if col.default is not None and col.default.is_scalar:
-                    raw = col.default.arg
-                    if isinstance(raw, bool):
-                        default_clause = f" DEFAULT {'1' if raw else '0'}"
-                    elif isinstance(raw, (int, float)):
-                        default_clause = f" DEFAULT {raw}"
-                    elif raw is None:
-                        default_clause = " DEFAULT NULL"
-                    else:
-                        esc = str(raw).replace("'", "''")
-                        default_clause = f" DEFAULT '{esc}'"
-                nullable_clause = "" if col.nullable else " NOT NULL"
-                # SQLite 3.35+ 才支持 DEFAULT with NOT NULL on ADD COLUMN；
-                # 若有 NOT NULL + default，兼容模式下先不加 NOT NULL。
-                if nullable_clause and default_clause:
-                    stmt = f'ALTER TABLE "{tname}" ADD COLUMN "{col.name}" {type_str}{default_clause}{nullable_clause}'
-                    try:
-                        conn.execute(text(stmt))
-                        log.info("迁移：表 %s 新增列 %s（含默认值+NOT NULL）", tname, col.name)
-                        continue
-                    except Exception as _e:  # noqa: BLE001
-                        log.warning("兼容降级表 %s 列 %s：%s", tname, col.name, _e)
-                stmt = f'ALTER TABLE "{tname}" ADD COLUMN "{col.name}" {type_str}{default_clause}'
-                try:
-                    conn.execute(text(stmt))
-                    log.info("迁移：表 %s 新增列 %s", tname, col.name)
-                except Exception as e:  # noqa: BLE001
-                    log.warning("迁移表 %s 列 %s 失败（忽略）: %s", tname, col.name, e)
+            # 构造类型字符串：取 col.type.compile(dialect=sqlite)
+            from sqlalchemy.dialects import sqlite as _sqlite_dialect
+            type_str = col.type.compile(dialect=_sqlite_dialect.dialect())
+            default_clause = ""
+            if col.default is not None and col.default.is_scalar:
+                raw = col.default.arg
+                if isinstance(raw, bool):
+                    default_clause = f" DEFAULT {'1' if raw else '0'}"
+                elif isinstance(raw, (int, float)):
+                    default_clause = f" DEFAULT {raw}"
+                elif raw is None:
+                    default_clause = " DEFAULT NULL"
+                else:
+                    esc = str(raw).replace("'", "''")
+                    default_clause = f" DEFAULT '{esc}'"
+            nullable_clause = "" if col.nullable else " NOT NULL"
+            # SQLite 3.35+ 才支持 DEFAULT with NOT NULL on ADD COLUMN
+            _sqlite_add_column_with_retry(tname, col, type_str, default_clause, nullable_clause)
 
 
 def init_db():

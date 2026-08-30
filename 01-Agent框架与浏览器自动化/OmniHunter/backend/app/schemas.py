@@ -27,6 +27,7 @@ class TaskOut(BaseModel):
     name: str
     mode: str
     status: str
+    error: str = ""
     source: str
     collect_method: str
     collect_query: str

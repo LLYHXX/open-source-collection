@@ -44,6 +44,7 @@ class Task(Base):
     collect_query = Column(Text, default="")
     manual_targets = Column(Text, default="")  # 每行一个 URL
     status = Column(String, default="pending")  # pending/collecting/running/review/done/failed
+    error = Column(Text, default="")  # 后台任务异常时回写错误，避免永远卡在 collecting/running
     max_pages = Column(Integer, default=3)
     llm_override = Column(JSON, default=dict)
     fofa_override = Column(String, default="")

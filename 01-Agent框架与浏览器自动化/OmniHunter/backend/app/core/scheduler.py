@@ -196,13 +196,17 @@ async def _run_orchestrator(task_id: str) -> None:
     db = SessionLocal()
     try:
         await Orchestrator(db).run_task(task_id)
-    except Exception:  # noqa: BLE001 后台任务异常不破坏调度
+    except Exception as e:  # noqa: BLE001 后台任务异常不破坏调度
         db.rollback()
-        # 把卡在 collecting/running 的 Task 标记为 failed，防止状态不一致
+        # 把卡在 collecting/running 的 Task 标记为 failed + error，防止状态不一致
         task = db.get(Task, task_id)
-        if task and task.status in ("collecting", "running"):
+        if task is not None:
             task.status = "failed"
-            db.commit()
+            task.error = f"[定时调度后台] [{type(e).__name__}] {e}"[:2000]
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
     finally:
         db.close()
 

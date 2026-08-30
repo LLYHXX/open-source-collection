@@ -322,8 +322,9 @@ async def _kickoff_auto_tasks(task_ids: list[str]) -> None:
                 log.warning("Miner 自动启动 task %s 异常: %s", tid, e)
                 try:
                     t2 = db.get(Task, tid)
-                    if t2 and t2.status in ("collecting", "running"):
+                    if t2 is not None:
                         t2.status = "failed"
+                        t2.error = f"[Miner 自动启动] [{type(e).__name__}] {e}"[:2000]
                         db.commit()
                 except Exception:  # noqa: BLE001
                     db.rollback()

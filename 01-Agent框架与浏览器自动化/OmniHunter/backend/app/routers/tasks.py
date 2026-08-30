@@ -1,9 +1,12 @@
 """任务路由：创建 / 列表 / 详情 / 启动编排 / 删除。"""
 import asyncio
 import ipaddress
+import logging
 import socket
 from pathlib import Path
 from urllib.parse import urlparse
+
+log = logging.getLogger("aififteen-hunter.tasks")
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -19,6 +22,26 @@ router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(verify
 
 # 敏感系统目录黑名单（防路径穿越到系统关键路径）
 _SENSITIVE_PATH_PARTS = {"etc", "proc", "sys", "dev", "boot", "windows", "system32"}
+
+
+def _set_task_failed(task_id: str, err: Exception) -> None:
+    """后台任务异常时独立开一个 DB Session，把 task.status 写回 failed。
+    不依赖调用方的 db2（可能已经被异常置为 rollback-only 或过期），
+    避免"启动后抛异常 → 任务永远卡在 collecting/running"。
+    """
+    from ..models import Task
+    dbx = SessionLocal()
+    try:
+        t = dbx.get(Task, task_id)
+        if t is not None:
+            t.status = "failed"
+            t.error = f"[{type(err).__name__}] {err}"[:2000]
+            try:
+                dbx.commit()
+            except Exception:  # noqa: BLE001 —— SQLite 锁冲突时尽最大努力即可
+                dbx.rollback()
+    finally:
+        dbx.close()
 
 
 def _validate_target_url(url: str) -> None:
@@ -103,7 +126,31 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
 
 @router.get("", response_model=list[TaskOut])
 def list_tasks(db: Session = Depends(get_db)):
-    return list(db.scalars(select(Task).order_by(Task.created_at.desc())))
+    try:
+        return list(db.scalars(select(Task).order_by(Task.created_at.desc())))
+    except Exception as e:  # noqa: BLE001
+        # 兜底：缺列迁移未完成（如 tasks.error 列未加上）时，
+        # 手动按列查再组装 dict 走 Pydantic 校验，避免整体 500 → 前端表现"任务全部消失"。
+        msg = str(e).lower()
+        if "no such column" in msg:
+            log.warning("[tasks.list] 缺列，回退兼容加载: %s", e)
+            rows = db.execute(
+                select(Task.id, Task.name, Task.mode, Task.status,
+                       Task.source, Task.collect_method,
+                       Task.collect_query, Task.created_at)
+                .order_by(Task.created_at.desc())
+            ).all()
+            return [
+                TaskOut.model_validate({
+                    "id": r[0], "name": r[1], "mode": r[2], "status": r[3],
+                    "source": r[4], "collect_method": r[5],
+                    "collect_query": r[6] or "", "created_at": r[7],
+                    "error": "",  # 缺列时给默认值
+                })
+                for r in rows
+            ]
+        # 其他错误继续上抛
+        raise
 
 
 @router.get("/{task_id}")
@@ -129,12 +176,15 @@ async def start_task(task_id: str, db: Session = Depends(get_db)):
     if task.status in ("collecting", "running"):
         raise HTTPException(400, f"任务进行中({task.status})，无法重复启动")
     task.status = "collecting"
+    task.error = ""
     db.commit()
 
     async def _bg():
         db2 = SessionLocal()
         try:
             await Orchestrator(db2).run_task(task_id)
+        except Exception as e:  # noqa: BLE001
+            _set_task_failed(task_id, e)
         finally:
             db2.close()
 
@@ -154,6 +204,8 @@ async def start_single_site(task_id: str, url: str, db: Session = Depends(get_db
         db2 = SessionLocal()
         try:
             await Orchestrator(db2).run_single_site(task, url)
+        except Exception as e:  # noqa: BLE001
+            _set_task_failed(task_id, e)
         finally:
             db2.close()
 
@@ -177,6 +229,8 @@ async def start_traffic(task_id: str, url: str, db: Session = Depends(get_db)):
         db2 = SessionLocal()
         try:
             await Orchestrator(db2).run_traffic_pipeline(task, url)
+        except Exception as e:  # noqa: BLE001
+            _set_task_failed(task_id, e)
         finally:
             db2.close()
 
@@ -206,6 +260,8 @@ async def start_whitebox(task_id: str, source_path: str,
             await Orchestrator(db2).run_whitebox_pipeline(
                 task, source_path, severity=severity,
                 business_context=business_context)
+        except Exception as e:  # noqa: BLE001
+            _set_task_failed(task_id, e)
         finally:
             db2.close()
 
@@ -236,6 +292,8 @@ async def start_multi_agent(task_id: str, url: str,
         try:
             await Orchestrator(db2).run_multi_agent_pipeline(
                 task, url, workflow_name=workflow_name)
+        except Exception as e:  # noqa: BLE001
+            _set_task_failed(task_id, e)
         finally:
             db2.close()
 
@@ -268,6 +326,8 @@ async def start_engine_scan(task_id: str, url: str,
             await orch.run_engine_pipeline(
                 task, url,
                 admin_cookie=admin_cookie, user_cookie=user_cookie)
+        except Exception as e:  # noqa: BLE001
+            _set_task_failed(task_id, e)
         finally:
             db2.close()
 
@@ -312,6 +372,8 @@ async def start_collab(task_id: str, url: str,
                 user2_cookie=user2_cookie, anon_probe=anon_probe,
                 enable_attacker=enable_attacker,
             )
+        except Exception as e:  # noqa: BLE001
+            _set_task_failed(task_id, e)
         finally:
             db2.close()
 
@@ -335,6 +397,7 @@ async def engine_scan_url(url: str,
 
     async def _bg():
         db2 = SessionLocal()
+        quick_task = None
         try:
             orch = Orchestrator(db2)
             from ..models import Task
@@ -347,6 +410,9 @@ async def engine_scan_url(url: str,
             await orch.run_engine_pipeline(
                 quick_task, url,
                 admin_cookie=admin_cookie, user_cookie=user_cookie)
+        except Exception as e:  # noqa: BLE001 —— 快速任务失败也要写回 failed + error
+            if quick_task is not None and quick_task.id:
+                _set_task_failed(quick_task.id, e)
         finally:
             db2.close()
 
@@ -407,6 +473,8 @@ async def approve_task(task_id: str, db: Session = Depends(get_db)):
         db2 = SessionLocal()
         try:
             await Orchestrator(db2).run_task(task_id)
+        except Exception as e:  # noqa: BLE001
+            _set_task_failed(task_id, e)
         finally:
             db2.close()
 

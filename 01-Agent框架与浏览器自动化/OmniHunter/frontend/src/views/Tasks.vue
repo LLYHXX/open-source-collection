@@ -47,27 +47,80 @@ const form = ref({
 })
 
 async function load() {
-  tasks.value = await api.listTasks()
+  try {
+    const r = await api.listTasks()
+    // 容错：如果后端返回对象而非数组（异常兜底 StandardResponse）
+    tasks.value = Array.isArray(r) ? r : (r?.items || r?.data || [])
+  } catch (e: any) {
+    tasks.value = tasks.value || []
+    ElMessage.error(
+      (isCyber ? 'TASK_LOAD_FAIL: ' : '任务列表加载失败: ')
+      + (e?.friendlyMsg || e?.response?.data?.message || e?.message || e),
+    )
+  }
 }
 async function create() {
   if (!form.value.name) {
     ElMessage.warning(isCyber ? 'NAME_REQ' : '请填任务名')
     return
   }
-  await api.createTask(form.value)
-  ElMessage.success(isCyber ? 'CREATED' : '已创建')
-  dialog.value = false
+  try {
+    const r: any = await api.createTask(form.value)
+    if (r && r.success === false) {
+      ElMessage.error(r?.message || (isCyber ? 'CREATE_FAIL' : '创建失败'))
+      return
+    }
+    ElMessage.success(isCyber ? 'CREATED' : '已创建')
+    dialog.value = false
+    // 清空表单，避免重复提交残留值
+    form.value.name = ''
+    form.value.collect_query = ''
+    form.value.manual_targets = ''
+  } catch (e: any) {
+    ElMessage.error(
+      (isCyber ? 'CREATE_FAIL: ' : '创建失败: ')
+      + (e?.friendlyMsg || e?.response?.data?.message || e?.message || e),
+    )
+    return
+  }
   await load()
 }
 async function start(id: string) {
-  await api.startTask(id)
-  ElMessage.success(isCyber ? 'STARTED' : '已启动')
-  await load()
+  try {
+    const r: any = await api.startTask(id)
+    if (r && r.success === false) {
+      ElMessage.error(r?.message || (isCyber ? 'START_FAIL' : '启动失败'))
+      await load()
+      return
+    }
+    ElMessage.success(isCyber ? 'STARTED' : '已启动')
+    await load()
+  } catch (e: any) {
+    ElMessage.error(
+      (isCyber ? 'START_FAIL: ' : '启动失败: ')
+      + (e?.friendlyMsg || e?.response?.data?.message || e?.message || e),
+    )
+    await load()
+  }
 }
 async function approve(id: string) {
-  await api.approveTask(id)
-  ElMessage.success(isCyber ? 'APPR · STARTED' : '已批准并启动')
-  await load()
+  try {
+    await ElMessageBox.confirm(
+      isCyber ? `REJECT TASK id=${id.slice(0,8)} ?` : '确认拒绝该 Miner 生成的任务？拒绝后将标记 rejected 不再可启动。',
+      L(labels.actions.reject) + ' × 1',
+      { type: 'warning', confirmButtonText: isCyber ? 'REJECT' : '确认拒绝' },
+    )
+    await api.approveTask(id)
+    ElMessage.success(isCyber ? 'APPR · STARTED' : '已批准并启动')
+    await load()
+  } catch (e: any) {
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(
+      (isCyber ? 'APPR_FAIL: ' : '批准失败: ')
+      + (e?.friendlyMsg || e?.response?.data?.message || e?.message || e),
+    )
+    await load()
+  }
 }
 async function reject(id: string) {
   try {
@@ -76,16 +129,36 @@ async function reject(id: string) {
       L(labels.actions.reject) + ' × 1',
       { type: 'warning', confirmButtonText: isCyber ? 'REJECT' : '确认拒绝' },
     )
+  } catch { return }
+  try {
     await api.rejectTask(id)
     ElMessage.success(isCyber ? 'REJECTED' : '已拒绝')
     await load()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(
+      (isCyber ? 'REJECT_FAIL: ' : '拒绝失败: ')
+      + (e?.friendlyMsg || e?.response?.data?.message || e?.message || e),
+    )
+  }
 }
 async function del(id: string) {
-  await ElMessageBox.confirm(isCyber ? `PURGE TASK id=${id.slice(0,8)} ?` : '确认删除该任务?', isCyber ? 'PURGE' : '提示', { type: 'warning' })
-  await api.deleteTask(id)
-  ElMessage.success(isCyber ? 'PURGED' : '已删除')
-  await load()
+  try {
+    await ElMessageBox.confirm(
+      isCyber ? `PURGE TASK id=${id.slice(0,8)} ?` : '确认删除该任务?',
+      isCyber ? 'PURGE' : '提示',
+      { type: 'warning', confirmButtonText: isCyber ? 'PURGE' : '删除', cancelButtonText: isCyber ? 'CANCEL' : '取消' },
+    )
+  } catch { return }
+  try {
+    await api.deleteTask(id)
+    ElMessage.success(isCyber ? 'PURGED' : '已删除')
+    await load()
+  } catch (e: any) {
+    ElMessage.error(
+      (isCyber ? 'PURGE_FAIL: ' : '删除失败: ')
+      + (e?.friendlyMsg || e?.response?.data?.message || e?.message || e),
+    )
+  }
 }
 function goDetail(row: any) {
   router.push(`/tasks/${row.id}`)
