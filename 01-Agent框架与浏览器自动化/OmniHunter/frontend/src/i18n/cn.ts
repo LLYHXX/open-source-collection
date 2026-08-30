@@ -109,6 +109,32 @@ export const PLATFORM: Record<string, string> = {
   fofa: 'FOFA', quake: '360 Quake', hunter: 'Hunter 鹰图',
   zoomeye: 'ZoomEye', shodan: 'Shodan', censys: 'Censys',
 }
+export const CVE_SOURCE: Record<string, string> = {
+  nvd: 'NVD（美国国家漏洞库）', osv: 'OSV.dev（开源漏洞库）',
+}
+export const CVE_SOURCE_EN: Record<string, string> = {
+  nvd: 'NVD', osv: 'OSV',
+}
+export const CVE_SCAN_STATUS: Record<string, string> = {
+  pending: '待扫描', scanning: '扫描中', done: '已完成',
+  failed: '失败', skipped: '已跳过',
+}
+export const CVE_SCAN_STATUS_EN: Record<string, string> = {
+  pending: 'PEND', scanning: 'SCAN', done: 'DONE', failed: 'FAIL', skipped: 'SKIP',
+}
+export const CVE_SCAN_STATUS_TAG: Record<string, string> = {
+  pending: 'info', scanning: 'warning', done: 'success',
+  failed: 'danger', skipped: 'info',
+}
+export const CVE_SEVERITY: Record<string, string> = {
+  CRITICAL: '严重', HIGH: '高危', MEDIUM: '中危', LOW: '低危', '': '未评级',
+}
+export const CVE_SEVERITY_TAG: Record<string, string> = {
+  CRITICAL: 'danger', HIGH: 'danger', MEDIUM: 'warning', LOW: 'info', '': 'info',
+}
+export const CVE_PIPELINE: Record<string, string> = {
+  engine: '自研引擎扫描', collab: '单站协作（权限专项）', traffic: '流量挖掘',
+}
 
 // ---------- 通用工具查表函数 ----------
 function lookup(tbl: Record<string, string>, raw: unknown, fallback?: string): string {
@@ -137,6 +163,10 @@ export function zh(raw: unknown, fallback?: string): string {
     lookup(MINER_POLICY, r) ||
     lookup(THEME, r) ||
     lookup(PLATFORM, r) ||
+    lookup(CVE_SOURCE, r) ||
+    lookup(CVE_SCAN_STATUS, r) ||
+    lookup(CVE_SEVERITY, r) ||
+    lookup(CVE_PIPELINE, r) ||
     (fallback ?? r)
   )
 }
@@ -153,6 +183,8 @@ export function en(raw: unknown, fallback?: string): string {
     lookup(MINER_STATUS_EN, r) ||
     lookup(MINER_KIND_EN, r) ||
     lookup(MINER_POLICY_EN, r) ||
+    lookup(CVE_SOURCE_EN, r) ||
+    lookup(CVE_SCAN_STATUS_EN, r) ||
     (fallback ?? r)
   )
 }

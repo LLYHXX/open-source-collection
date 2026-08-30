@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Close, Check } from '@element-plus/icons-vue'
+import { Refresh, Close, Check, Lightning } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { zh, MINER_STATUS_TAG, MINER_KIND } from '@/i18n/cn'
 
@@ -15,6 +15,61 @@ const taskId = ref('')
 const tasks = ref<any[]>([])
 const running = ref(false)
 const result = ref<any>(null)
+
+// ============================================================
+// Tab 3: 单站协作（权限发现专项）
+// ============================================================
+const collab = reactive({
+  taskId: '',
+  url: '',
+  adminCookie: '',
+  userCookie: '',
+  user2Cookie: '',
+  anonProbe: true,
+  enableAttacker: true,
+})
+const collabRunning = ref(false)
+
+async function startCollab() {
+  if (!collab.taskId) { ElMessage.warning('请选择关联任务'); return }
+  if (!collab.url.trim()) { ElMessage.warning('请输入目标 URL'); return }
+  if (!collab.userCookie && !collab.adminCookie) {
+    ElMessage.warning('至少需要填写一个身份会话 Cookie（user 或 admin）才能跑权限矩阵')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '将启动单站协作流水线：\n' +
+      ' SiteProfiler 资产收集 → Modeler 业务建模\n' +
+      ' → PermissionAgent 权限发现专项（5 类权限 + 权限矩阵）\n' +
+      (collab.enableAttacker ? ' → Attacker 变异攻击\n' : '') +
+      ' → Verifier 独立复现 → Reviewer 入库\n\n' +
+      '是否继续？',
+      '启动单站协作',
+      { type: 'warning', confirmButtonText: '确认启动', cancelButtonText: '取消' },
+    )
+  } catch { return /* 用户取消 */ }
+
+  collabRunning.value = true
+  try {
+    const r: any = await api.startCollab(collab.taskId, collab.url.trim(), {
+      admin_cookie: collab.adminCookie.trim() || undefined,
+      user_cookie: collab.userCookie.trim() || undefined,
+      user2_cookie: collab.user2Cookie.trim() || undefined,
+      anon_probe: collab.anonProbe,
+      enable_attacker: collab.enableAttacker,
+    })
+    ElMessage.success(r?.message || '已启动单站协作，可在「任务详情」查看进度')
+    // 跳转到任务详情
+    setTimeout(() => {
+      window.location.hash = `#/tasks/${collab.taskId}`
+    }, 800)
+  } catch (e: any) {
+    ElMessage.error(e?.friendlyMsg || '启动失败: ' + (e.message || e))
+  } finally {
+    collabRunning.value = false
+  }
+}
 
 onMounted(async () => {
   try {
@@ -431,6 +486,91 @@ const emptyCandText = computed(() => {
             批量批准并入库所选（{{ candSelected.length }}）
           </el-button>
         </div>
+      </el-tab-pane>
+
+      <!-- ================= Tab 3: 单站协作 ================= -->
+      <el-tab-pane label="单站协作" name="collab">
+        <el-alert
+          title="单站协作：给定一个站点，让 Agent 自动挖掘「这个站点都有什么权限」"
+          type="info" :closable="false" show-icon
+          style="margin-bottom: 16px"
+        >
+          <template #default>
+            <div style="line-height: 1.8">
+              流水线：<b>SiteProfiler</b> 单站资产收集 → <b>Modeler</b> 业务建模 →
+              <b>PermissionAgent</b> 权限发现专项（未授权访问 / 水平越权 / 垂直越权 / IDOR / 权限矩阵）→
+              <b>Attacker</b>（可选）变异攻击 → <b>Verifier</b> 独立复现 → <b>Reviewer</b> 入库。
+              <br/>
+              至少需要 <b>一个身份会话 Cookie</b>（user 或 admin）；<b>admin Cookie</b> 用于垂直越权检测；
+              <b>user2 Cookie</b> 用于水平越权检测；<b>匿名探测</b>（anon_probe）测未授权访问。
+            </div>
+          </template>
+        </el-alert>
+
+        <el-card>
+          <template #header>参数配置</template>
+          <el-form label-width="120px">
+            <el-form-item label="关联任务" required>
+              <el-select
+                v-model="collab.taskId"
+                placeholder="必选：单站协作将作为该任务的后台流程执行，结果入库到该任务"
+                clearable filterable style="width: 100%"
+              >
+                <el-option v-for="t in tasks" :key="t.id"
+                  :label="(t.name || '') + '  ·  ' + (t.id || '').slice(0, 8)"
+                  :value="t.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="目标 URL" required>
+              <el-input
+                v-model="collab.url"
+                placeholder="如 http://target.com（用于 SSRF 校验与资产归属过滤）"
+              />
+            </el-form-item>
+            <el-form-item label="Admin Cookie">
+              <el-input
+                v-model="collab.adminCookie" type="textarea" :rows="2"
+                placeholder="管理员身份 Cookie，用于垂直越权检测（如 Authorization: Bearer xxx 或 SESSION=xxx）"
+              />
+            </el-form-item>
+            <el-form-item label="User Cookie">
+              <el-input
+                v-model="collab.userCookie" type="textarea" :rows="2"
+                placeholder="普通用户身份 Cookie，用于权限矩阵基线与水平越权检测"
+              />
+            </el-form-item>
+            <el-form-item label="User2 Cookie">
+              <el-input
+                v-model="collab.user2Cookie" type="textarea" :rows="2"
+                placeholder="另一普通用户 Cookie，用于水平越权（同权限换 ID 访问对比）"
+              />
+            </el-form-item>
+            <el-form-item label="匿名探测">
+              <el-switch v-model="collab.anonProbe" />
+              <span class="muted" style="margin-left: 10px">
+                开启后先以无 Cookie 匿名身份访问，检测未授权访问漏洞（推荐开启）
+              </span>
+            </el-form-item>
+            <el-form-item label="启用 LLM 攻击">
+              <el-switch v-model="collab.enableAttacker" />
+              <span class="muted" style="margin-left: 10px">
+                开启后基于权限矩阵生成变异攻击动作（关闭则只做权限发现，不进行 LLM 攻击）
+              </span>
+            </el-form-item>
+            <el-form-item>
+              <el-button
+                type="warning" :loading="collabRunning"
+                :icon="Lightning"
+                @click="startCollab"
+              >
+                {{ collabRunning ? '启动中…' : '启动单站协作' }}
+              </el-button>
+              <span class="muted" style="margin-left: 10px">
+                后台异步执行，启动后可前往「任务详情」查看进度，「漏洞」页查看产出。
+              </span>
+            </el-form-item>
+          </el-form>
+        </el-card>
       </el-tab-pane>
     </el-tabs>
   </div>

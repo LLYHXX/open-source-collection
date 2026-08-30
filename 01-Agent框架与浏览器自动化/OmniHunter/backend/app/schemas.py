@@ -250,3 +250,81 @@ class StandardResponse(BaseModel):
     success: bool = True
     message: str = ""
     data: dict | list | None = None
+
+
+# ===== CVE 库 =====
+class CveEntryOut(BaseModel):
+    id: str
+    cve_id: str
+    source: str
+    title: str
+    description: str
+    affected: dict = {}
+    cvss_score: float = 0.0
+    cvss_severity: str = ""
+    cvss_vector: str = ""
+    published_at: datetime | None = None
+    updated_at_src: datetime | None = None
+    references: list = []
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class CveListParams(BaseModel):
+    """CVE 列表查询：支持关键字/严重等级/分页。"""
+    keyword: str = ""
+    severity: str = ""  # LOW/MEDIUM/HIGH/CRITICAL
+    page: int = 1
+    page_size: int = 20
+
+
+class CveRefreshIn(BaseModel):
+    """手动刷新 CVE 库。"""
+    days: int = 7       # 拉取最近 N 天的 CVE
+    source: str = "all"  # nvd / osv / all
+
+
+class CveSearchAssetIn(BaseModel):
+    """按 CVE 搜未修复资产。"""
+    cve_id: str
+    platforms: list[str] = []   # 空=已配置全部平台
+    max_results: int = 100
+
+
+class CveScanIn(BaseModel):
+    """基于 CVE 命中资产触发挖掘流水线。"""
+    cve_id: str
+    hit_ids: list[str] = []   # 空=所有 pending 命中资产
+    pipeline: str = "engine"  # engine / collab / traffic
+
+
+class CveAssetHitOut(BaseModel):
+    id: str
+    cve_id: str
+    task_id: str = ""
+    url: str
+    host: str
+    port: int
+    title: str
+    platform: str
+    query: str
+    scan_status: str
+    created_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+# ===== 单站协作（权限发现专项）=====
+class CollabStartIn(BaseModel):
+    """单站协作启动参数。"""
+    url: str
+    admin_cookie: str = ""
+    user_cookie: str = ""
+    anon_probe: bool = True           # 是否测未授权访问
+    extra_sessions: dict = {}          # 附加身份会话
+    enable_engine: bool = True        # 是否并行跑自研引擎
+    enable_attacker: bool = True      # 是否跑 LLM 攻击 Agent

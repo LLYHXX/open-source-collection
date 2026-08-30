@@ -233,3 +233,51 @@ class MinerCandidate(Base):
     note = Column(Text, default="")              # out_of_scope 等说明
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ====== Spec 2026-08-30: 自动更新 CVE 库 + 单站协作 ======
+class CveEntry(Base):
+    """CVE 库条目：NVD + OSV.dev 双源拉取，去重入库。
+
+    存储标准化 CVE 信息，affected 字段携带 vendor/product/versions，
+    供 search_by_cve 生成资产测绘平台查询语句，搜索未修复资产。
+    """
+    __tablename__ = "cve_entries"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    cve_id = Column(String, index=True, nullable=False)         # CVE-2024-xxxx
+    source = Column(String, default="nvd")                      # nvd / osv
+    title = Column(Text, default="")
+    description = Column(Text, default="")
+    # affected 结构：{"vendor": "...", "product": "...",
+    #               "versions": [...], "cpe": [...]}
+    affected = Column(JSON, default=dict)
+    cvss_score = Column(Float, default=0.0)
+    cvss_severity = Column(String, default="")                  # LOW/MEDIUM/HIGH/CRITICAL
+    cvss_vector = Column(String, default="")
+    published_at = Column(DateTime, default=None)
+    updated_at_src = Column(DateTime, default=None)             # 源站更新时间
+    references = Column(JSON, default=list)                     # 参考链接
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CveAssetHit(Base):
+    """CVE 资产命中：根据 CVE affected 通过资产平台搜出的未修复资产。
+
+    用于「CVE → 搜资产 → 挖掘」流水线，记录搜到的资产和挖掘状态。
+    """
+    __tablename__ = "cve_asset_hits"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    cve_id = Column(String, index=True, nullable=False)         # 关联 CVE
+    task_id = Column(String, ForeignKey("tasks.id", ondelete="CASCADE"), default="")
+    url = Column(String, default="")                            # 命中资产 URL
+    host = Column(String, default="")
+    port = Column(Integer, default=0)
+    title = Column(String, default="")
+    platform = Column(String, default="")                      # fofa / shodan ...
+    query = Column(Text, default="")                             # 命中查询语句
+    scan_status = Column(String, default="pending")             # pending/scanning/done/failed/skipped
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

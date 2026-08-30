@@ -13,6 +13,7 @@ const routes = [
   { path: '/intel', name: 'intel', component: () => import('@/views/Intel.vue') },
   { path: '/memory', name: 'memory', component: () => import('@/views/Memory.vue') },
   { path: '/hunting', name: 'hunting', component: () => import('@/views/Hunting.vue') },
+  { path: '/cve-library', name: 'cveLibrary', component: () => import('@/views/CveLibrary.vue') },
   { path: '/androidlab', name: 'androidlab', component: () => import('@/views/AndroidLab.vue') },
   { path: '/settings', name: 'settings', component: () => import('@/views/Settings.vue') },
 ]
