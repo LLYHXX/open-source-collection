@@ -233,66 +233,190 @@ body[data-theme='cyber']::after {
   border: 1px solid var(--el-border-color) !important;
   background: linear-gradient(160deg, #141c36, #111832) !important;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35) !important;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  transition: transform 0.22s cubic-bezier(.2,.7,.2,1), box-shadow 0.22s ease, border-color 0.22s ease;
+  overflow: hidden;
 }
 :root[data-theme='cyber'] .el-card,
 :root[data-theme='mono'] .el-card {
   background: var(--el-bg-color) !important;
 }
 .el-card:hover {
-  box-shadow: 0 10px 32px rgba(59, 130, 246, 0.12) !important;
+  transform: translateY(-2px);
+  box-shadow: 0 12px 34px rgba(59, 130, 246, 0.18) !important;
+  border-color: rgba(59,130,246,0.38) !important;
 }
 :root[data-theme='cyber'] .el-card:hover {
+  transform: none;
   box-shadow: none !important;
   border-color: var(--accent) !important;
 }
 .el-card__header {
   border-bottom: 1px solid var(--el-border-color) !important;
   font-weight: 600;
+  padding: 14px 20px !important;
+  font-size: 14px;
+  letter-spacing: 0.2px;
 }
+.el-card__body { padding: 18px 20px !important; }
+
 .el-table {
   --el-table-bg-color: transparent;
   --el-table-tr-bg-color: transparent;
   --el-table-header-bg-color: rgba(59, 130, 246, 0.07);
   --el-table-header-text-color: #93c5fd;
-  --el-table-row-hover-bg-color: rgba(59, 130, 246, 0.08);
+  --el-table-row-hover-bg-color: rgba(59, 130, 246, 0.10);
   --el-table-border-color: var(--el-border-color);
+  --el-table-body-border-color: var(--el-border-color);
+  border-radius: var(--radius-card);
+  overflow: hidden;
 }
 :root[data-theme='cyber'] .el-table {
   --el-table-header-bg-color: rgba(0, 229, 255, 0.08);
   --el-table-header-text-color: var(--accent);
   --el-table-row-hover-bg-color: rgba(0, 229, 255, 0.08);
+  border-radius: 0;
 }
 .el-table .el-table__row {
   cursor: default;
+  transition: background 0.18s ease, transform 0.18s ease;
 }
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell,
+.el-table td.el-table__cell, .el-table th.el-table__cell.is-leaf {
+  border-bottom: 1px solid var(--el-border-color);
+}
+.el-table .el-table__row:hover td.el-table__cell {
+  background: transparent; /* 变量控制，避免重复覆盖 */
+}
+/* 空状态中文：Element Plus 默认 empty 文案已由 zhCn locale 覆盖；此处仅样式 */
+.el-empty__description p {
+  font-size: 13px !important;
+  color: #8b94a8 !important;
+  letter-spacing: 0.3px;
+}
+:root[data-theme='cyber'] .el-empty__description p { font-family: var(--font-mono, Consolas, monospace); color: var(--text-2, #9fb0c7) !important; }
+
 .el-dialog {
   border-radius: var(--radius-card) !important;
   border: 1px solid var(--el-border-color);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.55);
 }
+.el-dialog__header { padding: 18px 20px 14px !important; border-bottom: 1px solid var(--el-border-color); }
+.el-dialog__footer { padding: 14px 20px 18px !important; border-top: 1px solid var(--el-border-color); }
+.el-dialog__body   { padding: 18px 20px !important; }
+
 .el-button {
   border-radius: var(--radius-button) !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
+.el-button:hover:not(.is-disabled) { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,0.25); }
+.el-button:active:not(.is-disabled) { transform: translateY(0); }
+.el-button--primary { box-shadow: 0 4px 14px rgba(59,130,246,0.25); }
+.el-button--success { box-shadow: 0 4px 14px rgba(52,211,153,0.22); }
+.el-button--danger  { box-shadow: 0 4px 14px rgba(248,113,113,0.22); }
+.el-button--warning { box-shadow: 0 4px 14px rgba(251,191,36,0.22); }
+
 .el-tag {
   border-radius: 4px !important;
   border-width: 0 !important;
+  padding: 0 10px !important;
 }
 :root[data-theme='cyber'] .el-tag,
 :root[data-theme='mono'] .el-tag {
   border-radius: 0 !important;
   font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
 }
+
+/* 分页器：紧凑 + 中文数字样式（total 文案由 zhCn 覆盖）*/
+.el-pagination {
+  --el-pagination-button-bg-color: rgba(255,255,255,0.03);
+  padding: 8px 2px !important;
+  font-variant-numeric: tabular-nums;
+}
+.el-pagination button,
+.el-pagination .el-pager li {
+  border-radius: var(--radius-button) !important;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.el-pagination button:hover:not(.is-disabled),
+.el-pagination .el-pager li:hover { transform: translateY(-1px); }
+:root[data-theme='cyber'] .el-pagination button,
+:root[data-theme='cyber'] .el-pagination .el-pager li { border-radius: 0 !important; }
+
+/* 筛选条：卡片化包裹（Memory 有 .card / Hunting 用筛选）*/
+.card,
+.filter-wrap-card {
+  background: linear-gradient(160deg, #141c36, #111832);
+  border: 1px solid var(--el-border-color);
+  border-radius: var(--radius-card);
+  padding: 14px 16px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.28);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.card:hover,
+.filter-wrap-card:hover {
+  border-color: rgba(59,130,246,0.32);
+  box-shadow: 0 8px 26px rgba(59,130,246,0.14);
+}
+:root[data-theme='cyber'] .card,
+:root[data-theme='cyber'] .filter-wrap-card,
+:root[data-theme='mono'] .card,
+:root[data-theme='mono'] .filter-wrap-card {
+  background: var(--el-bg-color);
+  box-shadow: none;
+}
+:root[data-theme='cyber'] .card:hover,
+:root[data-theme='cyber'] .filter-wrap-card:hover { box-shadow: none; border-color: var(--accent); }
+
 .el-descriptions {
   --el-descriptions-item-bordered-label-background: rgba(59, 130, 246, 0.08);
+  border-radius: var(--radius-card);
+  overflow: hidden;
 }
 :root[data-theme='cyber'] .el-descriptions {
   --el-descriptions-item-bordered-label-background: rgba(0, 229, 255, 0.08);
+  border-radius: 0;
 }
+.el-descriptions-item__label { font-weight: 600 !important; }
+
 .el-input__wrapper,
 .el-textarea__inner,
 .el-select__wrapper {
   border-radius: var(--radius-button) !important;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
 }
+.el-input__wrapper:hover,
+.el-textarea__inner:hover,
+.el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px rgba(59,130,246,0.35) inset !important;
+}
+:root[data-theme='cyber'] .el-input__wrapper:hover,
+:root[data-theme='cyber'] .el-textarea__inner:hover,
+:root[data-theme='cyber'] .el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--accent) inset !important;
+}
+
+.el-tabs { border-radius: var(--radius-card); }
+.el-tabs__header { margin: 0 0 16px 0 !important; }
+.el-tabs__item {
+  transition: color 0.18s ease, transform 0.18s ease;
+}
+.el-tabs__item:hover:not(.is-active) { color: #93c5fd; transform: translateY(-1px); }
+:root[data-theme='cyber'] .el-tabs__item:hover:not(.is-active) { color: var(--accent); }
+:root[data-theme='cyber'] .el-tabs__active-bar { background-color: var(--accent) !important; }
+
+/* Tabs 卡片化头：标题 / 操作 / Tab 一体化布局 */
+.page-head {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.page-head > :first-child { flex: 1; min-width: 0; }
+.page-head .actions { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.el-alert { border-radius: var(--radius-button) !important; }
+
+/* 全局：无衬线中文字体栈（含 fallback），字号基准 14px */
+html, body, #app { font-size: 14px; line-height: 1.5; }
+
 
 /* ============ 徽章/统计 ============ */
 .sev-tag {

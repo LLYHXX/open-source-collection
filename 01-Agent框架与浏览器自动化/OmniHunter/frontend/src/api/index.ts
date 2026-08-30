@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { detailToCn, httpErrMessage } from '@/i18n/cn'
 
 const http = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -11,15 +12,33 @@ http.interceptors.request.use((config) => {
   return config
 })
 
-// 401 拦截：公网访问未登录/会话失效 → 清会话并跳登录页
+// 响应拦截：统一「中文错误文案 + message 兜底」，错误里挂 .friendlyMsg 方便 View 直接用
 http.interceptors.response.use(
-  (r) => r,
+  (r) => {
+    // 对 JSON 响应做一层标准化：让 View 无需判断 success
+    const body = r.data
+    if (body && typeof body === 'object' && 'success' in body && body.success === false) {
+      const err = new Error(body.message || '操作失败') as any
+      err.response = { status: 400, data: body }
+      err.friendlyMsg = detailToCn(body.message || '操作失败')
+      return Promise.reject(err)
+    }
+    return r
+  },
   (err) => {
-    if (err.response?.status === 401) {
+    const code = Number(err?.response?.status) || 0
+    const body = err?.response?.data
+    let detail = ''
+    if (typeof body === 'string') detail = body
+    else if (body?.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+    else if (body?.message) detail = body.message
+    detail = detailToCn(detail)
+    const friendly = code ? httpErrMessage(code, detail) : (detail || (err?.message || '网络异常，请检查后端是否启动'))
+    err.friendlyMsg = friendly
+    if (code === 401) {
       localStorage.removeItem('aififteen_hunter_session')
       const path = window.location.pathname
       if (path !== '/access') {
-        // 动态导入避免与 router 循环依赖
         import('@/router').then((m) => {
           m.default.push({ path: '/access', query: { mode: 'login' } })
         })
@@ -164,8 +183,10 @@ export const api = {
   saveMinerConfig: (data: any) => http.put('/miner/config', data).then((r) => r.data),
   triggerMinerOnce: () => http.post('/miner/trigger-once').then((r) => r.data),
   listMinerRuns: (limit = 30) => http.get('/miner/runs', { params: { limit } }).then((r) => r.data),
-  listMinerCandidates: (status = 'pending', page = 1, page_size = 50) =>
-    http.get('/miner/candidates', { params: { status, page, page_size } }).then((r) => r.data),
+  listMinerCandidates: (status = 'pending', page = 1, page_size = 50, keyword = '') =>
+    http.get('/miner/candidates', { params: { status, page, page_size, keyword } }).then((r) => r.data),
+  createMinerCandidate: (data: { src_intel_id: string; extracted_kind: string; extracted_key: string; status?: string; note?: string }) =>
+    http.post('/miner/candidates', data).then((r) => r.data),
   approveMinerCandidates: (ids: string[]) =>
     http.post('/miner/candidates/approve', { ids }).then((r) => r.data),
   rejectMinerCandidates: (ids: string[]) =>

@@ -36,12 +36,15 @@
           <div class="m-label">{{ L(labels.memoryRubric.kind) }}</div>
           <div class="bar-chart">
             <div v-for="k in topKinds" :key="k.kind" class="bar-row">
-              <div class="bar-name" :title="k.kind"><code v-if="isCyber" class="mem-kind-inline">&lt;{{ k.kind }}&gt;</code><span v-else>{{ k.kind }}</span></div>
+              <div class="bar-name" :title="k.kind">
+                <code v-if="isCyber" class="mem-kind-inline">&lt;{{ k.kind }}&gt;</code>
+                <span v-else>{{ kindCn(k.kind) }}</span>
+              </div>
               <div class="bar-track"><div class="bar-fill" :style="{ width: k.pct + '%' }"></div></div>
               <el-tooltip v-if="isCyber" :content="'DEC: ' + k.count"><span class="bar-count hex-val">{{ hexLabel(k.count) }}</span></el-tooltip>
               <span v-else class="bar-count">{{ k.count }}</span>
             </div>
-            <div v-if="!stats.by_kind?.length" class="empty">NO_DATA</div>
+            <div v-if="!stats.by_kind?.length" class="empty">暂无类型分布数据</div>
           </div>
         </div>
         <div class="metric-card daily">
@@ -82,7 +85,7 @@
         <el-form-item :label="isCyber ? 'CONF' : '置信度'">
           <el-slider
             v-model="confRange" range :min="0" :max="1" :step="0.05"
-            show-stops :format-tooltip="(v) => (v*100).toFixed(0) + '%'"
+            show-stops :format-tooltip="(v: number) => (v*100).toFixed(0) + '%'"
             @change="reload" style="width: 180px" />
         </el-form-item>
         <el-form-item>
@@ -96,7 +99,7 @@
               <el-icon><Connection /></el-icon> [CAND]
             </el-button>
           </el-badge>
-          <el-tooltip v-else content="NO_PENDING_CAND" placement="top">
+          <el-tooltip v-else content="暂无待审批候选" placement="top">
             <el-button size="default" @click="openCandDialog" disabled>[CAND]</el-button>
           </el-tooltip>
           <el-button type="primary" @click="openCreate" style="margin-left:8px">
@@ -127,7 +130,7 @@
         <header class="mem-head">
           <el-tag :type="lifecycleTag(it.lifecycle)" size="small">{{ L(labels.lifecycle[it.lifecycle] || {cyber:it.lifecycle, full:it.lifecycle}) }}</el-tag>
           <code class="mem-kind" v-if="isCyber">&lt;{{ it.kind }}&gt;</code>
-          <span class="mem-kind" v-else>{{ it.kind }}</span>
+          <span class="mem-kind" v-else>{{ kindCn(it.kind) }}</span>
           <span class="mem-time">{{ it.updated_at }}</span>
         </header>
         <div v-if="Array.isArray(it.tags) && it.tags.length" class="mem-tags">
@@ -166,7 +169,7 @@
         </footer>
       </div>
       <div v-if="!loading && !items.length" class="empty-block">
-        <el-empty description="EMPTY_SET" :image-size="40" />
+        <el-empty description="暂无记忆条目" :image-size="40" />
       </div>
     </section>
 
@@ -201,7 +204,7 @@
         </el-form-item>
         <el-form-item :label="isCyber ? 'CONF %' : '置信度'">
           <el-slider v-model="dialog.form.confidence" :min="0" :max="1" :step="0.05" show-stops
-            :format-tooltip="(v) => (v*100).toFixed(0) + '%'" style="width: 100%" />
+            :format-tooltip="(v: number) => (v*100).toFixed(0) + '%'" style="width: 100%" />
         </el-form-item>
         <el-form-item :label="isCyber ? 'SRC' : '来源 source'">
           <el-input v-model="dialog.form.source" :placeholder="isCyber ? 'source tag' : '例如 target-xxx 或 upload，便于溯源'" maxlength="200" />
@@ -237,7 +240,7 @@
         <span v-if="isCyber">OUT_OF_SCOPE 项 status=skipped 且永不自动起任务。</span>
         <span v-else>越权项会被系统自动标为 skipped，不会出现在此列表中。</span>
       </el-alert>
-      <el-table :data="candDialog.items" size="small" border empty-text="NO_DATA" @selection-change="(s)=>candDialog.selected=s" style="max-height: 400px; overflow:auto;">
+      <el-table :data="candDialog.items" size="small" border empty-text="暂无待审批候选" @selection-change="(s: any[])=>candDialog.selected=s" style="max-height: 400px; overflow:auto;">
         <el-table-column type="selection" width="46" />
         <el-table-column prop="id" label="#" width="54" />
         <el-table-column prop="extracted_kind" :label="isCyber ? 'KIND' : '类型'" width="120">
@@ -272,6 +275,11 @@ import { computed, inject, onBeforeUnmount, onMounted, reactive, ref } from 'vue
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Upload, Download, Connection } from '@element-plus/icons-vue'
 import { api } from '@/api'
+import { zh, INTEL_KIND } from '@/i18n/cn'
+
+function kindCn(k: string) {
+  return (INTEL_KIND as any)[k] || zh(k) || k
+}
 
 const labels: any = inject('uiLabels', {
   isCyber: { value: false },
@@ -325,10 +333,10 @@ const dialog = reactive({
 
 const topKinds = computed(() => {
   const list = stats.by_kind || []
-  const max = Math.max(1, ...list.slice(0, 6).map(k => k.count))
-  return list.slice(0, 6).map(k => ({ ...k, pct: +(k.count / max * 100).toFixed(1) }))
+  const max = Math.max(1, ...list.slice(0, 6).map((k: any) => k.count))
+  return list.slice(0, 6).map((k: any) => ({ ...k, pct: +(k.count / max * 100).toFixed(1) }))
 })
-const dailyMax = computed(() => Math.max(0, ...(stats.daily_7d || []).map(d => d.count)))
+const dailyMax = computed(() => Math.max(0, ...(stats.daily_7d || []).map((d: any) => d.count)))
 
 // ---- helpers ----
 function lifecycleLabel(s: string) { return L(labels.lifecycle[s] || {cyber:s, full:s}) }

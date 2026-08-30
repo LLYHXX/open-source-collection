@@ -3,6 +3,14 @@ import { computed, inject, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api'
+import { zh, TASK_SOURCE, COLLECT_METHOD } from '@/i18n/cn'
+
+function sourceCn(s: string) {
+  return (TASK_SOURCE as any)[s] || zh(s) || s
+}
+function collCn(m: string) {
+  return (COLLECT_METHOD as any)[m] || zh(m) || m
+}
 
 const labels: any = inject('uiLabels', {
   isCyber: { value: false },
@@ -132,17 +140,27 @@ onMounted(load)
       <h2 class="page-title" style="margin: 0">{{ isCyber ? 'TASKS · QUEUE' : '挖掘任务' }}</h2>
       <el-button type="primary" @click="dialog = true">{{ isCyber ? 'NEW · TASK' : '新建任务' }}</el-button>
     </div>
-    <el-table :data="tasks" border style="margin-top: 16px" @row-click="goDetail">
-      <el-table-column prop="name" :label="isCyber ? 'NAME' : '任务名'" show-overflow-tooltip />
-      <el-table-column :label="isCyber ? 'MODE' : '模式'" width="110">
+    <el-table :data="tasks" border style="margin-top: 16px" @row-click="goDetail" stripe empty-text="暂无任务">
+      <el-table-column prop="name" :label="isCyber ? 'NAME' : '任务名称'" show-overflow-tooltip />
+      <el-table-column :label="isCyber ? 'MODE' : '任务模式'" width="120">
         <template #default="{ row }">
           <el-tag :type="row.mode === 'engine' ? 'success' : 'info'" effect="dark" size="small">
-            {{ isCyber ? (row.mode === 'engine' ? 'ENGINE' : row.mode) : (row.mode === 'engine' ? '自研引擎' : row.mode) }}
+            {{ isCyber ? (row.mode === 'engine' ? 'ENGINE' : row.mode) : (row.mode === 'engine' ? '自研引擎' : zh(row.mode) || row.mode) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="source" :label="isCyber ? 'SRC' : '来源'" width="110" />
-      <el-table-column prop="collect_method" :label="isCyber ? 'COLL' : '搜集方式'" width="120" />
+      <el-table-column :label="isCyber ? 'SRC' : '目标来源'" width="130">
+        <template #default="{ row }">
+          <span v-if="isCyber">{{ row.source }}</span>
+          <span v-else>{{ sourceCn(row.source) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column :label="isCyber ? 'COLL' : '搜集方式'" width="130">
+        <template #default="{ row }">
+          <span v-if="isCyber">{{ row.collect_method }}</span>
+          <span v-else>{{ collCn(row.collect_method) }}</span>
+        </template>
+      </el-table-column>
       <el-table-column :label="isCyber ? 'STAT' : '状态'" width="140">
         <template #default="{ row }">
           <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>

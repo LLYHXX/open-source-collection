@@ -2,11 +2,19 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api'
+import { zh, INTEL_KIND, LIFECYCLE } from '@/i18n/cn'
 
 const list = ref<any[]>([])
 const filter = ref('')
 const hostInput = ref('')
 const lastResult = ref('')
+
+function kindCn(k: string) {
+  return (INTEL_KIND as any)[k] || zh(k)
+}
+function lifecycleCn(l: string) {
+  return (LIFECYCLE as any)[l] || zh(l)
+}
 
 async function load() {
   const res: any = await api.listIntel(filter.value || undefined)
@@ -71,16 +79,26 @@ onMounted(load)
       </el-select>
       <el-button @click="load" style="margin-left: 8px">刷新</el-button>
     </div>
-    <el-table :data="list" border size="small">
-      <el-table-column prop="kind" label="类型" width="110" />
-      <el-table-column prop="key" label="键" width="200" />
-      <el-table-column prop="value" label="值" show-overflow-tooltip />
-      <el-table-column label="置信度" width="90">
+    <el-table :data="list" border size="small" stripe empty-text="暂无数据">
+      <el-table-column label="类型" width="120">
+        <template #default="{ row }">
+          <el-tag size="small" type="info" effect="plain">{{ kindCn(row.kind) }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="key" label="检索键" width="220" show-overflow-tooltip />
+      <el-table-column prop="value" label="值（内容）" show-overflow-tooltip />
+      <el-table-column label="置信度" width="100" align="center">
         <template #default="{ row }">{{ (row.confidence * 100).toFixed(0) }}%</template>
       </el-table-column>
-      <el-table-column prop="hits" label="命中" width="80" />
-      <el-table-column prop="lifecycle" label="生命周期" width="100" />
-      <el-table-column label="操作" width="100">
+      <el-table-column prop="hits" label="命中次数" width="100" align="center" />
+      <el-table-column label="生命周期" width="110" align="center">
+        <template #default="{ row }">
+          <el-tag :type="row.lifecycle === 'active' ? 'success' : row.lifecycle === 'stale' ? 'warning' : 'info'" size="small" effect="dark">
+            {{ lifecycleCn(row.lifecycle) }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="100" align="center">
         <template #default="{ row }">
           <el-button size="small" type="danger" @click="retire(row.id)">退役</el-button>
         </template>

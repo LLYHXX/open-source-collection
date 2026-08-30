@@ -161,24 +161,47 @@ def list_runs(limit: int = 30, db: Session = Depends(get_db)):
 
 @router.get("/candidates", response_model=StandardResponse)
 def list_candidates(status: str = "pending", page: int = 1, page_size: int = 50,
-                    db: Session = Depends(get_db)):
+                    keyword: str = "", db: Session = Depends(get_db)):
     page = max(1, int(page))
     page_size = max(1, min(500, int(page_size)))
-    valid_status = {"pending", "approved", "rejected", "skipped"}
-    if status not in valid_status:
-        raise HTTPException(400, f"status 非法，允许值: {sorted(valid_status)}")
-    total = int(db.scalar(
-        select(func.count(MinerCandidate.id))
-        .where(MinerCandidate.status == status)
-    ) or 0)
-    stmt = (
+    # 兼容常见前端默认枚举：pending / new / queued 都映射为待审核 pending
+    status_aliases = {
+        "pending": "pending", "new": "pending", "queued": "pending", "待审核": "pending", "待处理": "pending",
+        "approved": "approved", "pass": "approved", "已批准": "approved",
+        "rejected": "rejected", "deny": "rejected", "已拒绝": "rejected",
+        "skipped": "skipped", "ignore": "skipped", "已跳过": "skipped",
+    }
+    valid_status = set(status_aliases.keys())
+    normalized = status_aliases.get(status.lower() if isinstance(status, str) else status)
+    if normalized is None:
+        return StandardResponse(
+            success=False,
+            message=f"status 参数非法：'{status}'。允许值: pending/new/approved/rejected/skipped（或中文：待审核/已批准/已拒绝/已跳过）",
+            data={"items": [], "total": 0, "page": page, "page_size": page_size},
+        )
+    # 查询条件
+    stmt_count = select(func.count(MinerCandidate.id)).where(MinerCandidate.status == normalized)
+    stmt_items = (
         select(MinerCandidate)
-        .where(MinerCandidate.status == status)
+        .where(MinerCandidate.status == normalized)
         .order_by(MinerCandidate.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
-    items = db.scalars(stmt).all()
+    if keyword and str(keyword).strip():
+        kw = f"%{str(keyword).strip()}%"
+        stmt_count = stmt_count.where(
+            MinerCandidate.extracted_key.ilike(kw)
+            | MinerCandidate.note.ilike(kw)
+            | MinerCandidate.extracted_kind.ilike(kw)
+        )
+        stmt_items = stmt_items.where(
+            MinerCandidate.extracted_key.ilike(kw)
+            | MinerCandidate.note.ilike(kw)
+            | MinerCandidate.extracted_kind.ilike(kw)
+        )
+    total = int(db.scalar(stmt_count) or 0)
+    items = db.scalars(stmt_items).all()
 
     def dump(c: MinerCandidate) -> dict:
         return {
@@ -189,8 +212,54 @@ def list_candidates(status: str = "pending", page: int = 1, page_size: int = 50,
             "updated_at": c.updated_at.isoformat() if c.updated_at else None,
         }
     return StandardResponse(
-        message=f"status={status} total={total}",
+        message=f"status={normalized} total={total}",
         data={"items": [dump(c) for c in items], "total": total, "page": page, "page_size": page_size},
+    )
+
+
+class MinerCandidateCreate(BaseModel):
+    src_intel_id: str = Field(..., min_length=1, description="关联来源情报 ID")
+    extracted_kind: str = Field(..., min_length=1, description="候选种类，如 credential/endpoint/techstack/cve 等")
+    extracted_key: str = Field(..., min_length=1, description="抽取到的关键值，如域名/IP/CVE 编号")
+    status: str = Field("pending", description="状态: pending/approved/rejected/skipped")
+    note: str | None = Field("", description="备注")
+
+
+@router.post("/candidates", response_model=StandardResponse)
+def create_candidate(payload: MinerCandidateCreate, db: Session = Depends(get_db)):
+    import uuid as _uuid
+    if not db.scalar(select(Intel.id).where(Intel.id == payload.src_intel_id).limit(1)):
+        return StandardResponse(
+            success=False,
+            message=f"src_intel_id={payload.src_intel_id} 不存在：请先创建/上传一条来源情报作为外键锚点",
+            data=None,
+        )
+    status_ok = {"pending", "approved", "rejected", "skipped"}
+    if payload.status not in status_ok:
+        return StandardResponse(
+            success=False,
+            message=f"status 非法：'{payload.status}'。允许值: {sorted(status_ok)}",
+            data=None,
+        )
+    obj = MinerCandidate(
+        id=str(_uuid.uuid4()),
+        src_intel_id=payload.src_intel_id,
+        extracted_kind=payload.extracted_kind.strip(),
+        extracted_key=payload.extracted_key.strip(),
+        status=payload.status,
+        note=(payload.note or "").strip() or None,
+    )
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return StandardResponse(
+        message="已创建 1 条 Miner 候选（写入后可在列表看到）",
+        data={
+            "id": obj.id, "src_intel_id": obj.src_intel_id,
+            "extracted_kind": obj.extracted_kind, "extracted_key": obj.extracted_key,
+            "status": obj.status, "note": obj.note or "",
+            "created_at": obj.created_at.isoformat() if obj.created_at else None,
+        },
     )
 
 
@@ -198,7 +267,11 @@ def list_candidates(status: str = "pending", page: int = 1, page_size: int = 50,
 def approve_candidates(payload: MinerCandidateBatch, db: Session = Depends(get_db)):
     ids = [str(s).strip() for s in (payload.ids or []) if str(s).strip()]
     if not ids:
-        raise HTTPException(400, "ids 不能为空")
+        return StandardResponse(
+            success=False,
+            message="请至少勾选 1 条要批准的候选记录",
+            data={"processed": 0, "wrote_intel": 0},
+        )
     cands = db.scalars(
         select(MinerCandidate).where(MinerCandidate.id.in_(ids))
     ).all()
@@ -244,7 +317,11 @@ def approve_candidates(payload: MinerCandidateBatch, db: Session = Depends(get_d
 def reject_candidates(payload: MinerCandidateBatch, db: Session = Depends(get_db)):
     ids = [str(s).strip() for s in (payload.ids or []) if str(s).strip()]
     if not ids:
-        raise HTTPException(400, "ids 不能为空")
+        return StandardResponse(
+            success=False,
+            message="请至少勾选 1 条要拒绝的候选记录",
+            data={"processed": 0},
+        )
     cands = db.scalars(
         select(MinerCandidate).where(MinerCandidate.id.in_(ids))
     ).all()

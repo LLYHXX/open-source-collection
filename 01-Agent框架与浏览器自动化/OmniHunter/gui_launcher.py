@@ -36,6 +36,95 @@ PROD_URL = "http://localhost:18800"
 BACKEND_URL = "http://localhost:18800"
 
 
+def _resolve_win_executables() -> dict:
+    """Windows 环境下尽量定位 python / node / npm / npx。
+
+    不少用户把 Node 装在 D:\\网页制作\\ 这类「非 PATH 的自定义目录」，
+    PowerShell 开子进程时只拿进程 PATH（不含 Machine/User 的 PATH），
+    导致 start.bat / gui_launcher 一律报「node/npm 找不到」。
+
+    这里做 3 层兜底：
+      1) 当前进程 PATH 中直接 GetCommand (fast path)
+      2) Machine + User 环境变量合并 PATH 再查
+      3) 常见目录（D:\\网页制作、AppData\\pnpm、Program Files\\nodejs…）硬编码扫
+    返回 {'python': exe, 'node': exe, 'npm': script, 'npx': exe, 'extra_paths': [...]}
+    """
+    import shutil
+    result: dict = {"python": sys.executable, "node": "", "npm": "",
+                    "npx": "", "extra_paths": []}
+    combined_path = os.environ.get("PATH", "") or ""
+    if os.name == "nt":
+        # 读注册表 Machine/User PATH，避免 PowerShell 子进程 PATH 丢失
+        try:
+            import winreg  # type: ignore[attr-defined]
+            reg_paths: list[str] = []
+            for hive, subkey in (
+                (winreg.HKEY_LOCAL_MACHINE,
+                 r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                (winreg.HKEY_CURRENT_USER, r"Environment"),
+            ):
+                try:
+                    with winreg.OpenKey(hive, subkey) as k:
+                        val, _ = winreg.QueryValueEx(k, "Path")
+                        if isinstance(val, str):
+                            reg_paths.append(val)
+                except FileNotFoundError:
+                    pass
+            for p in reg_paths:
+                for part in p.split(";"):
+                    part = part.strip()
+                    if part and part not in combined_path:
+                        combined_path = (combined_path.rstrip(";") + ";" + part) if combined_path else part
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 额外兜底：常见 node 安装目录（含你本机的 D:\网页制作）
+    extra_roots: list[str] = [
+        str(FRONTEND_DIR / "node_modules" / ".bin"),
+        r"D:\网页制作",
+        r"C:\Program Files\nodejs",
+        r"C:\Program Files (x86)\nodejs",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\nodejs"),
+        os.path.expandvars(r"%APPDATA%\npm"),
+        os.path.expandvars(r"%LOCALAPPDATA%\pnpm"),
+    ]
+    for root in extra_roots:
+        if root and root not in combined_path:
+            combined_path = (combined_path.rstrip(";") + ";" + root) if combined_path else root
+
+    def find(bins):
+        for name in bins:
+            hit = shutil.which(name, path=combined_path)
+            if hit:
+                return hit
+        # 硬编码兜底目录
+        candidates = [
+            FRONTEND_DIR / "node_modules" / ".bin",
+            Path(r"D:\网页制作"),
+            Path(r"C:\Program Files\nodejs"),
+            Path(r"C:\Program Files (x86)\nodejs"),
+            Path(os.path.expandvars(r"%APPDATA%\npm")),
+            Path(os.path.expandvars(r"%LOCALAPPDATA%\pnpm")),
+        ]
+        for d in candidates:
+            for name in bins:
+                exe = d / name
+                if exe.is_file():
+                    return str(exe)
+        return ""
+
+    result["node"] = find(["node.exe", "node"])
+    npm = find(["npm.cmd", "npm", "npm.ps1"])
+    result["npm"] = npm
+    result["npx"] = find(["npx.cmd", "npx"])
+    # 把 combined_path 中存在的目录压缩进 extra_paths（供启动前端子进程注入 PATH）
+    for part in combined_path.split(os.pathsep):
+        part = part.strip()
+        if part and part not in result["extra_paths"]:
+            result["extra_paths"].append(part)
+    return result
+
+
 class HunterLauncher:
     def __init__(self, mode: str = "dev"):
         self.mode = "prod" if mode.lower() == "prod" else "dev"
@@ -189,18 +278,57 @@ class HunterLauncher:
             messagebox.showinfo("提示", "服务已在运行")
             return
         self._log("--- 启动服务 ---")
+
+        # 预解析：Windows 下定位 node/npm 并补 PATH（自定义安装目录能被找到）
+        tools = _resolve_win_executables() if os.name == "nt" else {}
+        if os.name == "nt":
+            self._log(f"[env] python={tools.get('python') or sys.executable}")
+            self._log(f"[env] node  ={tools.get('node') or '(未找到，前端将无法启动)'}")
+            self._log(f"[env] npm   ={tools.get('npm') or '(未找到)'}")
+
+        # 1. 后端依赖（缺失 vendor 时补安装；.env 缺失时从模板生成）
+        def _ensure_backend():
+            vendor_dir = BACKEND_DIR / "vendor"
+            if not (vendor_dir / "httpx").exists():
+                self._log("[setup] backend/vendor 未就绪，安装 backend 依赖到 vendor …（首次较久）")
+                try:
+                    subprocess.check_call(
+                        [sys.executable, "-m", "pip", "install",
+                         "--target", str(vendor_dir), "-r", str(BACKEND_DIR / "requirements.txt")],
+                        cwd=str(BACKEND_DIR),
+                    )
+                    for extra in ("bandit", "dlint", "mitmproxy", "bcrypt", "jinja2"):
+                        try:
+                            subprocess.check_call(
+                                [sys.executable, "-m", "pip", "install",
+                                 "--target", str(vendor_dir), extra],
+                                cwd=str(BACKEND_DIR),
+                            )
+                        except Exception:  # noqa: BLE001
+                            self._log(f"[setup] 可选依赖 {extra} 安装失败，已跳过（不影响启动）")
+                except Exception as e:  # noqa: BLE001
+                    self._log(f"[WARN] 自动安装 vendor 失败：{e}")
+                    self._log("  可手动：cd backend ; python -m pip install --target=vendor -r requirements.txt")
+            env_file = BACKEND_DIR / ".env"
+            env_tpl = BACKEND_DIR / ".env.example"
+            if not env_file.exists() and env_tpl.exists():
+                self._log("[setup] backend\\.env 不存在，从 .env.example 复制生成。")
+                import shutil as _shutil
+                _shutil.copy(env_tpl, env_file)
+                self._log("  请编辑 backend\\.env 并填入 LLM_API_KEY 后重启，LLM 功能才能启用。")
+        _ensure_backend()
+
         # 1. 后端
         try:
             env = os.environ.copy()
+            if os.name == "nt" and tools.get("extra_paths"):
+                extra = os.pathsep.join(tools["extra_paths"])
+                env["PATH"] = extra + os.pathsep + (env.get("PATH") or "")
             env["PYTHONPATH"] = (
                 str(BACKEND_DIR / "vendor") + os.pathsep
                 + (env.get("PYTHONPATH") or "")
             )
-            if (BACKEND_DIR / "vendor" / "httpx").is_dir():
-                python = sys.executable
-            else:
-                python = sys.executable
-                self._log("backend/vendor 未就绪，首次启动会自动安装依赖（请耐心等待）。")
+            python = sys.executable
             uvicorn_args = ["app.main:app", "--host", "0.0.0.0", "--port", "18800"]
             if self.mode == "dev":
                 uvicorn_args.insert(0, "--reload")
@@ -218,37 +346,118 @@ class HunterLauncher:
             threading.Thread(target=self._pump_log,
                              args=(self.backend_proc.stdout, "BE", self.backend_proc),
                              daemon=True).start()
-            self._log(f"后端已启动（pid={self.backend_proc.pid}）")
+            self._log(f"后端已启动（pid={self.backend_proc.pid}），API 就绪地址：{BACKEND_URL}/docs")
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("启动失败", f"后端启动失败：{e}")
             self._log(f"[ERR] 后端启动：{e}")
             return
 
-        # 2. 前端（dev 模式）
+        # 2. 前端（dev 模式：起 vite；prod 模式：若 dist 不存在则尝试自动构建一次）
         if self.mode == "dev":
-            try:
-                node_cmd = ["npm", "run", "dev"] if os.name == "nt" else ["npm", "run", "dev"]
-                fe_kwargs = dict(
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    cwd=str(FRONTEND_DIR), env=os.environ.copy(),
-                    shell=(os.name != "nt"),
-                )
-                if os.name == "nt":
-                    fe_kwargs["creationflags"] = (subprocess.DETACHED_PROCESS |
-                                                   subprocess.CREATE_NEW_PROCESS_GROUP)
-                else:
-                    fe_kwargs["start_new_session"] = True
-                self.frontend_proc = subprocess.Popen(node_cmd, **fe_kwargs)
-                threading.Thread(target=self._pump_log,
-                                 args=(self.frontend_proc.stdout, "FE", self.frontend_proc),
-                                 daemon=True).start()
-                self._log(f"前端已启动（pid={self.frontend_proc.pid}），首次启动较慢 WAIT。")
-            except Exception as e:  # noqa: BLE001
-                messagebox.showwarning("前端启动失败",
-                                       f"后端已启，可直接访问 {BACKEND_URL}。前端错误：{e}")
-                self._log(f"[WARN] 前端：{e}")
-
+            self._start_frontend_dev(tools)
+        else:  # prod
+            dist_dir = FRONTEND_DIR / "dist"
+            if not dist_dir.exists():
+                self._log("[setup] 生产模式：frontend\\dist 不存在，尝试自动构建前端……")
+                ok = self._build_frontend(tools)
+                if not ok:
+                    self._log("[WARN] 前端构建失败，后端已启动但访问 / 会返回 404。")
+                    self._log("       可手动：cd frontend ; npm install ; npm run build")
         self._set_running(True)
+
+    def _start_frontend_dev(self, tools: dict):
+        node_ok = bool(tools.get("node")) if os.name == "nt" else True
+        npm_ok = bool(tools.get("npm")) if os.name == "nt" else True
+        if (not node_ok) or (not npm_ok):
+            msg = ("前端运行需要 Node.js 18+。已定位 node/nodm 失败：\n"
+                   f"  node={tools.get('node') or '未找到'}\n"
+                   f"  npm ={tools.get('npm') or '未找到'}\n"
+                   "后端仍可使用（API），前端请手动：cd frontend && npm run dev")
+            messagebox.showwarning("前端启动失败", msg)
+            self._log(f"[WARN] 前端：{msg}")
+            return
+        # 依赖未安装时自动 npm install（pnpm 也支持）
+        if not (FRONTEND_DIR / "node_modules" / ".package-lock.json").exists() and \
+           not (FRONTEND_DIR / "node_modules" / "vite").exists():
+            self._log("[setup] frontend/node_modules 未就绪，自动执行 npm install …")
+            try:
+                subprocess.check_call(
+                    self._npm_cmd(["install"], tools),
+                    cwd=str(FRONTEND_DIR),
+                    env=self._frontend_env(tools),
+                )
+            except Exception as e:  # noqa: BLE001
+                self._log(f"[WARN] npm install 失败：{e}")
+                self._log("       请手动：cd frontend && npm install")
+                return
+        try:
+            fe_kwargs = dict(
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cwd=str(FRONTEND_DIR),
+                env=self._frontend_env(tools),
+            )
+            if os.name == "nt":
+                fe_kwargs["creationflags"] = (subprocess.DETACHED_PROCESS |
+                                               subprocess.CREATE_NEW_PROCESS_GROUP)
+            else:
+                fe_kwargs["start_new_session"] = True
+            cmd = self._npm_cmd(["run", "dev"], tools)
+            self.frontend_proc = subprocess.Popen(cmd, **fe_kwargs)
+            threading.Thread(target=self._pump_log,
+                             args=(self.frontend_proc.stdout, "FE", self.frontend_proc),
+                             daemon=True).start()
+            self._log(f"前端 dev 已启动（pid={self.frontend_proc.pid}），首次启动较慢请 WAIT。")
+            self._log(f"  地址：{DEV_URL}")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showwarning("前端启动失败",
+                                   f"后端已启，可直接访问 {BACKEND_URL}。前端错误：{e}")
+            self._log(f"[WARN] 前端：{e}")
+
+    def _build_frontend(self, tools: dict) -> bool:
+        node_ok = bool(tools.get("node")) if os.name == "nt" else True
+        npm_ok = bool(tools.get("npm")) if os.name == "nt" else True
+        if (not node_ok) or (not npm_ok):
+            self._log("[WARN] 构建前端失败：未找到 node/npm")
+            return False
+        if not (FRONTEND_DIR / "node_modules").exists():
+            try:
+                subprocess.check_call(self._npm_cmd(["install"], tools),
+                                      cwd=str(FRONTEND_DIR),
+                                      env=self._frontend_env(tools))
+            except Exception as e:  # noqa: BLE001
+                self._log(f"[WARN] npm install 失败：{e}")
+                return False
+        try:
+            subprocess.check_call(self._npm_cmd(["run", "build"], tools),
+                                  cwd=str(FRONTEND_DIR),
+                                  env=self._frontend_env(tools))
+            self._log("[OK] frontend/dist 构建完成")
+            return True
+        except Exception as e:  # noqa: BLE001
+            self._log(f"[WARN] npm run build 失败：{e}")
+            return False
+
+    def _frontend_env(self, tools: dict) -> dict:
+        env = os.environ.copy()
+        if os.name == "nt" and tools.get("extra_paths"):
+            extra = os.pathsep.join(tools["extra_paths"])
+            env["PATH"] = extra + os.pathsep + (env.get("PATH") or "")
+        return env
+
+    def _npm_cmd(self, args: list[str], tools: dict) -> list[str]:
+        """Windows 下 npm 优先 .cmd（走 shell=false 更稳），Python 找不到就 shell=True 兜底。"""
+        npm = tools.get("npm") or "npm"
+        if os.name != "nt":
+            return ["npm", *args]
+        # npm.ps1 / .cmd 都可能：Popen 非 shell 模式下需要 .cmd
+        if npm.lower().endswith(".ps1") or not npm.lower().endswith(".cmd"):
+            node_dir = Path(tools["node"]).parent if tools.get("node") else None
+            if node_dir and (node_dir / "npm.cmd").exists():
+                npm = str(node_dir / "npm.cmd")
+        if npm.lower().endswith(".cmd"):
+            return [npm, *args]
+        # 实在不是 exe/.cmd，走 shell
+        return [f"npm {' '.join(args)}"]
 
     def stop_services(self):
         self._log("--- 停止服务 ---")

@@ -165,7 +165,7 @@ onUnmounted(() => {
           class="mono"
           style="max-height: 540px; overflow: auto; background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px"
         >
-          <div v-if="!messages.length" class="muted">NO_DATA · EMPTY_SET</div>
+          <div v-if="!messages.length" class="muted">暂无消息记录 · 等待引擎推送事件…</div>
           <div v-for="m in messages" :key="m.id" style="margin-bottom: 8px">
             <span style="color: #8b949e">[{{ fmt(m.created_at) }}] {{ m.role }} / {{ m.level }}</span>
             <span v-if="m.tool" style="color: #79c0ff"> · {{ m.tool }}</span>

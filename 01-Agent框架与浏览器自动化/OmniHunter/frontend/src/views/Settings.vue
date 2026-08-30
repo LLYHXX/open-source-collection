@@ -412,16 +412,16 @@ onMounted(async () => {
       </el-form>
 
       <el-divider content-position="left">{{ isCyber ? 'MINER_AUDIT_LOG (last 30 runs)' : 'Miner 运行审计日志（最近 30 条）' }}</el-divider>
-      <el-table :data="minerRuns" size="small" border empty-text="EMPTY_SET" style="max-height: 340px; overflow:auto;">
+      <el-table :data="minerRuns" size="small" border empty-text="暂无运行记录" style="max-height: 340px; overflow:auto;">
         <el-table-column prop="id" label="#" width="54" />
         <el-table-column prop="trigger_at" :label="isCyber ? 'TRIGGER_AT' : '触发时间'" width="170" />
-        <el-table-column prop="loop1_coverage_count" label="L1·COV" width="70" align="right">
+        <el-table-column prop="loop1_coverage_count" :label="isCyber ? 'L1·COV' : 'L1·覆盖数量'" width="90" align="right">
           <template #default="{row}"><span class="hex-val">{{ row.loop1_coverage_count ?? 0 }}</span></template>
         </el-table-column>
-        <el-table-column prop="loop2_reverify_count" label="L2·REV" width="70" align="right">
+        <el-table-column prop="loop2_reverify_count" :label="isCyber ? 'L2·REV' : 'L2·复验数量'" width="90" align="right">
           <template #default="{row}"><span class="hex-val">{{ row.loop2_reverify_count ?? 0 }}</span></template>
         </el-table-column>
-        <el-table-column prop="loop3_link_count" label="L3·LINK" width="70" align="right">
+        <el-table-column prop="loop3_link_count" :label="isCyber ? 'L3·LINK' : 'L3·链接挖掘'" width="90" align="right">
           <template #default="{row}"><span class="hex-val">{{ row.loop3_link_count ?? 0 }}</span></template>
         </el-table-column>
         <el-table-column prop="budget_hit_limit" :label="isCyber ? 'BUDGET_LIMIT' : '预算触顶'" width="96" align="center">

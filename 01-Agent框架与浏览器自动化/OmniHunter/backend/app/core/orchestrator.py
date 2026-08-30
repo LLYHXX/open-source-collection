@@ -1,10 +1,14 @@
 """Agent 编排器：借鉴 PraisonAI 五层 stack 与 AutoHunter 流水线。
 
+2026-08-30 命中率 + 省 Token 升级：
+  - 建立 LLMRouter（规则/小/大三层）单例：参数提取/指纹匹配/固定变异等体力活走规则层 0 Token
+  - 建立 PruningPolicy：攻击动作按成功率+危害排序，连续失败自动剪枝，提升确认率
+  - 大小模型分开：small LLM 负责简单语义判断，大模型只做关键决策
+  - 所有 Agent 统一注入 router / pruning 引用
+
 流水线:
   Collector 收集 → (Recon → Worker: scan/exploit/verify) → Verifier 独立复现
   → Reviewer 极理性初审 → 入库待人工复审
-
-事件流持久化到 AgentMessage，供控制台实时看板（AutoHunter 事件流 + DeerFlow trace）。
 """
 from __future__ import annotations
 
@@ -17,7 +21,9 @@ from ..config import get_settings
 from ..models import AgentMessage, AgentRun, Intel, Task, Target, Vuln
 from . import state_machine
 from .llm import LLMClient
+from .llm_router import LLMRouter
 from .memory import MemoryStore
+from .pruning import PruningPolicy
 from .tool_registry import ToolRegistry
 
 
@@ -26,6 +32,45 @@ class Orchestrator:
         self.db = db
         self.settings = settings or get_settings()
         self.tools = build_tool_registry(self.settings)
+        # === 2026-08-30 新增：大小模型分层 + 路由器 + 剪枝（单例共享）===
+        self.big_llm: LLMClient = LLMClient(settings=self.settings)
+        self.small_llm: LLMClient = LLMClient.small(settings=self.settings)
+        self.router: LLMRouter = LLMRouter(
+            self.settings, big_llm=self.big_llm, small_llm=self.small_llm
+        )
+        # PruningPolicy 对每个 Orchestrator 实例复用（内部按 branch_id 隔离不同目标）
+        self.pruning: PruningPolicy = PruningPolicy(
+            max_consecutive_failures=3,
+            stop_on_high_severity=True,
+            stop_on_critical=True,
+        )
+
+    def router_stats(self) -> dict:
+        """前端展示：规则/小/大 各层调用量与估算省下的 Token。"""
+        return self.router.stats_summary()
+
+    def pruning_stats(self) -> dict:
+        """前端展示：已剪枝分支、命中高危分支、连续失败计数。"""
+        return self.pruning.stats()
+
+    def _llm_for(self, role: str) -> LLMClient:
+        """简单角色优先配小模型，关键角色用大模型（兜底都用大模型）。"""
+        if role in ("collector", "recon", "site_profiler", "browser"):
+            return self.small_llm
+        return self.big_llm
+
+    def _agent_kwargs(self, run_id: str, target, role: str) -> dict:
+        """统一装配 Agent 构造参数（每次创建 Agent 都调用，确保 router/pruning 注入一致）。"""
+        return dict(
+            run_id=run_id,
+            target=target,
+            llm=self._llm_for(role),
+            tools=self.tools,
+            memory=None,  # memory 由调用方按需注入（不同 pipeline 不一样）
+            on_event=self.emit,
+            router=self.router,
+            pruning=self.pruning,
+        )
 
     # ===== 事件持久化 =====
     def emit(self, run_id, target_id, role, level, content, tool="",
@@ -103,8 +148,9 @@ class Orchestrator:
             if vulns_for_review:
                 reviewer = ReviewerAgent(
                     run.id, target=target,
-                    llm=LLMClient(settings=self.settings),
+                    llm=self.big_llm,
                     on_event=self.emit, strict=self.settings.reviewer_strict,
+                    router=self.router, pruning=self.pruning,
                 )
                 rout = await reviewer.run({"vulns": vulns_for_review})
                 reviewed = rout.get("vulns", vulns_for_review)
@@ -235,8 +281,10 @@ class Orchestrator:
                        stage="collect", status="running")
         self.db.add(run)
         self.db.commit()
-        agent = CollectorAgent(run.id, llm=LLMClient(settings=self.settings),
-                               settings=self.settings)
+        agent = CollectorAgent(run.id, **{
+            **self._agent_kwargs(run.id, None, "collector"),
+            "settings": self.settings,
+        })
         urls: list[str] = []
         try:
             items = await agent._platform_collect(_task_brief(task))
@@ -264,8 +312,7 @@ class Orchestrator:
         self.db.commit()
 
         agent = CollectorAgent(
-            run.id, llm=LLMClient(settings=self.settings),
-            tools=self.tools, on_event=self.emit,
+            **self._agent_kwargs(run.id, None, "collector"),
         )
         result = await agent.run({"task": _task_brief(task)})
 
@@ -306,23 +353,22 @@ class Orchestrator:
         self.db.commit()
 
         memory = MemoryStore(self.db)
-        llm = LLMClient(settings=self.settings)
 
         try:
-            # 1) Recon 侦察
+            # 1) Recon 侦察（简单角色 → 小模型）
             recon = ReconAgent(
-                run.id, target=target, llm=llm, tools=self.tools,
-                memory=memory, on_event=self.emit,
+                **self._agent_kwargs(run.id, target, "recon"),
+                memory=memory,
             )
             recon_out = await recon.run({"vuln_types": task.vuln_types})
             run.stage = state_machine.next_stage(run.stage) or run.stage
             run.step += 1
             self.db.commit()
 
-            # 2) Worker: scan → exploit → verify 关卡推进
+            # 2) Worker: scan → exploit → verify（攻击型角色 → 大模型 + pruning）
             worker = WorkerAgent(
-                run.id, target=target, llm=llm, tools=self.tools,
-                memory=memory, on_event=self.emit,
+                **self._agent_kwargs(run.id, target, "worker"),
+                memory=memory,
             )
             worker_out = await worker.run({
                 "vuln_types": task.vuln_types,
@@ -330,11 +376,11 @@ class Orchestrator:
                 "step_budget": self.settings.worker_step_budget,
             })
 
-            # 3) Verifier 独立复现（借鉴 Strix / Xalgorix 发现-验证闭环）
+            # 3) Verifier 独立复现（用大模型做严谨判定）
             for v in worker_out.get("vulns", []):
                 verifier = VerifierAgent(
-                    run.id, target=target, llm=llm,
-                    tools=self.tools, memory=memory, on_event=self.emit,
+                    **self._agent_kwargs(run.id, target, "verifier"),
+                    memory=memory,
                 )
                 vout = await verifier.run({"vuln": v})
                 v["verified"] = vout.get("verified", False)
@@ -342,8 +388,10 @@ class Orchestrator:
 
             # 4) Reviewer 极理性 AI 初审
             reviewer = ReviewerAgent(
-                run.id, target=target, llm=llm,
+                run.id, target=target,
+                llm=self.big_llm,
                 on_event=self.emit, strict=self.settings.reviewer_strict,
+                router=self.router, pruning=self.pruning,
             )
             rout = await reviewer.run({"vulns": worker_out.get("vulns", [])})
 
@@ -387,11 +435,10 @@ class Orchestrator:
         self.db.commit()
 
         memory = MemoryStore(self.db)
-        llm = LLMClient(settings=self.settings)
         try:
             agent = BrowserAgent(
-                run.id, target=target, llm=llm, tools=self.tools,
-                memory=memory, on_event=self.emit,
+                **self._agent_kwargs(run.id, target, "browser"),
+                memory=memory,
             )
             out = await agent.run({"vuln_types": task.vuln_types})
             for v in out.get("vulns", []):
@@ -447,28 +494,27 @@ class Orchestrator:
         self.db.commit()
 
         memory = MemoryStore(self.db)
-        llm = LLMClient(settings=self.settings)
         try:
-            # AI1 Modeler 业务建模（命中缓存直接复用，不烧 token）
+            # AI1 Modeler 业务建模（命中缓存直接复用，不烧 token；接入 router 规则层 CMS 预筛注入攻击模板）
             modeler = ModelerAgent(
-                run.id, target=target, llm=llm, tools=self.tools,
-                memory=memory, on_event=self.emit,
+                **self._agent_kwargs(run.id, target, "modeler"),
+                memory=memory,
             )
             modeler_out = await modeler.run({})
             model = modeler_out.get("business_model", {})
 
-            # 新增 SiteProfiler 单站深挖自动收集（命中缓存直接复用）
+            # SiteProfiler 单站深挖（router 规则层 0 Token 匹配 CMS + 攻击模板注入 profile）
             profiler = SiteProfilerAgent(
-                run.id, target=target, llm=llm, tools=self.tools,
-                memory=memory, on_event=self.emit,
+                **self._agent_kwargs(run.id, target, "site_profiler"),
+                memory=memory,
             )
             profiler_out = await profiler.run({})
             site_profile = profiler_out if isinstance(profiler_out, dict) else {}
 
-            # 新增 AttackTree 自动生成攻击树（基于资产+业务模型）
+            # AttackTree 生成：若规则层已产出 attack_templates（非空），直接作为骨架，节省 80% prompt
             tree_agent = AttackTreeAgent(
-                run.id, target=target, llm=llm, memory=memory,
-                on_event=self.emit,
+                **self._agent_kwargs(run.id, target, "attack_tree"),
+                memory=memory,
             )
             tree_out = await tree_agent.run({
                 "site_profile": site_profile,
@@ -476,10 +522,10 @@ class Orchestrator:
             })
             attack_tree = tree_out.get("attack_tree", {})
 
-            # AI2 Attacker 抓包变异攻击（带经验召回 + 每轮沉淀 + 攻击树引导）
+            # AI2 Attacker：接入 router（fixed_mutation 规则层前置）+ pruning（无效尝试剪枝）
             attacker = AttackerAgent(
-                run.id, target=target, llm=llm, tools=self.tools,
-                memory=memory, on_event=self.emit,
+                **self._agent_kwargs(run.id, target, "attacker"),
+                memory=memory,
             )
             attacker_out = await attacker.run({
                 "model": model,
@@ -487,21 +533,23 @@ class Orchestrator:
                 "attack_tree": attack_tree,
             })
 
-            # AI3 Verifier 独立复现每个漏洞
+            # Verifier 独立复现
             for v in attacker_out.get("vulns", []):
                 verifier = VerifierAgent(
-                    run.id, target=target, llm=llm,
-                    tools=self.tools, memory=memory, on_event=self.emit,
+                    **self._agent_kwargs(run.id, target, "verifier"),
+                    memory=memory,
                 )
                 vout = await verifier.run({"vuln": v})
                 v["verified"] = vout.get("verified", False)
                 v["confidence"] = vout.get(
                     "confidence", v.get("confidence", 0.5))
 
-            # AI3 Reviewer 极理性 AI 初审
+            # Reviewer 极理性 AI 初审
             reviewer = ReviewerAgent(
-                run.id, target=target, llm=llm,
+                run.id, target=target,
+                llm=self.big_llm,
                 on_event=self.emit, strict=self.settings.reviewer_strict,
+                router=self.router, pruning=self.pruning,
             )
             rout = await reviewer.run({"vulns": attacker_out.get("vulns", [])})
 

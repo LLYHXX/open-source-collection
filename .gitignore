@@ -1,4 +1,4 @@
-﻿_tmp/
+_tmp/
 _download_log.txt
 _retry_log.txt
 
@@ -17,4 +17,23 @@ __pycache__/
 # Data & env
 *.db
 **/.env
+**/.env.bak
+**/.env.*.bak
+
+# IDE / 工具运行态
+.ide/
+.idea/
+.vscode/
+.trae/
+
+# 临时压测 / 启动日志
+_perf_*.*
+logs_be*.log
+
+# OmniHunter GUI/启动产生的临时文件
+OmniHunter/*.log
+
+# macOS
+.DS_Store
+Thumbs.db
 

@@ -2,12 +2,24 @@
 
 Agent 不直接依赖 DB：通过 on_event 回调上报事件，由 orchestrator 持久化到 AgentMessage，
 解耦且便于测试。
+
+2026-08-30 升级：接入 LLMRouter（规则/小/大三层路由）与 PruningPolicy（攻击剪枝），
+把费 Token 的体力活从大模型分流出去，提升命中率 + 省 Token。
 """
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
 from .llm import LLMClient
 from .tool_registry import ToolRegistry
+
+try:  # 允许不启动路由器时直接导入
+    from .llm_router import LLMRouter  # type: ignore
+except Exception:  # noqa: BLE001
+    LLMRouter = Any  # type: ignore
+try:
+    from .pruning import PruningPolicy  # type: ignore
+except Exception:  # noqa: BLE001
+    PruningPolicy = Any  # type: ignore
 
 
 class BaseAgent(ABC):
@@ -22,6 +34,8 @@ class BaseAgent(ABC):
         tools: ToolRegistry | None = None,
         memory: Any = None,
         on_event: Callable[..., None] | None = None,
+        router: "LLMRouter | None" = None,
+        pruning: "PruningPolicy | None" = None,
     ):
         self.run_id = run_id
         self.target = target
@@ -29,6 +43,28 @@ class BaseAgent(ABC):
         self.tools = tools or ToolRegistry()
         self.memory = memory
         self.on_event = on_event or (lambda **kw: None)
+        # === 2026-08-30 新增：路由器 + 剪枝 ===
+        # router 提供 dispatch(task_type, *args, **kwargs) — 规则/小模型分流省 Token
+        # pruning 提供 should_execute / record_failure / record_vuln_found — 减少无效尝试提升命中率
+        self.router = router
+        self.pruning = pruning
+        if self.router is None:
+            try:
+                from .llm_router import LLMRouter as _R
+                # 没有显式传入时，构造一个本地路由（兜底不破坏原有 API 兼容）
+                self.router = _R(
+                    settings=getattr(llm, "settings", None),
+                    big_llm=self.llm,
+                    small_llm=self.llm,
+                )
+            except Exception:  # noqa: BLE001
+                self.router = None
+        if self.pruning is None:
+            try:
+                from .pruning import PruningPolicy as _P
+                self.pruning = _P()
+            except Exception:  # noqa: BLE001
+                self.pruning = None
 
     def emit(self, level: str, content: str, tool: str = "",
              tool_args: dict | None = None, tool_result: str = "") -> None:

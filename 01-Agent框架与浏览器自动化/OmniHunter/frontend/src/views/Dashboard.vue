@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api'
+import { zh, SEVERITY } from '@/i18n/cn'
 
 const router = useRouter()
 const stats = ref({ tasks: 0, vulns: 0, pending: 0, intel: 0 })
@@ -9,6 +10,21 @@ const recent = ref<any[]>([])
 const recentVulns = ref<any[]>([])
 const health = ref('unknown')
 const detectors = ref<any[]>([])
+
+function sevText(s: string) {
+  return (SEVERITY as any)[s] || zh(s)
+}
+function healthText(s: string) {
+  if (s === 'ok') return '正常'
+  if (s === 'err') return '异常'
+  return s === 'unknown' ? '未知' : s
+}
+function modeText(m: string) {
+  return zh(m) || m
+}
+function statusText(s: string) {
+  return zh(s) || s
+}
 
 const cards = computed(() => [
   { label: '任务总数', value: stats.value.tasks, color: '#60a5fa', icon: 'List' },
@@ -65,7 +81,7 @@ onMounted(load)
     <div style="display: flex; justify-content: space-between; align-items: center">
       <h2 class="page-title">控制台</h2>
       <el-tag :type="health === 'ok' ? 'success' : 'danger'" effect="dark">
-        后端: {{ health }}
+        后端: {{ healthText(health) }}
       </el-tag>
     </div>
 
@@ -144,9 +160,9 @@ onMounted(load)
         <el-card style="height: 100%">
           <template #header>最近漏洞</template>
           <el-table :data="recentVulns" size="small" @row-click="(r: any) => router.push('/vulns')">
-            <el-table-column label="级别" width="86">
+            <el-table-column label="严重级别" width="96">
               <template #default="{ row }">
-                <span :class="sevClass(row.severity)">{{ row.severity }}</span>
+                <span :class="sevClass(row.severity)">{{ sevText(row.severity) }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="title" label="标题" show-overflow-tooltip />
@@ -155,7 +171,7 @@ onMounted(load)
               <template #default="{ row }">{{ (row.confidence * 100).toFixed(0) }}%</template>
             </el-table-column>
           </el-table>
-          <el-empty v-if="!recentVulns.length" description="NO_DATA" :image-size="40" />
+          <el-empty v-if="!recentVulns.length" description="暂无漏洞数据" :image-size="40" />
         </el-card>
       </el-col>
       <!-- 最近任务 -->
@@ -164,16 +180,18 @@ onMounted(load)
           <template #header>最近任务</template>
           <el-table :data="recent" size="small" @row-click="(r: any) => router.push(`/tasks/${r.id}`)">
             <el-table-column prop="name" label="任务名" show-overflow-tooltip />
-            <el-table-column label="模式" width="92">
+            <el-table-column label="模式" width="108">
               <template #default="{ row }">
                 <el-tag size="small" :type="row.mode === 'engine' ? 'success' : 'info'" effect="dark">
-                  {{ row.mode === 'engine' ? '引擎' : row.mode }}
+                  {{ modeText(row.mode) }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="status" label="状态" width="100" />
+            <el-table-column label="状态" width="110">
+              <template #default="{ row }">{{ statusText(row.status) }}</template>
+            </el-table-column>
           </el-table>
-          <el-empty v-if="!recent.length" description="NO_DATA" :image-size="40" />
+          <el-empty v-if="!recent.length" description="暂无任务数据" :image-size="40" />
         </el-card>
       </el-col>
     </el-row>

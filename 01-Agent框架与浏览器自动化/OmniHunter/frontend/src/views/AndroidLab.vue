@@ -361,7 +361,7 @@ onUnmounted(() => {
         </div>
       </template>
       <el-table :data="devices" border size="small" style="margin-bottom: 12px">
-        <el-table-column prop="serial" label="Serial" width="160" />
+        <el-table-column prop="serial" label="序列号" width="160" />
         <el-table-column prop="model" label="型号" />
         <el-table-column prop="state" label="状态" width="100">
           <template #default="{ row }">

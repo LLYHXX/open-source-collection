@@ -78,7 +78,7 @@ try { inject('uiLabels', uiLabels) } catch { /* ignore */ }
 
 // 访问页（设置密码/登录）全屏渲染，不套侧边栏布局
 const isAccessPage = computed(() => route.path === '/access')
-const isCyber = computed(() => uiLabels.isCyber.value)
+const isCyber = computed(() => uiLabels.isCyber)
 
 const menuItems = [
   { index: '/',          title: '控制台',     cyber: 'HOME',     icon: 'Monitor' },

@@ -49,9 +49,11 @@ class SiteProfilerAgent(BaseAgent):
     def __init__(self, run_id: str, target: Any = None,
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None, memory: Any = None,
-                 on_event: Callable[..., None] | None = None):
+                 on_event: Callable[..., None] | None = None,
+                 router=None, pruning=None):
         super().__init__(run_id, target=target, llm=llm, tools=tools,
-                         memory=memory, on_event=on_event)
+                         memory=memory, on_event=on_event,
+                         router=router, pruning=pruning)
 
     async def run(self, task_input: dict) -> dict:
         url = self.target.url
@@ -99,15 +101,35 @@ class SiteProfilerAgent(BaseAgent):
         # 3) httpx 探活 + 指纹（主域 + 前 3 个子域，避免太慢）
         candidates = [url] + [f"http://{s}" for s in subs[:3]]
         fps: list[str] = []
+        combined_fps_for_cms = ""
         for u in candidates:
             fp = self.tools.execute("httpx_probe", {"url": u})
             self.tool_call("httpx_probe", {"url": u}, fp[:200])
             if fp and "未安装" not in fp:
                 fps.append(fp)
+                combined_fps_for_cms += f"\n{u}\n{fp[:800]}"
                 # 第一个有效指纹作为主指纹
                 if not profile["fingerprint"]:
                     profile["fingerprint"] = fp
         profile["web_entries"] = fps[:5]
+
+        # === 2026-08-30 新增：规则层 0Token CMS 指纹 + URL 预提取 ===
+        if self.router and combined_fps_for_cms:
+            try:
+                cms = self.router.dispatch("match_cms_fingerprint", combined_fps_for_cms)
+                profile["matched_cms"] = cms.get("matched_cms") or []
+                profile["cms_attack_templates"] = cms.get("attack_templates") or []
+                self.think(f"[规则层 0Token] 资产侧 CMS: {profile['matched_cms']}, "
+                            f"预置模板 {len(profile['cms_attack_templates'])} 条")
+            except Exception as exc:  # noqa: BLE001
+                self.think(f"[规则层] 资产侧 CMS 匹配异常: {exc}")
+            try:
+                urls = self.router.dispatch("extract_urls", combined_fps_for_cms)
+                if urls:
+                    profile["discovered_urls"] = urls
+                    self.think(f"[规则层 0Token] 资产侧额外发现 URL {len(urls)} 个")
+            except Exception as exc:  # noqa: BLE001
+                self.think(f"[规则层] 资产侧 URL 提取异常: {exc}")
 
         # 4) 关键入口页面正文（给 Modeler 建模用）
         if self.tools and "web_scrape" in self.tools.names():
