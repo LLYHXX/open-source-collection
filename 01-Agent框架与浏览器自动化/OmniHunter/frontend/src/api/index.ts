@@ -156,4 +156,18 @@ export const api = {
           `&user_cookie=${encodeURIComponent(userCookie)}`,
       )
       .then((r) => r.data),
+  // task approve/reject（Miner 生成 pending_approval 状态时用）
+  approveTask: (id: string) => http.post(`/tasks/${id}/approve`).then((r) => r.data),
+  rejectTask: (id: string) => http.post(`/tasks/${id}/reject`).then((r) => r.data),
+  // ===== Autonomous Miner =====
+  getMinerConfig: () => http.get('/miner/config').then((r) => r.data),
+  saveMinerConfig: (data: any) => http.put('/miner/config', data).then((r) => r.data),
+  triggerMinerOnce: () => http.post('/miner/trigger-once').then((r) => r.data),
+  listMinerRuns: (limit = 30) => http.get('/miner/runs', { params: { limit } }).then((r) => r.data),
+  listMinerCandidates: (status = 'pending', page = 1, page_size = 50) =>
+    http.get('/miner/candidates', { params: { status, page, page_size } }).then((r) => r.data),
+  approveMinerCandidates: (ids: string[]) =>
+    http.post('/miner/candidates/approve', { ids }).then((r) => r.data),
+  rejectMinerCandidates: (ids: string[]) =>
+    http.post('/miner/candidates/reject', { ids }).then((r) => r.data),
 }

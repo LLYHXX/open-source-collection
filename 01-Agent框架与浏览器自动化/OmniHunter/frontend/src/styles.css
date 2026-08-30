@@ -1,4 +1,8 @@
 /* ============ aififteen Hunter 全局设计令牌（深色安全运营风） ============ */
+/* Spec 2026-08-29 新增：三主题 data-theme = default | cyber | mono
+   切换方法：<html data-theme="cyber"> + <body data-theme="cyber"> 同步写
+   0 新依赖：纯 CSS 变量 + selectors；系统回退 Consolas，不引字体。
+*/
 * {
   box-sizing: border-box;
 }
@@ -14,8 +18,9 @@ body,
   color: #e5eaf3;
 }
 
-/* Element Plus 暗色变量覆盖（组件自动适配深色） */
-:root {
+/* ============ 主题 0: Default（保持原深色蓝牌风） ============ */
+:root,
+:root[data-theme='default'] {
   --el-color-primary: #3b82f6;
   --el-color-primary-light-3: #60a5fa;
   --el-color-primary-light-5: #3b82f688;
@@ -46,9 +51,117 @@ body,
   --el-mask-color: rgba(5, 8, 18, 0.75);
   --el-box-shadow: 0 8px 28px rgba(0, 0, 0, 0.42);
   --el-box-shadow-light: 0 4px 16px rgba(0, 0, 0, 0.3);
+  /* Self tokens */
+  --radius-card: 14px;
+  --radius-button: 8px;
+  --app-bg: #0b1020;
+  --accent: #3b82f6;
 }
 
-/* 页面背景：深空渐变 + 网格纹理 */
+/* ============ 主题 1: Cyber (赛博终端) ============ */
+:root[data-theme='cyber'] {
+  --el-color-primary: #00e5ff;
+  --el-color-primary-light-3: #40ecff;
+  --el-color-primary-light-5: rgba(0, 229, 255, 0.5);
+  --el-color-primary-light-7: rgba(0, 229, 255, 0.25);
+  --el-color-primary-light-8: rgba(0, 229, 255, 0.18);
+  --el-color-primary-light-9: rgba(0, 229, 255, 0.1);
+  --el-color-primary-dark-2: #00b3c9;
+  --el-color-success: #39ff14;
+  --el-color-warning: #ffb300;
+  --el-color-danger: #ff4d4f;
+  --el-color-error: #ff4d4f;
+  --el-color-info: #76ff03;
+  --el-bg-color: #0a0c10;
+  --el-bg-color-page: #050608;
+  --el-bg-color-overlay: #0a0e14;
+  --el-fill-color-blank: #0a0c10;
+  --el-fill-color: #0d1117;
+  --el-fill-color-light: #0b0e14;
+  --el-fill-color-lighter: #070a0e;
+  --el-text-color-primary: #c9ffd1;
+  --el-text-color-regular: #a7e6b2;
+  --el-text-color-secondary: #7bbd8a;
+  --el-text-color-placeholder: #4b7a55;
+  --el-border-color: rgba(0, 229, 255, 0.28);
+  --el-border-color-light: rgba(0, 229, 255, 0.18);
+  --el-border-color-lighter: rgba(0, 229, 255, 0.12);
+  --el-border-color-extra-light: rgba(0, 229, 255, 0.06);
+  --el-mask-color: rgba(0, 0, 0, 0.88);
+  --el-box-shadow: 0 6px 22px rgba(0, 229, 255, 0.15);
+  --el-box-shadow-light: 0 2px 10px rgba(0, 0, 0, 0.6);
+  /* Self tokens */
+  --radius-card: 0;
+  --radius-button: 0;
+  --app-bg: #050608;
+  --accent: #00e5ff;
+  color-scheme: dark;
+}
+:root[data-theme='cyber'],
+:root[data-theme='cyber'] html,
+:root[data-theme='cyber'] body,
+:root[data-theme='cyber'] #app {
+  font-family: 'JetBrains Mono', Consolas, Monaco, ui-monospace, monospace;
+  background: #050608;
+  color: #c9ffd1;
+}
+body[data-theme='cyber']::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(0, 229, 255, 0.035) 0 1px,
+    transparent 1px 3px
+  );
+  mix-blend-mode: screen;
+}
+
+/* ============ 主题 2: Mono Noir (纯黑白灰) ============ */
+:root[data-theme='mono'] {
+  --el-color-primary: #ffffff;
+  --el-color-primary-light-3: #eaeaea;
+  --el-color-primary-light-5: rgba(255, 255, 255, 0.5);
+  --el-color-primary-light-7: rgba(255, 255, 255, 0.22);
+  --el-color-primary-light-8: rgba(255, 255, 255, 0.15);
+  --el-color-primary-light-9: rgba(255, 255, 255, 0.08);
+  --el-color-primary-dark-2: #c6c6c6;
+  --el-color-success: #e5e5e5;
+  --el-color-warning: #bdbdbd;
+  --el-color-danger: #f5f5f5;
+  --el-color-error: #f5f5f5;
+  --el-color-info: #a8a8a8;
+  --el-bg-color: #0a0a0a;
+  --el-bg-color-page: #000000;
+  --el-bg-color-overlay: #101010;
+  --el-fill-color-blank: #0a0a0a;
+  --el-fill-color: #141414;
+  --el-fill-color-light: #0f0f0f;
+  --el-fill-color-lighter: #070707;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #d2d2d2;
+  --el-text-color-secondary: #979797;
+  --el-text-color-placeholder: #636363;
+  --el-border-color: rgba(255, 255, 255, 0.2);
+  --el-border-color-light: rgba(255, 255, 255, 0.12);
+  --el-border-color-lighter: rgba(255, 255, 255, 0.08);
+  --el-border-color-extra-light: rgba(255, 255, 255, 0.04);
+  --el-mask-color: rgba(0, 0, 0, 0.85);
+  --el-box-shadow: 0 8px 24px rgba(255, 255, 255, 0.06);
+  --el-box-shadow-light: 0 4px 14px rgba(0, 0, 0, 0.6);
+  --radius-card: 0;
+  --radius-button: 0;
+  --app-bg: #000;
+  --accent: #ffffff;
+  color-scheme: dark;
+}
+:root[data-theme='mono'] #app {
+  filter: grayscale(100%) contrast(1.05);
+}
+
+/* ============ 页面背景（default 保留深空渐变；cyber/mono 覆盖） ============ */
 #app::before {
   content: '';
   position: fixed;
@@ -59,6 +172,10 @@ body,
     radial-gradient(ellipse 900px 480px at 85% -10%, rgba(59, 130, 246, 0.14), transparent),
     radial-gradient(ellipse 700px 420px at -10% 110%, rgba(34, 211, 238, 0.08), transparent);
 }
+:root[data-theme='cyber'] #app::before,
+:root[data-theme='mono'] #app::before {
+  background: none;
+}
 
 /* ============ 通用工具类 ============ */
 .muted {
@@ -67,6 +184,10 @@ body,
 }
 .mono {
   font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+}
+.txt-cyber {
+  font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+  letter-spacing: 0.5px;
 }
 .page-title {
   font-size: 20px;
@@ -78,20 +199,55 @@ body,
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+:root[data-theme='cyber'] .page-title {
+  background: linear-gradient(90deg, #c9ffd1, #00e5ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.blink-cursor {
+  display: inline-block;
+  color: var(--accent);
+  animation: blink 1.2s step-end infinite;
+  margin-left: 6px;
+}
+@keyframes blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.hex-val {
+  font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
-/* ============ Element Plus 组件深色微调 ============ */
+/* ============ Element Plus 组件深色微调（兼容三主题半径变量） ============ */
 .el-card {
-  border-radius: 14px !important;
-  border: 1px solid rgba(148, 163, 184, 0.12) !important;
+  border-radius: var(--radius-card) !important;
+  border: 1px solid var(--el-border-color) !important;
   background: linear-gradient(160deg, #141c36, #111832) !important;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35) !important;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+:root[data-theme='cyber'] .el-card,
+:root[data-theme='mono'] .el-card {
+  background: var(--el-bg-color) !important;
 }
 .el-card:hover {
   box-shadow: 0 10px 32px rgba(59, 130, 246, 0.12) !important;
 }
+:root[data-theme='cyber'] .el-card:hover {
+  box-shadow: none !important;
+  border-color: var(--accent) !important;
+}
 .el-card__header {
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1) !important;
+  border-bottom: 1px solid var(--el-border-color) !important;
   font-weight: 600;
 }
 .el-table {
@@ -100,29 +256,42 @@ body,
   --el-table-header-bg-color: rgba(59, 130, 246, 0.07);
   --el-table-header-text-color: #93c5fd;
   --el-table-row-hover-bg-color: rgba(59, 130, 246, 0.08);
-  --el-table-border-color: rgba(148, 163, 184, 0.1);
+  --el-table-border-color: var(--el-border-color);
+}
+:root[data-theme='cyber'] .el-table {
+  --el-table-header-bg-color: rgba(0, 229, 255, 0.08);
+  --el-table-header-text-color: var(--accent);
+  --el-table-row-hover-bg-color: rgba(0, 229, 255, 0.08);
 }
 .el-table .el-table__row {
   cursor: default;
 }
 .el-dialog {
-  border-radius: 14px !important;
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: var(--radius-card) !important;
+  border: 1px solid var(--el-border-color);
 }
 .el-button {
-  border-radius: 8px !important;
+  border-radius: var(--radius-button) !important;
 }
 .el-tag {
-  border-radius: 6px !important;
+  border-radius: 4px !important;
   border-width: 0 !important;
+}
+:root[data-theme='cyber'] .el-tag,
+:root[data-theme='mono'] .el-tag {
+  border-radius: 0 !important;
+  font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
 }
 .el-descriptions {
   --el-descriptions-item-bordered-label-background: rgba(59, 130, 246, 0.08);
 }
+:root[data-theme='cyber'] .el-descriptions {
+  --el-descriptions-item-bordered-label-background: rgba(0, 229, 255, 0.08);
+}
 .el-input__wrapper,
 .el-textarea__inner,
 .el-select__wrapper {
-  border-radius: 8px !important;
+  border-radius: var(--radius-button) !important;
 }
 
 /* ============ 徽章/统计 ============ */
@@ -136,6 +305,12 @@ body,
   font-weight: 600;
   color: #fff;
 }
+:root[data-theme='cyber'] .sev-tag,
+:root[data-theme='mono'] .sev-tag {
+  border-radius: 0;
+  font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+  letter-spacing: 0.5px;
+}
 .sev-critical { background: linear-gradient(135deg, #dc2626, #7f1d1d); }
 .sev-high     { background: linear-gradient(135deg, #f97316, #c2410c); }
 .sev-medium   { background: linear-gradient(135deg, #fbbf24, #b45309); }
@@ -145,15 +320,23 @@ body,
 .stat-card {
   position: relative;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   padding: 18px 20px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--el-border-color);
   background: linear-gradient(160deg, #141c36, #111832);
   transition: transform 0.2s ease, border-color 0.2s ease;
+}
+:root[data-theme='cyber'] .stat-card,
+:root[data-theme='mono'] .stat-card {
+  background: var(--el-bg-color);
 }
 .stat-card:hover {
   transform: translateY(-3px);
   border-color: rgba(59, 130, 246, 0.4);
+}
+:root[data-theme='cyber'] .stat-card:hover {
+  transform: none;
+  border-color: var(--accent);
 }
 .stat-card::after {
   content: '';
@@ -172,6 +355,9 @@ body,
   line-height: 1.15;
   font-variant-numeric: tabular-nums;
 }
+:root[data-theme='cyber'] .stat-num {
+  font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+}
 
 /* 引擎插件网格 */
 .plugin-grid {
@@ -180,13 +366,22 @@ body,
   gap: 12px;
 }
 .plugin-item {
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--el-border-color);
   border-radius: 12px;
   padding: 12px 14px;
   background: rgba(59, 130, 246, 0.04);
   transition: border-color 0.2s ease, background 0.2s ease;
 }
+:root[data-theme='cyber'] .plugin-item,
+:root[data-theme='mono'] .plugin-item {
+  border-radius: 0;
+  background: transparent;
+}
 .plugin-item:hover {
   border-color: rgba(59, 130, 246, 0.45);
   background: rgba(59, 130, 246, 0.09);
+}
+:root[data-theme='cyber'] .plugin-item:hover {
+  border-color: var(--accent);
+  background: rgba(0, 229, 255, 0.06);
 }

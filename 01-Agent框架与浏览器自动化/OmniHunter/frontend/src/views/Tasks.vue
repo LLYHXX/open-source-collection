@@ -1,8 +1,28 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api'
+
+const labels: any = inject('uiLabels', {
+  isCyber: { value: false },
+  status: {
+    pending_approval: { cyber: 'PENDING APPR', full: '待审批' },
+    rejected:         { cyber: 'REJECTED',     full: '已拒绝' },
+    pending:          { cyber: 'QUEUED',       full: '待执行' },
+    collecting:       { cyber: 'COLLECTING',   full: '收集中' },
+    running:          { cyber: 'RUN',          full: '执行中' },
+    review:           { cyber: 'REV',          full: '待复审' },
+    done:             { cyber: 'DONE',         full: '完成' },
+    failed:           { cyber: 'FAIL',         full: '失败' },
+  },
+  actions: {
+    approve: { cyber: 'APPR', full: '批准' },
+    reject:  { cyber: 'REJECT', full: '拒绝' },
+  },
+})
+const isCyber = computed(() => labels?.isCyber?.value)
+function L(obj: any) { return isCyber.value ? obj?.cyber : obj?.full }
 
 const router = useRouter()
 const tasks = ref<any[]>([])
@@ -23,23 +43,40 @@ async function load() {
 }
 async function create() {
   if (!form.value.name) {
-    ElMessage.warning('请填任务名')
+    ElMessage.warning(isCyber ? 'NAME_REQ' : '请填任务名')
     return
   }
   await api.createTask(form.value)
-  ElMessage.success('已创建')
+  ElMessage.success(isCyber ? 'CREATED' : '已创建')
   dialog.value = false
   await load()
 }
 async function start(id: string) {
   await api.startTask(id)
-  ElMessage.success('已启动')
+  ElMessage.success(isCyber ? 'STARTED' : '已启动')
   await load()
 }
+async function approve(id: string) {
+  await api.approveTask(id)
+  ElMessage.success(isCyber ? 'APPR · STARTED' : '已批准并启动')
+  await load()
+}
+async function reject(id: string) {
+  try {
+    await ElMessageBox.confirm(
+      isCyber ? `REJECT TASK id=${id.slice(0,8)} ?` : '确认拒绝该 Miner 生成的任务？拒绝后将标记 rejected 不再可启动。',
+      L(labels.actions.reject) + ' × 1',
+      { type: 'warning', confirmButtonText: isCyber ? 'REJECT' : '确认拒绝' },
+    )
+    await api.rejectTask(id)
+    ElMessage.success(isCyber ? 'REJECTED' : '已拒绝')
+    await load()
+  } catch {}
+}
 async function del(id: string) {
-  await ElMessageBox.confirm('确认删除该任务?', '提示', { type: 'warning' })
+  await ElMessageBox.confirm(isCyber ? `PURGE TASK id=${id.slice(0,8)} ?` : '确认删除该任务?', isCyber ? 'PURGE' : '提示', { type: 'warning' })
   await api.deleteTask(id)
-  ElMessage.success('已删除')
+  ElMessage.success(isCyber ? 'PURGED' : '已删除')
   await load()
 }
 function goDetail(row: any) {
@@ -54,8 +91,15 @@ function statusType(s: string) {
       review: 'primary',
       done: 'success',
       failed: 'danger',
+      pending_approval: 'warning',
+      rejected: 'danger',
     }[s] || 'info'
   )
+}
+function statusLabel(s: string) {
+  const m = labels.status?.[s]
+  if (m) return L(m)
+  return s
 }
 onMounted(load)
 </script>
@@ -68,40 +112,57 @@ onMounted(load)
   line-height: 1.7;
   color: #8b94a8;
   padding: 8px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-card, 8px);
   background: rgba(59, 130, 246, 0.07);
   border: 1px solid rgba(59, 130, 246, 0.18);
+}
+:global([data-theme='cyber']) .mode-tip,
+:global([data-theme='mono']) .mode-tip {
+  border-radius: 0;
+  background: var(--bg-1, #0a0c10);
+  border: 1px solid var(--border-1, #1a1d24);
+  color: var(--text-2, #9fb0c7);
+  font-family: var(--font-mono, Consolas, monospace);
 }
 </style>
 
 <template>
   <div>
     <div style="display: flex; justify-content: space-between; align-items: center">
-      <h2 class="page-title" style="margin: 0">挖掘任务</h2>
-      <el-button type="primary" @click="dialog = true">新建任务</el-button>
+      <h2 class="page-title" style="margin: 0">{{ isCyber ? 'TASKS · QUEUE' : '挖掘任务' }}</h2>
+      <el-button type="primary" @click="dialog = true">{{ isCyber ? 'NEW · TASK' : '新建任务' }}</el-button>
     </div>
     <el-table :data="tasks" border style="margin-top: 16px" @row-click="goDetail">
-      <el-table-column prop="name" label="任务名" />
-      <el-table-column label="模式" width="110">
+      <el-table-column prop="name" :label="isCyber ? 'NAME' : '任务名'" show-overflow-tooltip />
+      <el-table-column :label="isCyber ? 'MODE' : '模式'" width="110">
         <template #default="{ row }">
           <el-tag :type="row.mode === 'engine' ? 'success' : 'info'" effect="dark" size="small">
-            {{ row.mode === 'engine' ? '自研引擎' : row.mode }}
+            {{ isCyber ? (row.mode === 'engine' ? 'ENGINE' : row.mode) : (row.mode === 'engine' ? '自研引擎' : row.mode) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="source" label="来源" width="110" />
-      <el-table-column prop="collect_method" label="搜集方式" width="120" />
-      <el-table-column label="状态" width="120">
+      <el-table-column prop="source" :label="isCyber ? 'SRC' : '来源'" width="110" />
+      <el-table-column prop="collect_method" :label="isCyber ? 'COLL' : '搜集方式'" width="120" />
+      <el-table-column :label="isCyber ? 'STAT' : '状态'" width="140">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)">{{ row.status }}</el-tag>
+          <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" />
-      <el-table-column label="操作" width="230">
+      <el-table-column prop="created_at" :label="isCyber ? 'CREATED_AT' : '创建时间'" />
+      <el-table-column :label="isCyber ? 'ACTIONS' : '操作'" width="320">
         <template #default="{ row }">
-          <el-button size="small" type="success" @click.stop="start(row.id)">启动</el-button>
-          <el-button size="small" @click.stop="goDetail(row)">详情</el-button>
-          <el-button size="small" type="danger" @click.stop="del(row.id)">删除</el-button>
+          <template v-if="row.status === 'pending_approval'">
+            <el-button size="small" type="success" @click.stop="approve(row.id)">{{ L(labels.actions.approve) }}</el-button>
+            <el-button size="small" type="warning" plain @click.stop="reject(row.id)">{{ L(labels.actions.reject) }}</el-button>
+          </template>
+          <template v-else-if="row.status === 'rejected'">
+            <el-button size="small" disabled>{{ isCyber ? 'REJECTED' : '已拒绝' }}</el-button>
+          </template>
+          <template v-else>
+            <el-button size="small" type="success" @click.stop="start(row.id)">{{ isCyber ? 'START' : '启动' }}</el-button>
+          </template>
+          <el-button size="small" @click.stop="goDetail(row)">{{ isCyber ? 'DETAIL' : '详情' }}</el-button>
+          <el-button size="small" type="danger" @click.stop="del(row.id)">{{ isCyber ? 'PURGE' : '删除' }}</el-button>
         </template>
       </el-table-column>
     </el-table>

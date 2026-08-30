@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
@@ -27,20 +28,32 @@ router = APIRouter(prefix="/intel", tags=["intel"], dependencies=[Depends(verify
 
 
 def _intel_dict(it: Intel) -> dict:
-    """ORM -> dict：把 datetime 字段序列化为 ISO 字符串，与 IntelOut schema 对齐。"""
+    """ORM -> dict：把 datetime 字段序列化为 ISO 字符串，与 IntelOut schema 对齐。
+
+    FR-A4: 若 value 匹配常见凭证 pattern，则附加 masked=true（前端决定是否折叠显示）。
+    tags 字段：ORM JSON 列若为 None 回退到空 list。
+    """
     def _fmt(v):
         if isinstance(v, datetime):
             return v.isoformat(sep=" ", timespec="seconds")
         return v
+    value = it.value or ""
+    masked = bool(re.search(
+        r"(password|passwd|pwd|apikey|api[_\-]?key|api[_\-]?token|secret|authorization)\s*[:=]",
+        value, re.IGNORECASE,
+    ))
+    tags = it.tags if isinstance(it.tags, list) else []
     return {
         "id": it.id,
         "kind": it.kind,
         "key": it.key,
-        "value": it.value,
+        "value": value,
         "confidence": it.confidence,
         "hits": it.hits,
         "lifecycle": it.lifecycle,
         "source": it.source or "",
+        "tags": tags,
+        "masked": masked,
         "created_at": _fmt(it.created_at),
         "updated_at": _fmt(it.updated_at),
     }
@@ -118,6 +131,7 @@ def create_intel(body: IntelIn, db: Session = Depends(get_db)):
         confidence=body.confidence,
         source=body.source.strip()[:200],
         lifecycle=body.lifecycle or "active",
+        tags=list(body.tags or []),
     )
     db.add(it)
     db.commit()
@@ -147,6 +161,8 @@ def update_intel(intel_id: str, body: IntelIn, db: Session = Depends(get_db)):
     it.source = body.source.strip()[:200]
     if body.lifecycle in ("active", "stale", "retired"):
         it.lifecycle = body.lifecycle
+    if isinstance(body.tags, list):
+        it.tags = [str(t) for t in body.tags[:200]]
     it.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(it)
@@ -171,7 +187,7 @@ def retire_intel(intel_id: str, hard: bool = False, db: Session = Depends(get_db
 # ========================== 导入 / 导出 ==========================
 
 _INTEL_KEYS = ("id", "kind", "key", "value", "confidence", "hits",
-               "lifecycle", "source", "created_at", "updated_at")
+               "lifecycle", "source", "tags", "created_at", "updated_at")
 
 
 @router.get("/export/json")
@@ -261,6 +277,13 @@ async def import_intel(file: UploadFile = File(...),
             h = int(r.get("hits", 0))
         except Exception:  # noqa: BLE001
             h = 0
+        tags_raw = r.get("tags") or []
+        if isinstance(tags_raw, str):
+            try:
+                tags_raw = json.loads(tags_raw)
+            except Exception:  # noqa: BLE001
+                tags_raw = []
+        tags = [str(x)[:80] for x in (tags_raw if isinstance(tags_raw, list) else [])][:200]
         clean_rows.append({
             "id": (r.get("id") or "").strip()[:40] or None,
             "kind": (r.get("kind") or "").strip()[:100],
@@ -270,6 +293,7 @@ async def import_intel(file: UploadFile = File(...),
             "hits": max(0, h),
             "lifecycle": r.get("lifecycle") or "active",
             "source": (r.get("source") or "").strip()[:200],
+            "tags": tags,
         })
 
     # 模式：replace_all 先清空，replace_kind 按 kind 清空
@@ -299,6 +323,7 @@ async def import_intel(file: UploadFile = File(...),
             existing.hits = r["hits"]
             existing.lifecycle = r["lifecycle"]
             existing.source = r["source"]
+            existing.tags = r.get("tags") or []
             existing.updated_at = datetime.utcnow()
             updated += 1
         else:

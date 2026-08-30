@@ -242,7 +242,7 @@ class HunterLauncher:
                 threading.Thread(target=self._pump_log,
                                  args=(self.frontend_proc.stdout, "FE", self.frontend_proc),
                                  daemon=True).start()
-                self._log(f"前端已启动（pid={self.frontend_proc.pid}），首次启动较慢请稍候。")
+                self._log(f"前端已启动（pid={self.frontend_proc.pid}），首次启动较慢 WAIT。")
             except Exception as e:  # noqa: BLE001
                 messagebox.showwarning("前端启动失败",
                                        f"后端已启，可直接访问 {BACKEND_URL}。前端错误：{e}")

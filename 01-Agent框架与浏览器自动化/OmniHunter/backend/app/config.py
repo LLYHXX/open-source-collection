@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # === 安全 ===
     waf_enabled: bool = True
     cors_origins: str = "*"
+    api_docs_enabled: bool = True
+    miner_debug_routes: bool = False
+    miner_cron_expr: str = "0 2 * * *"
 
     # === 自研检测引擎（engine/）===
     engine_plugin_timeout: int = 300  # 单插件 detect/verify 总超时秒

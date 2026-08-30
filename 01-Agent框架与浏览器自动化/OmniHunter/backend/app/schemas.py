@@ -19,6 +19,7 @@ class TaskCreate(BaseModel):
     max_pages: int = 3
     llm_override: dict = Field(default_factory=dict)
     fofa_override: str = ""
+    status: str | None = None  # 仅内部 Miner 使用；用户默认留空=pending；合法值: pending/pending_approval/rejected
 
 
 class TaskOut(BaseModel):
@@ -102,6 +103,8 @@ class IntelOut(BaseModel):
     hits: int
     lifecycle: str
     source: str = ""
+    tags: list[str] = []
+    masked: bool = False
     created_at: str = ""
     updated_at: str = ""
 
@@ -117,6 +120,7 @@ class IntelIn(BaseModel):
     confidence: float = 0.6
     source: str = ""
     lifecycle: str = "active"
+    tags: list[str] = []
 
 
 # ===== Setting =====

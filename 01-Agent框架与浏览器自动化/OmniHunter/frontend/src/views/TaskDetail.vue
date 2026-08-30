@@ -1,8 +1,34 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api'
+
+const labels: any = inject('uiLabels', {
+  isCyber: { value: false },
+  status: {
+    pending_approval: { cyber: 'PENDING APPR', full: '待审批' },
+    rejected:         { cyber: 'REJECTED',     full: '已拒绝' },
+  },
+  actions: {
+    approve: { cyber: 'APPR', full: '批准' },
+    reject:  { cyber: 'REJECT', full: '拒绝' },
+  },
+})
+const isCyber = computed(() => labels?.isCyber?.value)
+function L(obj: any) { return isCyber.value ? obj?.cyber : obj?.full }
+function statusLabel(s: string) {
+  const m = labels.status?.[s]
+  if (m) return L(m)
+  return s
+}
+function statusType(s: string) {
+  return {
+    pending: 'info', collecting: 'warning', running: 'warning', review: 'primary',
+    done: 'success', failed: 'danger',
+    pending_approval: 'warning', rejected: 'danger',
+  }[s] || 'info'
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -25,14 +51,33 @@ async function load() {
 }
 async function start() {
   await api.startTask(id)
-  ElMessage.success('已启动')
+  ElMessage.success(isCyber ? 'STARTED' : '已启动')
   if (refreshTimer.value) clearTimeout(refreshTimer.value)
   refreshTimer.value = setTimeout(load, 1200)
+}
+async function approve() {
+  await api.approveTask(id)
+  ElMessage.success(isCyber ? 'APPR · STARTED' : '已批准并启动')
+  if (refreshTimer.value) clearTimeout(refreshTimer.value)
+  refreshTimer.value = setTimeout(load, 1200)
+}
+async function reject() {
+  try {
+    await ElMessageBox.confirm(
+      isCyber ? `REJECT TASK id=${id.slice(0,8)} ?` : '确认拒绝该 Miner 生成的任务？拒绝后将标记 rejected 不再可启动。',
+      L(labels.actions.reject) + ' × 1',
+      { type: 'warning', confirmButtonText: isCyber ? 'REJECT' : '确认拒绝' },
+    )
+    await api.rejectTask(id)
+    ElMessage.success(isCyber ? 'REJECTED' : '已拒绝')
+    if (refreshTimer.value) clearTimeout(refreshTimer.value)
+    refreshTimer.value = setTimeout(load, 1200)
+  } catch {}
 }
 async function startSingle() {
   if (!singleUrl.value) return
   await api.startSingle(id, singleUrl.value)
-  ElMessage.success('已启动')
+  ElMessage.success(isCyber ? 'SINGLE · STARTED' : '已启动')
   if (refreshTimer.value) clearTimeout(refreshTimer.value)
   refreshTimer.value = setTimeout(load, 1200)
 }
@@ -45,7 +90,7 @@ function openVuln(v: any) {
 async function doReview() {
   if (!cur.value) return
   await api.reviewVuln(cur.value.id, review)
-  ElMessage.success('已裁决')
+  ElMessage.success(isCyber ? 'VERDICT · WRITTEN' : '已裁决')
   vulnDialog.value = false
   await load()
 }
@@ -68,21 +113,30 @@ onUnmounted(() => {
   <div v-if="task">
     <el-page-header @back="back" :content="task.task.name" />
     <el-descriptions :column="3" border style="margin-top: 16px">
-      <el-descriptions-item label="状态">
-        <el-tag>{{ task.task.status }}</el-tag>
+      <el-descriptions-item :label="isCyber ? 'STAT' : '状态'">
+        <el-tag :type="statusType(task.task.status)">{{ statusLabel(task.task.status) }}</el-tag>
       </el-descriptions-item>
-      <el-descriptions-item label="目标数">{{ task.targets }}</el-descriptions-item>
-      <el-descriptions-item label="漏洞数">{{ task.vulns }}</el-descriptions-item>
-      <el-descriptions-item label="待复审">{{ task.pending_vulns }}</el-descriptions-item>
-      <el-descriptions-item label="来源">{{ task.task.source }}</el-descriptions-item>
-      <el-descriptions-item label="创建时间">{{ task.task.created_at }}</el-descriptions-item>
+      <el-descriptions-item :label="isCyber ? 'TARGETS' : '目标数'">{{ task.targets }}</el-descriptions-item>
+      <el-descriptions-item :label="isCyber ? 'VULNS' : '漏洞数'">{{ task.vulns }}</el-descriptions-item>
+      <el-descriptions-item :label="isCyber ? 'PENDING_REV' : '待复审'">{{ task.pending_vulns }}</el-descriptions-item>
+      <el-descriptions-item :label="isCyber ? 'SRC' : '来源'">{{ task.task.source }}</el-descriptions-item>
+      <el-descriptions-item :label="isCyber ? 'CREATED_AT' : '创建时间'">{{ task.task.created_at }}</el-descriptions-item>
     </el-descriptions>
 
-    <div style="margin: 16px 0">
-      <el-button type="success" @click="start">启动流水线</el-button>
-      <el-input v-model="singleUrl" placeholder="单站协作 URL" style="width: 320px; margin: 0 8px" />
-      <el-button @click="startSingle">浏览器单站协作</el-button>
-      <el-button @click="load">刷新</el-button>
+    <div style="margin: 16px 0; display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+      <template v-if="task.task.status === 'pending_approval'">
+        <el-button type="success" @click="approve">{{ L(labels.actions.approve) }} · {{ isCyber ? 'START' : '并启动流水线' }}</el-button>
+        <el-button type="warning" plain @click="reject">{{ L(labels.actions.reject) }}</el-button>
+      </template>
+      <template v-else-if="task.task.status === 'rejected'">
+        <el-button disabled type="warning" plain>{{ isCyber ? 'REJECTED' : '已拒绝 · 无法启动' }}</el-button>
+      </template>
+      <template v-else>
+        <el-button type="success" @click="start">{{ isCyber ? 'PIPELINE · START' : '启动流水线' }}</el-button>
+      </template>
+      <el-input v-model="singleUrl" :placeholder="isCyber ? 'SINGLE-SITE URL' : '单站协作 URL'" style="width: 320px; margin: 0 8px" />
+      <el-button @click="startSingle">{{ isCyber ? 'SINGLE-SITE · BROWSER' : '浏览器单站协作' }}</el-button>
+      <el-button @click="load">{{ isCyber ? 'REFRESH' : '刷新' }}</el-button>
     </div>
 
     <el-tabs>
@@ -111,7 +165,7 @@ onUnmounted(() => {
           class="mono"
           style="max-height: 540px; overflow: auto; background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px"
         >
-          <div v-if="!messages.length" class="muted">暂无事件</div>
+          <div v-if="!messages.length" class="muted">NO_DATA · EMPTY_SET</div>
           <div v-for="m in messages" :key="m.id" style="margin-bottom: 8px">
             <span style="color: #8b949e">[{{ fmt(m.created_at) }}] {{ m.role }} / {{ m.level }}</span>
             <span v-if="m.tool" style="color: #79c0ff"> · {{ m.tool }}</span>

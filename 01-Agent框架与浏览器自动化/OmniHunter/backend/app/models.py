@@ -128,6 +128,7 @@ class Intel(Base):
     hits = Column(Integer, default=0)  # 命中复用次数
     source = Column(String, default="")  # 来源 target/vuln id
     lifecycle = Column(String, default="active")  # active/stale/retired
+    tags = Column(JSON, default=list)   # Miner / 用户自定义标签（如 STALE_CANDIDATE）
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -193,5 +194,42 @@ class ReportTemplate(Base):
     name = Column(String, nullable=False)
     content = Column(Text, default="")  # markdown/jinja2 模板
     is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ====== Spec 2026-08-29: Autonomous Miner ======
+# Task.status 新增状态常量（不破坏现有枚举，仅作可读常量）
+TASK_PENDING_APPROVAL = "pending_approval"
+TASK_REJECTED = "rejected"
+
+
+class MinerRun(Base):
+    """Autonomous Miner 单次运行审计日志（三 loop 计数 + 预算命中）。"""
+    __tablename__ = "miner_runs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    trigger_at = Column(DateTime, default=datetime.utcnow)
+    loop_coverage_gap_count = Column(Integer, default=0)
+    loop_reverify_count = Column(Integer, default=0)
+    loop_link_candidate_count = Column(Integer, default=0)
+    budget_hit_limit = Column(Boolean, default=False)
+    finished_at = Column(DateTime, default=None)
+    error_log = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MinerCandidate(Base):
+    """Autonomous Miner Loop3 Link-Extend 候选：新增 Intel 关联域提取结果。
+
+    只入库不触发任何网络调用；用户批准后再转 Intel。"""
+    __tablename__ = "miner_candidates"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    src_intel_id = Column(String, ForeignKey("intel.id", ondelete="CASCADE"), nullable=False, index=True)
+    extracted_kind = Column(String, default="")   # os_fingerprint / passive_dns / cve 等
+    extracted_key = Column(String, default="", index=True)   # host / IP / CVE-ID
+    status = Column(String, default="pending")   # pending / approved / rejected / skipped
+    note = Column(Text, default="")              # out_of_scope 等说明
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

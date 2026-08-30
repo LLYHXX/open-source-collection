@@ -1,12 +1,172 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, inject, onMounted, reactive, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api'
+
+const uiLabels: any = inject('uiLabels', { isCyber: { value: false } })
+const isCyber = computed(() => uiLabels?.isCyber?.value)
+
+function L(obj: any) { return isCyber.value ? obj?.cyber : obj?.full }
 
 const list = ref<any[]>([])
 const newKey = ref('')
 const newVal = ref('')
 const tokenInput = ref(localStorage.getItem('aififteen_hunter_token') || '')
+
+// ===== UI & Appearance =====
+const THEME_OPTIONS = [
+  { value: 'default', label: 'Default（默认深色渐变）' },
+  { value: 'cyber',   label: 'Cyber / Terminal（纯黑 + 等宽 + 扫描线）' },
+  { value: 'mono',    label: 'Mono Noir（纯黑白灰 · 无彩色）' },
+]
+const themeSel = ref<string>('default')
+const savingTheme = ref(false)
+
+function readThemeFromList() {
+  const row = (list.value || []).find((s: any) => s.key && s.key.toLowerCase() === 'ui.theme')
+  if (row?.value) themeSel.value = row.value
+  else {
+    try { themeSel.value = localStorage.getItem('ui.theme') || 'default' } catch {}
+  }
+}
+
+function applyThemeToDom(t: string) {
+  try {
+    document.documentElement.setAttribute('data-theme', t)
+    if (t === 'cyber' || t === 'mono') document.body.setAttribute('data-theme', t)
+    else document.body.removeAttribute('data-theme')
+    localStorage.setItem('ui.theme', t)
+    // 通知 App.vue（已监听）
+    window.dispatchEvent(new CustomEvent('aif-theme-change', { detail: { theme: t } }))
+  } catch { /* ignore */ }
+}
+
+async function saveTheme() {
+  savingTheme.value = true
+  try {
+    await api.saveSetting({ key: 'ui.theme', value: themeSel.value })
+    applyThemeToDom(themeSel.value)
+    ElMessage.success('主题已切换并保存（动态配置优先于本地）')
+    await load()
+  } catch (e: any) {
+    // 即便后端存失败，前端仍然切（本地生效）
+    applyThemeToDom(themeSel.value)
+    ElMessage.warning('后端配置未写入，本次仅本地生效：' + (e?.message || e))
+  } finally {
+    savingTheme.value = false
+  }
+}
+
+// ===== Autonomous Miner =====
+const miner = reactive({
+  enabled: false,
+  scope_asset_ids: [] as string[],
+  daily_budget_max_jobs: 20,
+  max_runtime_min: 120,
+  auto_approve: 'reverify_only' as 'reverify_only' | 'all_scope' | 'off',
+  cron_expr: '0 2 * * *',
+})
+const scopeInput = ref('')
+const savingMiner = ref(false)
+const triggering = ref(false)
+const minerRuns = ref<any[]>([])
+
+function parseMinerConfig(raw: any) {
+  if (!raw || !raw.success || !raw.data) return
+  const d = raw.data as any
+  miner.enabled = !!d.enabled
+  miner.scope_asset_ids = Array.isArray(d.scope_asset_ids) ? d.scope_asset_ids : []
+  miner.daily_budget_max_jobs = Number(d.daily_budget_max_jobs) || 20
+  miner.max_runtime_min = Number(d.max_runtime_min) || 120
+  miner.auto_approve = ['reverify_only', 'all_scope', 'off'].includes(d.auto_approve) ? d.auto_approve : 'reverify_only'
+  miner.cron_expr = d.cron_expr || '0 2 * * *'
+}
+
+async function loadMinerConfig() {
+  try {
+    const r = await api.getMinerConfig()
+    parseMinerConfig(r)
+  } catch { /* ignore，路由 lazy load 未就绪时不打扰 */ }
+  await reloadMinerRuns()
+}
+
+async function saveMiner() {
+  // 预算范围
+  const budget = Number(miner.daily_budget_max_jobs)
+  if (!budget || budget < 1 || budget > 200) {
+    ElMessage.warning('日预算 daily_budget_max_jobs 必须为 1~200 的整数')
+    return
+  }
+  const runtime = Number(miner.max_runtime_min)
+  if (!runtime || runtime < 5 || runtime > 1440) {
+    ElMessage.warning('最大运行时长 max_runtime_min 必须为 5~1440 分钟')
+    return
+  }
+  const scope = (miner.scope_asset_ids || []).map((s) => String(s).trim()).filter(Boolean)
+  if (miner.enabled && scope.length === 0) {
+    ElMessage.warning('启用 Miner 前 scope_asset_ids（授权资产域）不能为空')
+    return
+  }
+  // all_scope 二次确认
+  if (miner.enabled && miner.auto_approve === 'all_scope') {
+    try {
+      await ElMessageBox.confirm(
+        'auto_approve=all_scope 将对 coverage_gap / reverify / link 全部三条流水线的候选项直接起任务，不再人工审批。确认开启？',
+        '全量自动批准（高风险）',
+        { type: 'warning', confirmButtonText: '确认全量批准', cancelButtonText: '改为仅复检自动' },
+      )
+    } catch { miner.auto_approve = 'reverify_only' }
+  }
+  savingMiner.value = true
+  try {
+    const payload = {
+      enabled: miner.enabled,
+      scope_asset_ids: scope,
+      daily_budget_max_jobs: budget,
+      max_runtime_min: runtime,
+      auto_approve: miner.auto_approve,
+      cron_expr: (miner.cron_expr || '').trim() || '0 2 * * *',
+    }
+    const r: any = await api.saveMinerConfig(payload)
+    parseMinerConfig({ success: true, data: r.data })
+    ElMessage.success(r.message || 'Miner 配置已保存（需要重启后端才刷新 cron trigger，或点击触发一次立即运行）')
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (e.message || e))
+  } finally {
+    savingMiner.value = false
+    reloadMinerRuns()
+  }
+}
+
+async function triggerMinerOnce() {
+  triggering.value = true
+  try {
+    const r: any = await api.triggerMinerOnce()
+    ElMessage.success(r.message || '已触发一次 Miner 轮次')
+  } catch (e: any) {
+    ElMessage.error('触发失败: ' + (e.message || e))
+  } finally {
+    triggering.value = false
+    setTimeout(reloadMinerRuns, 1000)
+  }
+}
+
+async function reloadMinerRuns() {
+  try {
+    const r: any = await api.listMinerRuns(30)
+    minerRuns.value = r?.success && Array.isArray(r.data) ? r.data : []
+  } catch { minerRuns.value = [] }
+}
+
+function addScopeItem() {
+  const v = scopeInput.value.trim()
+  if (!v) return
+  if (!miner.scope_asset_ids.includes(v)) miner.scope_asset_ids.push(v)
+  scopeInput.value = ''
+}
+function removeScopeItem(v: string) {
+  miner.scope_asset_ids = miner.scope_asset_ids.filter((x) => x !== v)
+}
 
 // 系统更新
 const version = ref<any>(null)
@@ -171,15 +331,115 @@ async function doUpdate() {
     updating.value = false
   }
 }
-onMounted(() => {
-  load()
+onMounted(async () => {
+  await load()
+  readThemeFromList()
   loadVersion()
+  await loadMinerConfig()
 })
 </script>
 
 <template>
   <div>
-    <h2 class="page-title">设置</h2>
+    <h2 class="page-title">{{ isCyber ? 'CFG · CONTROL PANEL' : '设置' }}</h2>
+
+    <!-- ===== UI & Appearance ===== -->
+    <el-card style="margin-bottom: 16px">
+      <template #header>{{ isCyber ? 'UI · APPEARANCE' : 'UI 与外观（零依赖 · 三种内建主题）' }}</template>
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
+        <template #title>{{ isCyber ? 'THEME_SWITCH · data-theme · ZERO_DEPS' : '切换主题后即时生效，选择同时持久化到「动态配置」ui.theme 字段，跨设备同步。' }}</template>
+        <span v-if="isCyber">DEFAULT/CYBER/MONO · CSS VAR OVERLAY · NO FONT CDN</span>
+        <span v-else>Cyber = 纯黑 #050608 底 + 等宽字体 + CRT 扫描线；Mono = 全黑白灰去彩色；Default = 原有渐变风格。</span>
+      </el-alert>
+      <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+        <el-radio-group v-model="themeSel" size="default">
+          <el-radio-button v-for="t in THEME_OPTIONS" :key="t.value" :value="t.value">{{ t.label }}</el-radio-button>
+        </el-radio-group>
+        <el-button type="primary" :loading="savingTheme" @click="saveTheme">{{ isCyber ? 'SAVE · WRITE ui.theme' : '保存并应用主题' }}</el-button>
+      </div>
+    </el-card>
+
+    <!-- ===== Autonomous Miner ===== -->
+    <el-card style="margin-bottom: 16px">
+      <template #header>{{ isCyber ? 'AUTONOMOUS MINER · CTRL' : 'AI 主动深度挖掘（限域 · 默认关 · 三 Loop 审计）' }}</template>
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px">
+        <template #title>{{ isCyber ? 'SCOPE_REQUIRED · BUDGET_CAP · AUTO_APPR_REVERIFY_ONLY (default)' : '启用前必须先填 scope_asset_ids（授权资产域），空 scope 不允许启用，确保只在授权范围内自主挖掘。' }}</template>
+        <span v-if="isCyber">LOOP1=COVERAGE · LOOP2=REVERIFY(30D DECAY) · LOOP3=LINK_EXTRACT</span>
+        <span v-else>三 Loop：①覆盖缺口补采（Coverage Gap）②30 天未更新置信度衰减自动复检（Decay &amp; Re-Verify）③情报入库时从 value 正则抽取域名/IP/CVE 作为候选（Link-Extend，入库不发 HTTP）。</span>
+      </el-alert>
+
+      <el-form label-width="180px" size="small">
+        <el-form-item :label="isCyber ? 'ENABLED' : '启用 Miner（cron 每日定点 + 支持手动触发）'">
+          <el-switch v-model="miner.enabled" />
+          <span class="muted" style="margin-left:10px">{{ isCyber ? '[__miner_internal__] CRON_TRIGGER = ' + (miner.cron_expr || '0 2 * * *') : '定时 job id = __miner_internal__，默认每日 02:00（CST）运行一次。' }}</span>
+        </el-form-item>
+
+        <el-form-item :label="isCyber ? 'SCOPE (asset hosts)' : '授权 scope · scope_asset_ids（域名/IP/CIDR，必填非空）'">
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; width: 640px">
+            <el-tag v-for="(v,i) in miner.scope_asset_ids" :key="v+'_'+i" closable type="info" size="small" effect="dark" @close="removeScopeItem(v)">{{ v }}</el-tag>
+            <el-input v-model="scopeInput" placeholder="如 example.com / 192.168.1.0/24 / 10.0.0.5" style="width: 360px" size="small" @keyup.enter="addScopeItem" />
+            <el-button size="small" @click="addScopeItem">{{ isCyber ? 'ADD' : '添加到 scope' }}</el-button>
+          </div>
+        </el-form-item>
+
+        <el-form-item :label="isCyber ? 'BUDGET · JOBS/DAY' : '日预算 · daily_budget_max_jobs（1~200，默认 20）'">
+          <el-input-number v-model="miner.daily_budget_max_jobs" :min="1" :max="200" />
+        </el-form-item>
+
+        <el-form-item :label="isCyber ? 'MAX_RUNTIME (min)' : '单轮最大运行时长 · max_runtime_min（5~1440，默认 120）'">
+          <el-input-number v-model="miner.max_runtime_min" :min="5" :max="1440" />
+        </el-form-item>
+
+        <el-form-item :label="isCyber ? 'AUTO_APPROVE_POLICY' : 'auto_approve 自动审批策略'">
+          <el-radio-group v-model="miner.auto_approve">
+            <el-radio value="reverify_only">{{ isCyber ? 'REVERIFY_ONLY (SAFE)' : '仅复检 loop 自动批准（默认，推荐）' }}</el-radio>
+            <el-radio value="all_scope">{{ isCyber ? 'ALL_SCOPE (UNATTEND)' : 'scope 内全部自动批准（无人值守，需二次确认）' }}</el-radio>
+            <el-radio value="off">{{ isCyber ? 'OFF · FULL_MANUAL' : '全手动审批（off）' }}</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <el-form-item :label="isCyber ? 'CRON_EXPR' : 'Cron 表达式（默认 0 2 * * * = 每日 02:00 CST）'">
+          <el-input v-model="miner.cron_expr" placeholder="0 2 * * *" style="width:280px" />
+          <el-button style="margin-left:8px" :loading="triggering" @click="triggerMinerOnce">
+            <el-icon><Promotion /></el-icon>
+            {{ isCyber ? 'TRIGGER · ONCE' : '立即触发一次（不等 cron）' }}
+          </el-button>
+        </el-form-item>
+
+        <el-form-item>
+          <el-button type="primary" :loading="savingMiner" @click="saveMiner">{{ isCyber ? 'SAVE · COMMIT miner.cfg' : '保存 Miner 配置' }}</el-button>
+        </el-form-item>
+      </el-form>
+
+      <el-divider content-position="left">{{ isCyber ? 'MINER_AUDIT_LOG (last 30 runs)' : 'Miner 运行审计日志（最近 30 条）' }}</el-divider>
+      <el-table :data="minerRuns" size="small" border empty-text="EMPTY_SET" style="max-height: 340px; overflow:auto;">
+        <el-table-column prop="id" label="#" width="54" />
+        <el-table-column prop="trigger_at" :label="isCyber ? 'TRIGGER_AT' : '触发时间'" width="170" />
+        <el-table-column prop="loop1_coverage_count" label="L1·COV" width="70" align="right">
+          <template #default="{row}"><span class="hex-val">{{ row.loop1_coverage_count ?? 0 }}</span></template>
+        </el-table-column>
+        <el-table-column prop="loop2_reverify_count" label="L2·REV" width="70" align="right">
+          <template #default="{row}"><span class="hex-val">{{ row.loop2_reverify_count ?? 0 }}</span></template>
+        </el-table-column>
+        <el-table-column prop="loop3_link_count" label="L3·LINK" width="70" align="right">
+          <template #default="{row}"><span class="hex-val">{{ row.loop3_link_count ?? 0 }}</span></template>
+        </el-table-column>
+        <el-table-column prop="budget_hit_limit" :label="isCyber ? 'BUDGET_LIMIT' : '预算触顶'" width="96" align="center">
+          <template #default="{row}">
+            <el-tag v-if="row.budget_hit_limit" size="small" type="warning">{{ isCyber ? 'HIT' : '是' }}</el-tag>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="finished_at" :label="isCyber ? 'FINISHED_AT' : '结束时间'" width="170" />
+        <el-table-column prop="error_log" :label="isCyber ? 'ERR' : '错误日志'">
+          <template #default="{row}">
+            <span v-if="row.error_log" style="color:var(--danger,#ef4444); font-family:Consolas,monospace; white-space:pre-wrap;">{{ row.error_log }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
     <el-card style="margin-bottom: 16px">
       <template #header>访问令牌</template>
       <el-input v-model="tokenInput" placeholder="与后端 API_TOKEN 一致" style="width: 400px" show-password />

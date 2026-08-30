@@ -75,6 +75,72 @@ def init_scheduler() -> None:
     if not scheduler.running:
         scheduler.start()
 
+    # ===== Miner 内部 cron job：默认每日 02:00 CST；Setting 表 miner.cron_expr 可覆盖 =====
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+        from .miner import MINER_SETTING_PREFIX, run_miner_once
+        from ..models import Setting
+        from ..config import get_settings as _gs
+
+        # 读优先级：Setting 表 > env Settings.miner_cron_expr
+        miner_cron = ""
+        try:
+            _db = SessionLocal()
+            try:
+                row = _db.get(Setting, MINER_SETTING_PREFIX + "cron_expr")
+                if row and (row.value or "").strip():
+                    miner_cron = row.value.strip()
+            finally:
+                _db.close()
+        except Exception:  # noqa: BLE001
+            miner_cron = ""
+        if not miner_cron:
+            try:
+                miner_cron = getattr(_gs(), "miner_cron_expr", None) or ""
+            except Exception:  # noqa: BLE001
+                miner_cron = ""
+        if not miner_cron:
+            miner_cron = "0 2 * * *"
+
+        try:
+            _trig = CronTrigger.from_crontab(miner_cron, timezone="Asia/Shanghai")
+        except Exception as _e:  # noqa: BLE001
+            import logging as _log
+            _log.getLogger("aififteen-hunter").warning(
+                "Miner cron 解析失败(%s)，回退 0 2 * * *: %s", miner_cron, _e
+            )
+            miner_cron = "0 2 * * *"
+            _trig = CronTrigger.from_crontab(miner_cron, timezone="Asia/Shanghai")
+
+        def __miner_sync_wrapper():
+            """APScheduler asyncio 调度器里的 sync wrapper：在线程池里 asyncio.run。"""
+            try:
+                asyncio.run(run_miner_once(trigger_from="cron"))
+            except Exception as _e:  # noqa: BLE001
+                import logging as _log2
+                _log2.getLogger("aififteen-hunter").error(
+                    "[miner:cron] wrapper 异常: %s", _e
+                )
+
+        scheduler.add_job(
+            id="__miner_internal__",
+            func=__miner_sync_wrapper,
+            trigger=_trig,
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True,
+            max_instances=1,
+        )
+        import logging as _l
+        _l.getLogger("aififteen-hunter").info(
+            "Miner 内部 cron 已挂载: __miner_internal__ cron=%s", miner_cron
+        )
+    except Exception as e:  # noqa: BLE001
+        import logging as _l2
+        _l2.getLogger("aififteen-hunter").warning(
+            "Miner 内部 cron 挂载失败（首次启动模型未就绪可忽略）: %s", e
+        )
+
 
 async def run_scheduled_task(schedule_id: str) -> None:
     """周期触发：新建 Task → 后台跑流水线 → 更新调度元数据。"""

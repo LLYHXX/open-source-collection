@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from ..auth import verify_token
 from ..core.orchestrator import Orchestrator
 from ..database import SessionLocal, get_db
-from ..models import Target, Task, Vuln
+from ..models import TASK_PENDING_APPROVAL, TASK_REJECTED, Target, Task, Vuln
 from ..schemas import StandardResponse, TaskCreate, TaskOut
 
 router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(verify_token)])
@@ -86,11 +86,19 @@ def _validate_source_path(source_path: str) -> None:
 
 @router.post("", response_model=StandardResponse)
 def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
-    task = Task(**payload.model_dump())
+    data = payload.model_dump()
+    # status 白名单：避免用户直接写 collecting/running/done 绕过状态机
+    allowed_status = {None, "", "pending", TASK_PENDING_APPROVAL, TASK_REJECTED}
+    s = data.get("status")
+    if s not in allowed_status:
+        raise HTTPException(400, f"非法 status: {s}")
+    if not s:
+        data["status"] = "pending"
+    task = Task(**data)
     db.add(task)
     db.commit()
     db.refresh(task)
-    return StandardResponse(data={"id": task.id})
+    return StandardResponse(data={"id": task.id, "status": task.status})
 
 
 @router.get("", response_model=list[TaskOut])
@@ -328,3 +336,48 @@ def delete_task(task_id: str, db: Session = Depends(get_db)):
     db.delete(task)
     db.commit()
     return StandardResponse(message="已删除")
+
+
+# ===== Miner 审批流：pending_approval → pending / rejected =====
+
+
+@router.post("/{task_id}/approve", response_model=StandardResponse)
+async def approve_task(task_id: str, db: Session = Depends(get_db)):
+    """Miner 自动生成的 pending_approval 任务 → 用户批准后立即走编排。"""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    if task.status != TASK_PENDING_APPROVAL:
+        raise HTTPException(
+            400,
+            f"仅状态 {TASK_PENDING_APPROVAL} 可审批，当前: {task.status}",
+        )
+    task.status = "pending"
+    db.commit()
+
+    # 立即启动（复用 start_task 的 Orchestrator.run_task 后台模式）
+    async def _bg():
+        db2 = SessionLocal()
+        try:
+            await Orchestrator(db2).run_task(task_id)
+        finally:
+            db2.close()
+
+    asyncio.create_task(_bg())
+    return StandardResponse(message="已批准并启动任务")
+
+
+@router.post("/{task_id}/reject", response_model=StandardResponse)
+def reject_task(task_id: str, db: Session = Depends(get_db)):
+    """Miner 自动生成的 pending_approval 任务 → 拒绝后不再可启动。"""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    if task.status != TASK_PENDING_APPROVAL:
+        raise HTTPException(
+            400,
+            f"仅状态 {TASK_PENDING_APPROVAL} 可拒绝，当前: {task.status}",
+        )
+    task.status = TASK_REJECTED
+    db.commit()
+    return StandardResponse(message="已拒绝")
