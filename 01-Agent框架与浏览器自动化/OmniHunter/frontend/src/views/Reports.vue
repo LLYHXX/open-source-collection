@@ -61,8 +61,31 @@ async function generate() {
   ElMessage.success(res.message)
 }
 function copyReport() {
-  navigator.clipboard.writeText(reportText.value)
-  ElMessage.success('已复制到剪贴板')
+  const text = reportText.value || ''
+  // navigator.clipboard 仅在 Secure Context (HTTPS/localhost) 下可用；
+  // 非安全上下文回退到 textarea + document.execCommand('copy') 兜底。
+  const ok = (msg: string) => ElMessage.success(msg)
+  const fail = (msg: string) => ElMessage.error(msg)
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(
+      () => ok('已复制到剪贴板'),
+      (e) => fail('复制失败: ' + (e?.message || e)),
+    )
+    return
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.top = '-1000px'
+    document.body.appendChild(ta)
+    ta.select()
+    const copied = document.execCommand('copy')
+    document.body.removeChild(ta)
+    copied ? ok('已复制到剪贴板') : fail('当前浏览器拒绝复制操作')
+  } catch (e: any) {
+    fail('复制失败: ' + (e?.message || e))
+  }
 }
 onMounted(load)
 </script>

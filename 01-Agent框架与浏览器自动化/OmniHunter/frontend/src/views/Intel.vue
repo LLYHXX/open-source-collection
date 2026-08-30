@@ -9,7 +9,9 @@ const hostInput = ref('')
 const lastResult = ref('')
 
 async function load() {
-  list.value = await api.listIntel(filter.value || undefined)
+  const res: any = await api.listIntel(filter.value || undefined)
+  // listIntel 后端返回 StandardResponse {data:{items,total,...}}
+  list.value = Array.isArray(res?.data?.items) ? res.data.items : []
 }
 async function retire(id: string) {
   await api.retireIntel(id)

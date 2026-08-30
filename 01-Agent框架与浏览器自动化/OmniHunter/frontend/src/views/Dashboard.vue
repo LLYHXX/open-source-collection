@@ -37,15 +37,21 @@ async function load() {
       api.health().catch(() => ({ status: 'err' })),
       api.engineDetectors().catch(() => ({ detectors: [] })),
     ])
+    // tasks/vulns: listTasks/listVulns 后端直接返回数组
+    // intel: listIntel 返回 StandardResponse 包装 {data:{items,total,...}}
+    const intelData = (intel as any)?.data
+    const intelCount = intelData?.total ?? intelData?.items?.length ?? 0
     stats.value = {
-      tasks: tasks.length,
-      vulns: vulns.length,
-      pending: vulns.filter((v: any) => v.status === 'ai_reviewed').length,
-      intel: intel.length,
+      tasks: Array.isArray(tasks) ? tasks.length : 0,
+      vulns: Array.isArray(vulns) ? vulns.length : 0,
+      pending: Array.isArray(vulns)
+        ? vulns.filter((v: any) => v.status === 'ai_reviewed').length
+        : 0,
+      intel: intelCount,
     }
-    recent.value = tasks.slice(0, 6)
-    recentVulns.value = (vulns || []).slice(0, 6)
-    detectors.value = det.detectors || []
+    recent.value = Array.isArray(tasks) ? tasks.slice(0, 6) : []
+    recentVulns.value = Array.isArray(vulns) ? vulns.slice(0, 6) : []
+    detectors.value = (det as any).detectors || []
     health.value = (h as any).status
   } catch {
     health.value = 'err'
@@ -126,8 +132,8 @@ onMounted(load)
           <div style="font-weight: 600; margin: 6px 0 4px">{{ d.name }}</div>
           <div class="muted" style="font-size: 12px; line-height: 1.6">{{ d.description }}</div>
         </div>
-        <div v-if="!detectors.length" class="muted" style="padding: 8px">
-          引擎插件加载中 / 后端未启动…
+        <div v-if="!detectors.length" class="muted txt-cyber" style="padding: 8px">
+          LINK_DOWN · BE · WAIT
         </div>
       </div>
     </el-card>
@@ -149,7 +155,7 @@ onMounted(load)
               <template #default="{ row }">{{ (row.confidence * 100).toFixed(0) }}%</template>
             </el-table-column>
           </el-table>
-          <el-empty v-if="!recentVulns.length" description="暂无漏洞产出" :image-size="60" />
+          <el-empty v-if="!recentVulns.length" description="NO_DATA" :image-size="40" />
         </el-card>
       </el-col>
       <!-- 最近任务 -->
@@ -167,7 +173,7 @@ onMounted(load)
             </el-table-column>
             <el-table-column prop="status" label="状态" width="100" />
           </el-table>
-          <el-empty v-if="!recent.length" description="暂无任务" :image-size="60" />
+          <el-empty v-if="!recent.length" description="NO_DATA" :image-size="40" />
         </el-card>
       </el-col>
     </el-row>

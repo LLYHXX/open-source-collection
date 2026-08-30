@@ -194,8 +194,15 @@ class WorkflowDAG:
     def _emit_event(self, agent_role: str, msg: str) -> None:
         if self.on_event:
             try:
-                self.on_event(self.run_id, getattr(self.target, "id", ""),
-                              agent_role, "info", msg)
+                # 使用关键字参数传参，避免回调签名变更导致位置错位。
+                # 对齐 Orchestrator.emit 的形参名: run_id, target_id, role, level, content
+                self.on_event(
+                    run_id=self.run_id,
+                    target_id=getattr(self.target, "id", ""),
+                    role=agent_role,
+                    level="info",
+                    content=msg,
+                )
             except Exception:  # noqa: BLE001
                 pass
 

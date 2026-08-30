@@ -26,9 +26,14 @@ class Response:
         return 200 <= self.status < 300
 
     def header(self, name: str, default: str = "") -> str:
-        # httpx headers 大小写不敏感
-        return self.headers.get(name, default) or self.headers.get(
-            name.lower(), default)
+        """大小写不敏感地读取响应头（底层 dict 为普通 dict，键保留原始大小写，
+        如 httpx 透传为 Location、Server、Content-Type 等首字母大写形式，
+        必须真正按小写归一化比较，不能只 fallback name.lower() 本身）。"""
+        target = name.lower()
+        for k, v in self.headers.items():
+            if k.lower() == target:
+                return v if isinstance(v, str) else default
+        return default
 
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
