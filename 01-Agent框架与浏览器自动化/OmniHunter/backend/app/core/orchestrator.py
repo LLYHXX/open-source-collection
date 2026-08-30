@@ -747,6 +747,152 @@ class Orchestrator:
             self.db.commit()
 
 
+    # ===== 单站协作流水线：权限发现专项 + LLM 攻击 Agent 协同 =====
+    async def run_collab_pipeline(self, task: Task, url: str,
+                                    admin_cookie: str = "",
+                                    user_cookie: str = "",
+                                    user2_cookie: str = "",
+                                    anon_probe: bool = True,
+                                    enable_attacker: bool = True):
+        """单站协作流水线：用户需求「单站深挖都有什么权限，让 agent 自动挖掘」。
+
+        流水线：
+          SiteProfiler 单站资产收集（命中缓存直接复用不烧 token）
+          → Modeler 业务建模（router 规则层 CMS 预筛注入攻击模板）
+          → PermissionAgent 权限发现专项（5 类权限检测 + 权限矩阵）
+          → Attacker（可选，接入 router/pruning 减少无效尝试）
+          → Verifier 独立复现 + Reviewer 极理性初审 → 入库
+
+        与 run_traffic_pipeline 区别：
+          - collab 侧重「权限专项」，先跑 PermissionAgent 出权限矩阵；
+          - traffic 侧重「业务逻辑」，靠 Modeler + Attacker 多轮变异；
+          - 用户可同时跑两条流水线，互补覆盖。
+        """
+        from ..agents.modeler import ModelerAgent
+        from ..agents.site_profiler import SiteProfilerAgent
+        from ..agents.permission import PermissionAgent
+        from ..agents.verifier import VerifierAgent
+        from ..agents.reviewer import ReviewerAgent
+
+        target = Target(task_id=task.id, url=url)
+        self.db.add(target)
+        self.db.commit()
+
+        run = AgentRun(
+            target_id=target.id, agent_role="collab",
+            stage="collab", status="running",
+        )
+        self.db.add(run)
+        self.db.commit()
+
+        memory = MemoryStore(self.db)
+        # 身份会话（admin/user/user2，由前端提供 Cookie）
+        sessions: dict = {}
+        if admin_cookie:
+            sessions["admin"] = {"cookie": admin_cookie}
+        if user_cookie:
+            sessions["user"] = {"cookie": user_cookie}
+        if user2_cookie:
+            sessions["user2"] = {"cookie": user2_cookie}
+
+        all_vulns: list[dict] = []
+        try:
+            # 1) SiteProfiler 单站深挖自动收集（命中缓存直接复用）
+            profiler = SiteProfilerAgent(
+                **self._agent_kwargs(run.id, target, "site_profiler"),
+                memory=memory,
+            )
+            profiler_out = await profiler.run({})
+            site_profile = profiler_out if isinstance(profiler_out, dict) else {}
+
+            # 2) Modeler 业务建模（router 规则层 0 Token CMS 预筛 + 攻击模板）
+            modeler = ModelerAgent(
+                **self._agent_kwargs(run.id, target, "modeler"),
+                memory=memory,
+            )
+            modeler_out = await modeler.run({})
+            model = modeler_out.get("business_model", {})
+
+            # 3) PermissionAgent 权限发现专项（核心）
+            perm_agent = PermissionAgent(
+                **self._agent_kwargs(run.id, target, "permission"),
+                memory=memory,
+            )
+            perm_out = await perm_agent.run({
+                "url": url,
+                "site_profile": site_profile,
+                "sessions": sessions,
+                "anon_probe": anon_probe,
+            })
+            perm_vulns = perm_out.get("vulns", [])
+            all_vulns.extend(perm_vulns)
+            self.emit(run.id, target.id, "permission", "info",
+                      f"权限矩阵 {len(perm_out.get('permission_matrix', []))} 行，"
+                      f"疑似漏洞 {len(perm_vulns)} 条")
+
+            # 4) Attacker（可选）：基于权限矩阵 + 业务模型做变异攻击
+            if enable_attacker and perm_vulns:
+                try:
+                    from ..agents.attacker import AttackerAgent
+                    attacker = AttackerAgent(
+                        **self._agent_kwargs(run.id, target, "attacker"),
+                        memory=memory,
+                    )
+                    attacker_out = await attacker.run({
+                        "model": model,
+                        "max_rounds": 2,
+                        "permission_findings": perm_vulns,
+                    })
+                    all_vulns.extend(attacker_out.get("vulns", []))
+                except Exception as e:  # noqa: BLE001 —— Attacker 失败不中断流水线
+                    self.emit(run.id, target.id, "attacker", "error",
+                              f"Attacker 异常（不中断流水线）: {e}")
+
+            # 5) Verifier 独立复现
+            for v in all_vulns:
+                verifier = VerifierAgent(
+                    **self._agent_kwargs(run.id, target, "verifier"),
+                    memory=memory,
+                )
+                vout = await verifier.run({"vuln": v})
+                v["verified"] = vout.get("verified", False)
+                v["confidence"] = vout.get(
+                    "confidence", v.get("confidence", 0.5))
+
+            # 6) Reviewer 极理性 AI 初审
+            reviewer = ReviewerAgent(
+                run.id, target=target,
+                llm=self.big_llm,
+                on_event=self.emit, strict=self.settings.reviewer_strict,
+                router=self.router, pruning=self.pruning,
+            )
+            rout = await reviewer.run({"vulns": all_vulns})
+
+            # 7) 入库待人工复审
+            for v in rout.get("vulns", []):
+                if v.get("status") == "discard":
+                    continue
+                self.db.add(Vuln(
+                    task_id=task.id, target_id=target.id, target_url=url,
+                    vuln_type=v.get("vuln_type", "permission"),
+                    severity=v.get("severity", "medium"),
+                    title=v.get("title", ""), detail=v.get("detail", ""),
+                    payload=v.get("payload", ""), evidence=v.get("evidence", ""),
+                    repro=v.get("repro", ""), status="ai_reviewed",
+                    confidence=v.get("confidence", 0.0),
+                ))
+            self.db.commit()
+            run.status = "done"
+        except Exception as e:  # noqa: BLE001
+            run.status = "failed"
+            run.error = str(e)
+            self.emit(run.id, target.id, "collab", "error",
+                      f"collab pipeline 异常: {e}")
+        finally:
+            run.finished_at = datetime.utcnow()
+            self.db.commit()
+
+
 def _task_brief(task: Task) -> dict:
     return {
         "id": task.id, "name": task.name, "mode": task.mode,

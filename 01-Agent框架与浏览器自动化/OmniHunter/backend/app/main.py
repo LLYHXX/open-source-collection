@@ -24,6 +24,7 @@ from .core.scheduler import init_scheduler, scheduler
 from .database import init_db
 from .routers import access as access_router
 from .routers import agents as agents_router
+from .routers import cves as cves_router
 from .routers import intel as intel_router
 from .routers import reports as reports_router
 from .routers import schedules as schedules_router
@@ -214,6 +215,7 @@ app.include_router(tasks_router.router, prefix="/api")
 app.include_router(agents_router.router, prefix="/api")
 app.include_router(vulns_router.router, prefix="/api")
 app.include_router(intel_router.router, prefix="/api")
+app.include_router(cves_router.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
 app.include_router(schedules_router.router, prefix="/api")
 app.include_router(reports_router.router, prefix="/api")

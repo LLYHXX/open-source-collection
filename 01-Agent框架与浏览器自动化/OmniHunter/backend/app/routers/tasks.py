@@ -275,6 +275,53 @@ async def start_engine_scan(task_id: str, url: str,
     return StandardResponse(message=f"已对 {url} 启动自研引擎扫描")
 
 
+@router.post("/{task_id}/collab", response_model=StandardResponse)
+async def start_collab(task_id: str, url: str,
+                        admin_cookie: str = "",
+                        user_cookie: str = "",
+                        user2_cookie: str = "",
+                        anon_probe: bool = True,
+                        enable_attacker: bool = True,
+                        db: Session = Depends(get_db)):
+    """单站协作流水线：权限发现专项 + LLM 攻击 Agent 协同。
+
+    用户需求：「单站深挖 — 都有什么权限？让 agent 自己自动挖掘」
+
+    流水线：
+      SiteProfiler 单站资产收集 → Modeler 业务建模
+      → PermissionAgent 权限发现专项（5 类权限检测 + 权限矩阵）
+      → Attacker（可选，基于权限矩阵做变异攻击）
+      → Verifier 独立复现 + Reviewer 极理性初审 → 入库
+
+    身份会话（admin_cookie/user_cookie/user2_cookie）由前端提供，
+    至少需要 user_cookie 才能跑权限矩阵；admin_cookie 用于垂直越权检测；
+    user2_cookie 用于水平越权检测；anon_probe=True 测未授权访问。
+    """
+    _validate_target_url(url)
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+
+    async def _bg():
+        db2 = SessionLocal()
+        try:
+            orch = Orchestrator(db2)
+            await orch.run_collab_pipeline(
+                task, url,
+                admin_cookie=admin_cookie, user_cookie=user_cookie,
+                user2_cookie=user2_cookie, anon_probe=anon_probe,
+                enable_attacker=enable_attacker,
+            )
+        finally:
+            db2.close()
+
+    asyncio.create_task(_bg())
+    id_count = sum(1 for c in (admin_cookie, user_cookie, user2_cookie) if c)
+    return StandardResponse(
+        message=f"已对 {url} 启动单站协作（{id_count} 个身份会话，"
+                f"anon_probe={anon_probe}, attacker={enable_attacker}）")
+
+
 @router.post("/engine-scan-url", response_model=StandardResponse)
 async def engine_scan_url(url: str,
                           admin_cookie: str = "",

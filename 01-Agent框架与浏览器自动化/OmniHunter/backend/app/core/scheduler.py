@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -15,6 +16,8 @@ from sqlalchemy import select
 
 from ..database import SessionLocal
 from ..models import Schedule, Task
+
+log = logging.getLogger("aififteen-hunter")
 
 # 时区固定 Asia/Shanghai，与用户本地一致
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
@@ -141,6 +144,9 @@ def init_scheduler() -> None:
             "Miner 内部 cron 挂载失败（首次启动模型未就绪可忽略）: %s", e
         )
 
+    # ===== CVE 库定时任务：每日拉取 + 自动扫描（可配置开关）=====
+    _register_cve_jobs()
+
 
 async def run_scheduled_task(schedule_id: str) -> None:
     """周期触发：新建 Task → 后台跑流水线 → 更新调度元数据。"""
@@ -199,3 +205,191 @@ async def _run_orchestrator(task_id: str) -> None:
             db.commit()
     finally:
         db.close()
+
+
+# ===== CVE 定时任务：每日自动拉取 CVE + 自动扫描可配置开关 =====
+async def run_cve_fetch_job() -> None:
+    """CVE 库自动拉取：每日凌晨执行，读取 settings.cve_fetch_days 拉取最近 N 天。"""
+    from ..config import get_settings
+    from ..tools.cve_fetcher import fetch_and_update_cves
+
+    settings = get_settings()
+    if not getattr(settings, "cve_fetch_enabled", True):
+        return
+    db = SessionLocal()
+    try:
+        result = await fetch_and_update_cves(
+            settings, db,
+            days=getattr(settings, "cve_fetch_days", 7),
+            source="all",
+        )
+        added = result.get("added", 0)
+        updated = result.get("updated", 0)
+        log.info("[CVE:cron] 自动拉取完成：新增 %d，更新 %d", added, updated)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[CVE:cron] 自动拉取异常: %s", e)
+    finally:
+        db.close()
+
+
+async def run_cve_auto_scan_job() -> None:
+    """CVE 自动扫描：对配置时间段内新增的 pending 命中资产跑挖掘流水线。
+
+    仅在 cve_auto_scan_enabled=True 时执行；有副作用（向目标发请求），
+    故默认关闭，用户在 Settings 页开启。
+    单次扫描资产数受 cve_auto_scan_max 限制防失控。
+    """
+    from sqlalchemy import select
+
+    from ..config import get_settings
+    from ..models import CveAssetHit, Task
+
+    settings = get_settings()
+    if not getattr(settings, "cve_auto_scan_enabled", False):
+        return
+
+    db = SessionLocal()
+    try:
+        # 取 pending 资产，按创建时间排序，限制单次扫描数量
+        max_scan = int(getattr(settings, "cve_auto_scan_max", 10))
+        hits = db.scalars(
+            select(CveAssetHit)
+            .where(CveAssetHit.scan_status == "pending")
+            .order_by(CveAssetHit.created_at.asc())
+            .limit(max_scan)
+        ).all()
+        if not hits:
+            log.info("[CVE:cron] 自动扫描跳过：无 pending 命中资产")
+            return
+
+        pipeline = getattr(settings, "cve_auto_scan_pipeline", "engine")
+        urls = [h.url for h in hits if h.url]
+        if not urls:
+            return
+
+        task = Task(
+            name=f"CVE 自动扫描 {datetime.utcnow().strftime('%m-%d %H:%M')} "
+                 f"({len(urls)} 个资产)",
+            mode="engine" if pipeline == "engine" else "EduSRC",
+            source="cve",
+            manual_targets="\n".join(urls),
+            status="running",
+        )
+        db.add(task)
+        for h in hits:
+            h.task_id = task.id
+            h.scan_status = "scanning"
+        db.commit()
+        task_id = task.id
+        hit_ids = [h.id for h in hits]
+        log.info("[CVE:cron] 启动自动扫描 task=%s, %d 个资产, pipeline=%s",
+                 task_id, len(hit_ids), pipeline)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[CVE:cron] 自动扫描准备失败: %s", e)
+        db.rollback()
+        return
+    finally:
+        db.close()
+
+    # 后台跑流水线
+    async def _bg():
+        db2 = SessionLocal()
+        try:
+            from .orchestrator import Orchestrator
+            orch = Orchestrator(db2)
+            task = db2.get(Task, task_id)
+            if not task:
+                return
+            for hit_id in hit_ids:
+                hit = db2.get(CveAssetHit, hit_id)
+                if not hit or not hit.url:
+                    continue
+                try:
+                    if pipeline == "engine":
+                        await orch.run_engine_pipeline(task, hit.url)
+                    elif pipeline == "collab":
+                        await orch.run_collab_pipeline(task, hit.url)
+                    elif pipeline == "traffic":
+                        await orch.run_traffic_pipeline(task, hit.url)
+                    hit.scan_status = "done"
+                except Exception as e:  # noqa: BLE001
+                    hit.scan_status = "failed"
+                    log.warning("[CVE:cron] 扫描失败 %s: %s", hit.url, e)
+                db2.commit()
+            task.status = "review"
+            db2.commit()
+        except Exception as e:  # noqa: BLE001
+            log.warning("[CVE:cron] 扫描任务异常: %s", e)
+            db2.rollback()
+        finally:
+            db2.close()
+
+    asyncio.create_task(_bg())
+
+
+def _register_cve_jobs() -> None:
+    """挂载 CVE 定时任务到调度器（init_scheduler 时调用）。
+
+    两个独立 job：
+      - cve_fetcher：每日拉取最近 N 天 CVE（默认 02:00）
+      - cve_auto_scan：每日扫描 pending 命中资产（默认 03:00，副作用默认关）
+    cron 表达式从 settings 读取，支持动态配置覆盖。
+    """
+    from ..config import get_settings as _gs
+
+    try:
+        settings = _gs()
+        # 1) CVE 拉取任务
+        fetch_cron = getattr(settings, "cve_fetch_cron", "0 2 * * *") or "0 2 * * *"
+        try:
+            fetch_trig = CronTrigger.from_crontab(fetch_cron, timezone="Asia/Shanghai")
+        except Exception as _e:  # noqa: BLE001
+            log.warning("CVE fetch cron 解析失败(%s)，回退 0 2 * * *: %s", fetch_cron, _e)
+            fetch_cron = "0 2 * * *"
+            fetch_trig = CronTrigger.from_crontab(fetch_cron, timezone="Asia/Shanghai")
+
+        async def _cve_fetch_wrapper():
+            try:
+                await run_cve_fetch_job()
+            except Exception as _e:  # noqa: BLE001
+                log.error("[CVE:cron] fetch wrapper 异常: %s", _e)
+
+        scheduler.add_job(
+            id="__cve_fetcher__",
+            func=_cve_fetch_wrapper,
+            trigger=fetch_trig,
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True,
+            max_instances=1,
+        )
+
+        # 2) CVE 自动扫描任务
+        scan_cron = getattr(settings, "cve_auto_scan_cron", "0 3 * * *") or "0 3 * * *"
+        try:
+            scan_trig = CronTrigger.from_crontab(scan_cron, timezone="Asia/Shanghai")
+        except Exception as _e:  # noqa: BLE001
+            log.warning("CVE auto scan cron 解析失败(%s)，回退 0 3 * * *: %s", scan_cron, _e)
+            scan_cron = "0 3 * * *"
+            scan_trig = CronTrigger.from_crontab(scan_cron, timezone="Asia/Shanghai")
+
+        async def _cve_scan_wrapper():
+            try:
+                await run_cve_auto_scan_job()
+            except Exception as _e:  # noqa: BLE001
+                log.error("[CVE:cron] auto scan wrapper 异常: %s", _e)
+
+        scheduler.add_job(
+            id="__cve_auto_scan__",
+            func=_cve_scan_wrapper,
+            trigger=scan_trig,
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True,
+            max_instances=1,
+        )
+        log.info("CVE 定时任务已挂载: fetch=%s, auto_scan=%s (enabled=%s)",
+                 fetch_cron, scan_cron,
+                 getattr(settings, "cve_auto_scan_enabled", False))
+    except Exception as e:  # noqa: BLE001
+        log.warning("CVE 定时任务挂载失败（首次启动可忽略）: %s", e)

@@ -271,3 +271,117 @@ def _search_censys(query: str, settings, max_results: int) -> list[dict]:
         if it:
             items.append(it)
     return items[:max_results]
+
+
+# ===== CVE affected → 各平台查询语句 =====
+def build_cve_queries(cve_entry: dict) -> dict[str, str]:
+    """把 CVE affected 转成各资产平台的查询语句。
+
+    输入：cve_entry 是 CveEntry 的 dict 形式（含 affected 字段）。
+    affected 结构：{"vendor": "...", "product": "...",
+                   "versions": [...], "cpe": [...]}。
+    策略：
+      - 优先 product 关键字 + banner 正则匹配（找到该产品的未修复资产）
+      - NVD/OSV 的 affected.product 在 FOFA 用 body/title 匹配 banner，
+        Shodan 按 product + version 关键字搜
+      - 失败兜底用 cve_id 直接搜（部分平台支持）
+    输出：{"fofa": query, "shodan": query, ...}（仅含已能生成的平台）
+    """
+    affected = cve_entry.get("affected") or {}
+    product = (affected.get("product") or "").strip()
+    vendor = (affected.get("vendor") or "").strip()
+    versions = affected.get("versions") or []
+    cve_id = cve_entry.get("cve_id", "")
+    queries: dict[str, str] = {}
+
+    # 没产品信息：只能按 CVE-ID 在 Shodan/Quake 的 cve 字段搜
+    if not product:
+        if cve_id:
+            queries["shodan"] = f"vuln:{cve_id}"
+            queries["quake"] = f'cve:"{cve_id}"'
+        return queries
+
+    # 有产品信息：构造各平台语法
+    # FOFA：title/body/banner 包含产品名
+    queries["fofa"] = f'title="{product}" || body="{product}"'
+    # Shodan：product + 旧版本关键字
+    if versions:
+        # 取第一个版本作为参考（OSV 里是 >=X <Y 形式，提取 X）
+        ver_sample = versions[0].lstrip(">=<")
+        if ver_sample and ver_sample != "*":
+            queries["shodan"] = f'product:"{product}" version:"{ver_sample}"'
+        else:
+            queries["shodan"] = f'product:"{product}"'
+    else:
+        queries["shodan"] = f'product:"{product}"'
+    # 加 CVE 兜底
+    if cve_id:
+        queries["shodan"] = f'({queries["shodan"]}) || vuln:{cve_id}'
+    # Quake
+    queries["quake"] = f'response:"{product}"'
+    if cve_id:
+        queries["quake"] = f'({queries["quake"]}) || cve:"{cve_id}"'
+    # Hunter
+    queries["hunter"] = f'web.body="{product}"'
+    # ZoomEye
+    queries["zoomeye"] = f'site:{product.lower()}.com'
+    # Censys
+    queries["censys"] = f'services.service_name: HTTP and services.http.response.html_title: "{product}"'
+
+    return queries
+
+
+def search_by_cve(cve_entry: dict, settings, platforms: list[str] | None = None,
+                  max_results: int = 100) -> dict:
+    """按 CVE 搜未修复资产：affected → 各平台查询语句 → 并发查询。
+
+    返回：{"items": [...], "queries": {...}, "errors": {...}}
+    items 每条附带 cve_id / query / platform 字段，便于入库 CveAssetHit。
+    """
+    queries = build_cve_queries(cve_entry)
+    if not queries:
+        return {"items": [], "queries": {}, "errors": {"_": "CVE 无 affected 信息无法生成查询"}}
+
+    avail = available_platforms(settings)
+    # 过滤要查询的平台：显式指定 > 已配置的全部
+    if platforms:
+        targets = [p for p in platforms if avail.get(p) and p in queries]
+    else:
+        targets = [p for p, ok in avail.items() if ok and p in queries]
+
+    if not targets:
+        return {"items": [], "queries": queries,
+                "errors": {"_": "无已配置的平台可查询（请先配置 FOFA/Shodan 等 API Key）"}}
+
+    cve_id = cve_entry.get("cve_id", "")
+    all_items: list[dict] = []
+    errors: dict[str, str] = {}
+    for p in targets:
+        q = queries.get(p, "")
+        if not q:
+            continue
+        try:
+            items, err = search_platform(p, q, settings, max_results=max_results)
+            if err:
+                errors[p] = err
+                continue
+            # 标记来源
+            for it in items:
+                it["cve_id"] = cve_id
+                it["query"] = q
+                it["platform"] = p
+            all_items.extend(items)
+        except Exception as e:  # noqa: BLE001
+            errors[p] = str(e)
+
+    # 去重（按 host+port）
+    seen: set[str] = set()
+    dedup: list[dict] = []
+    for it in all_items:
+        key = f"{it.get('host', '')}:{it.get('port', 0)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(it)
+
+    return {"items": dedup, "queries": queries, "errors": errors}

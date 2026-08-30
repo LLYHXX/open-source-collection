@@ -63,6 +63,17 @@ export const api = {
   startTask: (id: string) => http.post(`/tasks/${id}/start`).then((r) => r.data),
   startSingle: (id: string, url: string) =>
     http.post(`/tasks/${id}/single-site`, null, { params: { url } }).then((r) => r.data),
+  startCollab: (
+    id: string, url: string,
+    opts: { admin_cookie?: string; user_cookie?: string; user2_cookie?: string;
+            anon_probe?: boolean; enable_attacker?: boolean } = {},
+  ) =>
+    http
+      .post(`/tasks/${id}/collab`, null, {
+        params: { url, ...opts },
+        timeout: 600000,
+      })
+      .then((r) => r.data),
   deleteTask: (id: string) => http.delete(`/tasks/${id}`).then((r) => r.data),
   // agents
   listRuns: (taskId?: string) =>
@@ -191,4 +202,23 @@ export const api = {
     http.post('/miner/candidates/approve', { ids }).then((r) => r.data),
   rejectMinerCandidates: (ids: string[]) =>
     http.post('/miner/candidates/reject', { ids }).then((r) => r.data),
+  // ===== CVE 库 =====
+  listCves: (params: { keyword?: string; severity?: string; source?: string;
+                        page?: number; page_size?: number } = {}) =>
+    http.get('/cves', { params }).then((r) => r.data),
+  cveStats: () => http.get('/cves/stats').then((r) => r.data),
+  getCve: (cveId: string) => http.get(`/cves/${encodeURIComponent(cveId)}`).then((r) => r.data),
+  refreshCves: (data: { days: number; source: string }) =>
+    http.post('/cves/refresh', data, { timeout: 300000 }).then((r) => r.data),
+  searchCveAssets: (data: { cve_id: string; platforms?: string[]; max_results?: number }) =>
+    http.post('/cves/search-assets', data, { timeout: 300000 }).then((r) => r.data),
+  listCveAssetHits: (params: { cve_id?: string; scan_status?: string;
+                                page?: number; page_size?: number } = {}) =>
+    http.get('/cves/asset-hits', { params }).then((r) => r.data),
+  cveScan: (data: { cve_id: string; hit_ids?: string[]; pipeline?: string }) =>
+    http.post('/cves/scan', data).then((r) => r.data),
+  deleteCveAssetHit: (hitId: string) =>
+    http.delete(`/cves/asset-hits/${hitId}`).then((r) => r.data),
+  deleteCve: (cveId: string) =>
+    http.delete(`/cves/${encodeURIComponent(cveId)}`).then((r) => r.data),
 }

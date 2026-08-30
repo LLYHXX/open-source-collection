@@ -74,6 +74,17 @@ class Settings(BaseSettings):
     engine_max_depth: int = 2             # follow-up 最大递归深度（1=只挖一层）
     followup_max_urls: int = 50           # 单任务 follow-up URL 总量上限（防失控）
 
+    # === CVE 库（自动更新 + 资产搜索）===
+    nvd_api_key: str = ""                 # NVD API Key（无 key 限速 5/30min，有 key 50/30min）
+    cve_fetch_enabled: bool = True        # 启动定时拉取 CVE
+    cve_fetch_cron: str = "0 2 * * *"     # CVE 拉取 cron（默认每日 02:00）
+    cve_fetch_days: int = 7               # 每次拉取最近 N 天
+    cve_fetch_max: int = 500              # 单次最大拉取条数
+    cve_auto_scan_enabled: bool = False   # 自动扫描命中资产（有副作用，默认关）
+    cve_auto_scan_cron: str = "0 3 * * *" # 自动扫描 cron（默认每日 03:00）
+    cve_auto_scan_pipeline: str = "engine"  # 自动扫描流水线：engine / collab
+    cve_auto_scan_max: int = 10            # 单次自动扫描资产数上限
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

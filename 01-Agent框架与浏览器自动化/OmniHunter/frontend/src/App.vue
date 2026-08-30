@@ -23,6 +23,7 @@ const uiLabels = reactive({
     '/intel':     { full: '情报库',     cyber: 'INTEL' },
     '/memory':    { full: '记忆管理',   cyber: 'MEM' },
     '/hunting':   { full: '持续挖掘',   cyber: 'MINE' },
+    '/cve-library': { full: 'CVE 库',   cyber: 'CVE' },
     '/androidlab':{ full: '移动靶场',   cyber: 'LAB' },
     '/settings':  { full: '设置',       cyber: 'CFG' },
   } as Record<string, { full: string; cyber: string }>,
@@ -89,6 +90,7 @@ const menuItems = [
   { index: '/intel',     title: '情报库',     cyber: 'INTEL',    icon: 'Coin' },
   { index: '/memory',    title: '记忆管理',   cyber: 'MEM',      icon: 'Collection' },
   { index: '/hunting',   title: '持续挖掘',   cyber: 'MINE',     icon: 'MagicStick' },
+  { index: '/cve-library', title: 'CVE 库',   cyber: 'CVE',      icon: 'DocumentCopy' },
   { index: '/androidlab',title: '移动靶场',   cyber: 'LAB',      icon: 'Cellphone' },
   { index: '/settings',  title: '设置',       cyber: 'CFG',      icon: 'Setting' },
 ]
