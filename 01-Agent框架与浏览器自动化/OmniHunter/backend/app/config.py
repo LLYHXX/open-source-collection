@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     trusted_proxies: str = ""
 
     # === Worker 调度（借鉴 LoopX quota / 关卡）===
-    worker_concurrency: int = 3
+    worker_concurrency: int = 5  # 同时跑的目标数（每目标独立 session，SQLite WAL 扛并发写）
     worker_step_budget: int = 40  # 单目标最大步数
     worker_timeout: int = 1800  # 单目标超时秒
     reviewer_strict: bool = True  # 极理性初审

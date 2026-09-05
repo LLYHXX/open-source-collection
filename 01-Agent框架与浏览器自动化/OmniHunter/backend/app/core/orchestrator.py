@@ -13,11 +13,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime
 
 from sqlalchemy import select
 
 from ..config import get_settings
+from ..database import SessionLocal
 from ..models import AgentMessage, AgentRun, Intel, Task, Target, Vuln
 from . import state_machine
 from .llm import LLMClient
@@ -166,6 +168,7 @@ class Orchestrator:
                     severity=v.get("severity", "medium"),
                     title=v.get("title", ""), detail=v.get("detail", ""),
                     payload=v.get("payload", ""), evidence=v.get("evidence", ""),
+                    evidence_images=json.dumps(v.get("evidence_images") or [], ensure_ascii=False),
                     repro=v.get("repro", ""), status="ai_reviewed",
                     confidence=v.get("confidence", 0.7),
                 ))
@@ -253,8 +256,24 @@ class Orchestrator:
                     if u.strip()]
             if not urls and task.source in ("fofa", "both"):
                 urls = await self._engine_collect_urls(task)
-            for u in urls:
-                await self.run_engine_pipeline(task, u)
+            # 并发调度：worker_concurrency 控制同时跑的目标数，独立 session 避免写撞
+            if urls:
+                sem = asyncio.Semaphore(self.settings.worker_concurrency)
+
+                async def _one_engine(u: str):
+                    async with sem:
+                        db2 = SessionLocal()
+                        try:
+                            task_fresh = db2.get(Task, task_id)
+                            if task_fresh:
+                                await Orchestrator(db2).run_engine_pipeline(task_fresh, u)
+                        except Exception as e:  # noqa: BLE001
+                            self.emit("", "", "engine", "error", f"目标 {u} 流水线异常: {e}")
+                        finally:
+                            db2.close()
+
+                await asyncio.gather(*[_one_engine(u) for u in urls],
+                                     return_exceptions=True)
             task.status = "review"
             self.db.commit()
             return
@@ -264,10 +283,32 @@ class Orchestrator:
         task.status = "running"
         self.db.commit()
 
-        # MVP 串行执行各目标（保证 SQLite 单 session 安全）；
-        # 并发可后续用独立 session + asyncio.Semaphore(worker_concurrency) 扩展。
-        for target in targets:
-            await self._worker_pipeline(task, target)
+        if not targets:
+            task.status = "review"
+            self.db.commit()
+            return
+
+        # 并发调度各目标：worker_concurrency 限流，每个目标独立 session，
+        # task/target 从各自 session 重查避免 DetachedInstanceError。
+        # SQLite WAL + busy_timeout=30s 保证并发写不死锁。
+        sem = asyncio.Semaphore(self.settings.worker_concurrency)
+        t_ids = [t.id for t in targets]
+
+        async def _one_target(t_id: int):
+            async with sem:
+                db2 = SessionLocal()
+                try:
+                    t = db2.get(Target, t_id)
+                    task_fresh = db2.get(Task, task_id)
+                    if t and task_fresh:
+                        await Orchestrator(db2)._worker_pipeline(task_fresh, t)
+                except Exception as e:  # noqa: BLE001
+                    self.emit("", str(t_id), "worker", "error", f"目标流水线异常: {e}")
+                finally:
+                    db2.close()
+
+        await asyncio.gather(*[_one_target(i) for i in t_ids],
+                             return_exceptions=True)
 
         task.status = "review"
         self.db.commit()
@@ -277,7 +318,7 @@ class Orchestrator:
         纯确定性查询不烧 LLM（nl_intent 模式才会用到）。"""
         from ..agents.collector import CollectorAgent
 
-        run = AgentRun(target_id="", agent_role="collector",
+        run = AgentRun(target_id=None, agent_role="collector",
                        stage="collect", status="running")
         self.db.add(run)
         self.db.commit()
@@ -305,7 +346,7 @@ class Orchestrator:
         from ..agents.collector import CollectorAgent
 
         run = AgentRun(
-            target_id="", agent_role="collector",
+            target_id=None, agent_role="collector",
             stage="collect", status="running",
         )
         self.db.add(run)
@@ -357,8 +398,7 @@ class Orchestrator:
         try:
             # 1) Recon 侦察（简单角色 → 小模型）
             recon = ReconAgent(
-                **self._agent_kwargs(run.id, target, "recon"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "recon"), "memory": memory},
             )
             recon_out = await recon.run({"vuln_types": task.vuln_types})
             run.stage = state_machine.next_stage(run.stage) or run.stage
@@ -367,8 +407,7 @@ class Orchestrator:
 
             # 2) Worker: scan → exploit → verify（攻击型角色 → 大模型 + pruning）
             worker = WorkerAgent(
-                **self._agent_kwargs(run.id, target, "worker"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "worker"), 'memory': memory},
             )
             # 技能包注入：启用包的战术指令追加进 Worker 提示词（失败不阻塞）
             try:
@@ -397,8 +436,7 @@ class Orchestrator:
             # 3) Verifier 独立复现（用大模型做严谨判定）
             for v in worker_out.get("vulns", []):
                 verifier = VerifierAgent(
-                    **self._agent_kwargs(run.id, target, "verifier"),
-                    memory=memory,
+                    **{**self._agent_kwargs(run.id, target, "verifier"), 'memory': memory},
                 )
                 vout = await verifier.run({"vuln": v})
                 v["verified"] = vout.get("verified", False)
@@ -422,6 +460,7 @@ class Orchestrator:
                     vuln_type=v.get("vuln_type", ""), severity=v.get("severity", "medium"),
                     title=v.get("title", ""), detail=v.get("detail", ""),
                     payload=v.get("payload", ""), evidence=v.get("evidence", ""),
+                    evidence_images=json.dumps(v.get("evidence_images") or [], ensure_ascii=False),
                     repro=v.get("repro", ""), status="ai_reviewed",
                     confidence=v.get("confidence", 0.0),
                 ))
@@ -455,8 +494,7 @@ class Orchestrator:
         memory = MemoryStore(self.db)
         try:
             agent = BrowserAgent(
-                **self._agent_kwargs(run.id, target, "browser"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "browser"), 'memory': memory},
             )
             out = await agent.run({"vuln_types": task.vuln_types})
             for v in out.get("vulns", []):
@@ -465,6 +503,7 @@ class Orchestrator:
                     vuln_type=v.get("vuln_type", ""), severity=v.get("severity", "medium"),
                     title=v.get("title", ""), detail=v.get("detail", ""),
                     payload=v.get("payload", ""), evidence=v.get("evidence", ""),
+                    evidence_images=json.dumps(v.get("evidence_images") or [], ensure_ascii=False),
                     status="ai_reviewed", confidence=v.get("confidence", 0.0),
                 ))
             self.db.commit()
@@ -515,24 +554,21 @@ class Orchestrator:
         try:
             # AI1 Modeler 业务建模（命中缓存直接复用，不烧 token；接入 router 规则层 CMS 预筛注入攻击模板）
             modeler = ModelerAgent(
-                **self._agent_kwargs(run.id, target, "modeler"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "modeler"), 'memory': memory},
             )
             modeler_out = await modeler.run({})
             model = modeler_out.get("business_model", {})
 
             # SiteProfiler 单站深挖（router 规则层 0 Token 匹配 CMS + 攻击模板注入 profile）
             profiler = SiteProfilerAgent(
-                **self._agent_kwargs(run.id, target, "site_profiler"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "site_profiler"), 'memory': memory},
             )
             profiler_out = await profiler.run({})
             site_profile = profiler_out if isinstance(profiler_out, dict) else {}
 
             # AttackTree 生成：若规则层已产出 attack_templates（非空），直接作为骨架，节省 80% prompt
             tree_agent = AttackTreeAgent(
-                **self._agent_kwargs(run.id, target, "attack_tree"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "attack_tree"), 'memory': memory},
             )
             tree_out = await tree_agent.run({
                 "site_profile": site_profile,
@@ -542,8 +578,7 @@ class Orchestrator:
 
             # AI2 Attacker：接入 router（fixed_mutation 规则层前置）+ pruning（无效尝试剪枝）
             attacker = AttackerAgent(
-                **self._agent_kwargs(run.id, target, "attacker"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "attacker"), 'memory': memory},
             )
             attacker_out = await attacker.run({
                 "model": model,
@@ -554,8 +589,7 @@ class Orchestrator:
             # Verifier 独立复现
             for v in attacker_out.get("vulns", []):
                 verifier = VerifierAgent(
-                    **self._agent_kwargs(run.id, target, "verifier"),
-                    memory=memory,
+                    **{**self._agent_kwargs(run.id, target, "verifier"), 'memory': memory},
                 )
                 vout = await verifier.run({"vuln": v})
                 v["verified"] = vout.get("verified", False)
@@ -581,6 +615,7 @@ class Orchestrator:
                     severity=v.get("severity", "medium"),
                     title=v.get("title", ""), detail=v.get("detail", ""),
                     payload=v.get("payload", ""), evidence=v.get("evidence", ""),
+                    evidence_images=json.dumps(v.get("evidence_images") or [], ensure_ascii=False),
                     repro=v.get("repro", ""), status="ai_reviewed",
                     confidence=v.get("confidence", 0.0),
                 ))
@@ -652,6 +687,7 @@ class Orchestrator:
                     title=v.get("title", ""), detail=v.get("detail", ""),
                     payload=v.get("payload", ""),
                     evidence=v.get("evidence", ""),
+                    evidence_images=json.dumps(v.get("evidence_images") or [], ensure_ascii=False),
                     repro=f"{v.get('file', '')}:{v.get('line', 0)}",
                     status="ai_reviewed",
                     confidence=v.get("confidence", 0.0),
@@ -818,24 +854,21 @@ class Orchestrator:
         try:
             # 1) SiteProfiler 单站深挖自动收集（命中缓存直接复用）
             profiler = SiteProfilerAgent(
-                **self._agent_kwargs(run.id, target, "site_profiler"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "site_profiler"), 'memory': memory},
             )
             profiler_out = await profiler.run({})
             site_profile = profiler_out if isinstance(profiler_out, dict) else {}
 
             # 2) Modeler 业务建模（router 规则层 0 Token CMS 预筛 + 攻击模板）
             modeler = ModelerAgent(
-                **self._agent_kwargs(run.id, target, "modeler"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "modeler"), 'memory': memory},
             )
             modeler_out = await modeler.run({})
             model = modeler_out.get("business_model", {})
 
             # 3) PermissionAgent 权限发现专项（核心）
             perm_agent = PermissionAgent(
-                **self._agent_kwargs(run.id, target, "permission"),
-                memory=memory,
+                **{**self._agent_kwargs(run.id, target, "permission"), 'memory': memory},
             )
             perm_out = await perm_agent.run({
                 "url": url,
@@ -854,8 +887,7 @@ class Orchestrator:
                 try:
                     from ..agents.attacker import AttackerAgent
                     attacker = AttackerAgent(
-                        **self._agent_kwargs(run.id, target, "attacker"),
-                        memory=memory,
+                        **{**self._agent_kwargs(run.id, target, "attacker"), 'memory': memory},
                     )
                     attacker_out = await attacker.run({
                         "model": model,
@@ -870,8 +902,7 @@ class Orchestrator:
             # 5) Verifier 独立复现
             for v in all_vulns:
                 verifier = VerifierAgent(
-                    **self._agent_kwargs(run.id, target, "verifier"),
-                    memory=memory,
+                    **{**self._agent_kwargs(run.id, target, "verifier"), 'memory': memory},
                 )
                 vout = await verifier.run({"vuln": v})
                 v["verified"] = vout.get("verified", False)
@@ -897,6 +928,7 @@ class Orchestrator:
                     severity=v.get("severity", "medium"),
                     title=v.get("title", ""), detail=v.get("detail", ""),
                     payload=v.get("payload", ""), evidence=v.get("evidence", ""),
+                    evidence_images=json.dumps(v.get("evidence_images") or [], ensure_ascii=False),
                     repro=v.get("repro", ""), status="ai_reviewed",
                     confidence=v.get("confidence", 0.0),
                 ))
