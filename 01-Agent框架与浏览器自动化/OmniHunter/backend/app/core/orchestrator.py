@@ -940,6 +940,14 @@ def build_tool_registry(settings) -> ToolRegistry:
             n = get_mcp_manager().load_into_registry(reg, db)
             if n:
                 _log.info("MCP 工具注入完成: %d 个", n)
+            # 技能包 v2：包内 scripts/ 脚本注册为可执行工具（失败不阻塞）
+            try:
+                from .skillpacks import register_pack_tools
+                m = register_pack_tools(reg, db)
+                if m:
+                    _log.info("技能包脚本工具注入完成: %d 个", m)
+            except Exception as e2:  # noqa: BLE001
+                _log.warning("技能包脚本工具注入失败（不阻塞任务）: %s", e2)
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001

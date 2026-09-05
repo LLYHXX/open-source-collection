@@ -16,6 +16,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ..models import SkillPack
+
 
 def _data_dir() -> Path:
     """与 database.py 同款约定：数据目录取自 sqlite url 的父目录。"""
@@ -36,6 +38,9 @@ _MAX_PROMPT_CHARS = 8000  # 单包提示词拼接上限（防 token 爆炸）
 
 class SkillPackError(Exception):
     """技能包安装/校验错误。"""
+
+
+_BASH_EXE: str | None = None
 
 
 def _validate_pack_dir(pack_dir: Path) -> dict:
@@ -78,6 +83,9 @@ def install_from_local(local_path: str) -> tuple[dict, Path]:
     src = Path(local_path).resolve()
     if not src.is_dir():
         raise SkillPackError(f"本地目录不存在: {local_path}")
+    if not (src / "skillpack.json").is_file():
+        # 无清单：自动转换（兼容 Claude skills 的 SKILL.md 与任意 markdown 目录）
+        return _install_repo_as_pack(src, src.name)
     manifest = _validate_pack_dir(src)
     dst = SKILLPACKS_DIR / manifest["name"]
     _copy_pack(src, dst)
@@ -99,7 +107,9 @@ def install_from_git(git_url: str) -> tuple[dict, Path]:
         clone_dir = tmp / "repo"
         try:
             proc = subprocess.run(
-                ["git", "clone", "--depth", "1", git_url, str(clone_dir)],
+                # 绕过全局代理直连（代理客户端未开时 clone GitHub 必失败）
+                ["git", "-c", "http.proxy=", "-c", "https.proxy=",
+                 "clone", "--depth", "1", git_url, str(clone_dir)],
                 capture_output=True, text=True, timeout=300,
             )
         except subprocess.TimeoutExpired as e:
@@ -112,7 +122,160 @@ def install_from_git(git_url: str) -> tuple[dict, Path]:
         for child in clone_dir.iterdir():
             if child.is_dir() and (child / "skillpack.json").is_file():
                 return install_from_local(str(child))
-        raise SkillPackError("仓库根目录及一级子目录均未找到 skillpack.json")
+        # 自动适配主流格式：无 skillpack.json 时把仓库整体转为技能包
+        # （兼容 Claude skills 的 SKILL.md 约定与任意 markdown 提示词仓库）
+        return _install_repo_as_pack(clone_dir, git_url)
+
+
+def _install_repo_as_pack(repo_dir: Path, git_url: str) -> tuple[dict, Path]:
+    """把无清单仓库自动转成技能包：收集 markdown 提示词生成 skillpack.json。
+
+    兼容来源：Claude skills 仓库（SKILL.md frontmatter）、任意 *.md 知识仓库。
+    收集上限 16 个文件、总量 200KB，防止巨型仓库拖垮提示词注入。
+    """
+    repo_name = git_url.rstrip("/").split("/")[-1]
+    repo_name = re.sub(r"\.git$", "", repo_name) or "skillpack"
+    name = re.sub(r"[^A-Za-z0-9_\-\u4e00-\u9fff]", "-", repo_name)[:64].strip("-") or "skillpack"
+
+    skip_parts = {".git", "node_modules", "__pycache__", "dist", "build"}
+    md_files: list[Path] = []
+    for p in sorted(repo_dir.rglob("*.md")):
+        if skip_parts & set(p.parts):
+            continue
+        md_files.append(p)
+        if len(md_files) >= 16:
+            break
+    # SKILL.md 优先排序
+    md_files.sort(key=lambda p: (0 if p.name.upper() == "SKILL.MD" else 1, str(p)))
+    total = 0
+    keep: list[Path] = []
+    for p in md_files:
+        try:
+            sz = p.stat().st_size
+        except OSError:
+            continue
+        if total + sz > 200 * 1024:
+            continue
+        total += sz
+        keep.append(p)
+    if not keep:
+        raise SkillPackError("仓库内未找到任何 .md 技能/提示词文件，无法自动转换")
+
+    # 描述：优先 README 首个非标题段，其次首个 SKILL.md 的 frontmatter description
+    desc = f"自动转换自 {repo_name}"
+    for cand in (repo_dir / "README.md", *(p for p in keep if p.name.upper() == "SKILL.MD")):
+        try:
+            text = cand.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        m = re.search(r"^description:\s*(.+)$", text, re.MULTILINE)
+        if m and cand.name.upper() == "SKILL.MD":
+            desc = m.group(1).strip()[:200]
+            break
+        for line in text.splitlines():
+            s = line.strip()
+            if s and not s.startswith("#"):
+                desc = s[:200]
+                break
+        if desc != f"自动转换自 {repo_name}":
+            break
+
+    manifest = {
+        "name": name,
+        "version": "1.0.0",
+        "description": desc,
+        "author": "auto-converted",
+        "prompts": {"worker": [str(p.relative_to(repo_dir)).replace("\\", "/") for p in keep]},
+    }
+    dst = SKILLPACKS_DIR / name
+    _copy_pack(repo_dir, dst)
+    (dst / "skillpack.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest, dst
+
+
+def _find_bash() -> str:
+    """定位真正的 Git Bash（排除 WSL bash——它不认 Windows 路径）。结果缓存。"""
+    global _BASH_EXE
+    if _BASH_EXE is not None:
+        return _BASH_EXE
+    for cand in (r"C:\Program Files\Git\bin\bash.exe",
+                 r"C:\Program Files\Git\usr\bin\bash.exe",
+                 r"C:\Program Files (x86)\Git\bin\bash.exe"):
+        if Path(cand).is_file():
+            _BASH_EXE = cand
+            return _BASH_EXE
+    w = shutil.which("bash") or ""
+    _BASH_EXE = "" if "system32" in w.lower() else w
+    return _BASH_EXE
+
+
+def register_pack_tools(reg, db) -> int:
+    """技能包 v2：把启用包内 scripts/ 目录的可执行脚本注册为 ToolRegistry 工具。
+
+    发现规则：包目录下任意 scripts/ 子目录内的 .py/.sh/.ps1（兼容 Claude skills
+    的 skills/<name>/scripts/ 约定）。工具名 pack_<包名>_<脚本名>，调用时 args.args
+    作为命令行参数透传，cwd=脚本所在目录（相对资源可直达），超时 120s，输出截断 20KB。
+    返回注册的工具数。仅执行包目录内文件。
+    """
+    packs = db.query(SkillPack).filter(SkillPack.enabled.is_(True)).all()
+    count = 0
+    for p in packs:
+        pack_dir = Path(p.path)
+        if not pack_dir.is_dir():
+            continue
+        for script in sorted(pack_dir.rglob("*")):
+            if (script.suffix.lower() not in (".py", ".sh", ".ps1")
+                    or script.parent.name != "scripts"):
+                continue
+            stem = re.sub(r"[^A-Za-z0-9_]", "_", script.stem)[:32].strip("_") or "tool"
+            tool_name = f"pack_{re.sub(r'[^A-Za-z0-9_]', '_', p.name)[:24]}_{stem}"
+            if reg.has(tool_name):
+                continue
+
+            def _run(script_path=script, pack_root=pack_dir, **kwargs):
+                extra = str(kwargs.get("args") or "").strip()
+                # 绝对路径：规避 Git Bash 相对 cwd 与反斜杠转义问题
+                sp = str(script_path.resolve()).replace("\\", "/")
+                root = str(pack_root.resolve())
+                if sp.lower().endswith(".py"):
+                    import sys
+                    cmd = [sys.executable, sp]
+                elif sp.lower().endswith(".ps1"):
+                    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                           "-File", sp]
+                else:
+                    bash = _find_bash()
+                    if not bash:
+                        return "[缺运行时] 未找到 Git Bash，.sh 脚本无法执行（请安装 Git for Windows）"
+                    cmd = [bash, sp]
+                if extra:
+                    cmd.extend(extra.split())
+                try:
+                    proc = subprocess.run(
+                        cmd, cwd=root, capture_output=True, text=True,
+                        timeout=120, errors="replace",
+                    )
+                except subprocess.TimeoutExpired:
+                    return f"[超时] {tool_name} 执行超过 120s"
+                except FileNotFoundError as e:
+                    return f"[缺运行时] {e}"
+                out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+                return f"[exit={proc.returncode}]\n{out[:20000]}"
+
+            reg.register(
+                tool_name, _run,
+                description=f"技能包[{p.name}]脚本 {script.relative_to(pack_dir)}",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "args": {"type": "string",
+                                 "description": "传给脚本的命令行参数（空格分隔）"},
+                    },
+                },
+            )
+            count += 1
+    return count
 
 
 def prompt_suffix(db, roles: tuple[str, ...] = ()) -> str:
