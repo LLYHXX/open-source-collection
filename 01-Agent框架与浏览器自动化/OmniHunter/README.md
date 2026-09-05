@@ -51,6 +51,10 @@ flowchart LR
 start.bat        :: 开发模式：后端 18800 + 前端 5173（改代码热重载）
 start.bat prod   :: 生产模式：构建前端由后端托管，只需访问 http://localhost:18800
 stop.bat         :: 一键停止（按端口杀进程）
+
+:: 开机自启动（登录后静默拉起 prod 后端 18800，最小化窗口可看日志）
+install_autostart.bat    :: 注册（当前用户，无需管理员）
+uninstall_autostart.bat  :: 移除
 ```
 
 首次运行自动 `npm install` + `pip install --target=vendor`，之后秒起。唯一必填项：`backend/.env` 里的 `LLM_API_KEY`（引擎模式不依赖模型质量，最低配 Key 即可）。
