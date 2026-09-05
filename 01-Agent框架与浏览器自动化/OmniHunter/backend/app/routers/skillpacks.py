@@ -53,7 +53,7 @@ def _upsert(db: Session, manifest: dict, path, source: str) -> SkillPack:
         description=str(manifest.get("description", "")),
         source=source, path=str(path),
         manifest=json.dumps(manifest, ensure_ascii=False),
-        enabled=False,  # 默认停用，手动启用
+        enabled=True,  # 安装即启用，自动注入 Worker
     )
     db.add(p)
     db.commit()

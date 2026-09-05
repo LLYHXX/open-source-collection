@@ -376,6 +376,17 @@ class Orchestrator:
                 skill_prompts = prompt_suffix(self.db)
             except Exception:  # noqa: BLE001
                 skill_prompts = ""
+            # 内置知识包注入：探测速查（SQL/RCE/WAF 绕过精炼），失败不阻塞
+            try:
+                import os
+                _kq = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                   "knowledge", "payload_quickref.md")
+                if os.path.isfile(_kq):
+                    with open(_kq, "r", encoding="utf-8") as _f:
+                        skill_prompts = (skill_prompts or "") + \
+                            "\n\n## 内置攻击知识包（仅对已授权目标使用）\n" + _f.read()
+            except Exception:  # noqa: BLE001
+                pass
             worker_out = await worker.run({
                 "vuln_types": task.vuln_types,
                 "recon": recon_out,
