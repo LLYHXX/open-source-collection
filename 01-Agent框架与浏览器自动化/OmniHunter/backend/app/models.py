@@ -211,6 +211,7 @@ class MinerRun(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     trigger_at = Column(DateTime, default=datetime.utcnow)
+    trigger_from = Column(String, default="manual")  # manual / cron / api
     loop_coverage_gap_count = Column(Integer, default=0)
     loop_reverify_count = Column(Integer, default=0)
     loop_link_candidate_count = Column(Integer, default=0)

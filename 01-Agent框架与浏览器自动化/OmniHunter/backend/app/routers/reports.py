@@ -467,10 +467,20 @@ def _severity_summary(vulns) -> str:
 
 
 def _render(content: str, data: dict) -> str:
-    """渲染模板：优先 jinja2，未装则简单 {{ var }} 替换（不支持循环）。"""
+    """渲染模板：优先 jinja2，未装则简单 {{ var }} 替换（不支持循环）。
+
+    模板语法/变量错误属于用户输入问题，抛 400 友好提示而不是 500，
+    避免一次模板笔误让整个后端请求失败。
+    """
     try:
-        from jinja2 import Template
-        return Template(content).render(**data)
+        from jinja2 import TemplateError
+        try:
+            from jinja2 import Template
+            return Template(content).render(**data)
+        except TemplateError as e:
+            raise HTTPException(
+                400, f"报告模板语法错误（请检查模板）：{type(e).__name__}: {e}"
+            )
     except ImportError:
         # 兜底：只替换简单变量，循环块原样保留
         def repl(m):

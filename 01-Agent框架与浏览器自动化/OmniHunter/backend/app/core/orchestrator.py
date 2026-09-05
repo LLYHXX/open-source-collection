@@ -686,8 +686,9 @@ class Orchestrator:
             wf_def = PRESET_WORKFLOWS.get(workflow_name, {})
             workflow = wf_def.get("workflow") if wf_def else None
             if workflow is None:
-                # 自定义 workflow 由 task.params 传入
-                workflow = task.params.get("workflow", {}) if task.params else {}
+                # 自定义 workflow 由 task.params 传入（Task 当前无 params 列，getattr 兜底为空）
+                task_params = getattr(task, "params", None)
+                workflow = task_params.get("workflow", {}) if isinstance(task_params, dict) else {}
 
             if not workflow or not workflow.get("nodes"):
                 # 无 workflow 兜底：先跑 Modeler 建 model，

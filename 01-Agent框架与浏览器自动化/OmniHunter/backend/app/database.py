@@ -29,12 +29,38 @@ def _ensure_sqlite_dir(url: str) -> None:
 
 _ensure_sqlite_dir(settings.database_url)
 
+# SQLite 并发稳定性：
+# - timeout=30：驱动层 busy 等待（等价 busy_timeout 的一层兜底）
+# - WAL 模式：读写不互斥（后台扫描长事务写库时，前端查询/写入不再立刻撞 locked）
+# - busy_timeout=30s：拿不到写锁时等待而非立即 OperationalError
+# - synchronous=NORMAL：WAL 下安全且更快
+_is_sqlite = settings.database_url.startswith("sqlite")
+_is_memory_sqlite = ":memory:" in settings.database_url
 connect_args = (
-    {"check_same_thread": False}
-    if settings.database_url.startswith("sqlite")
+    {"check_same_thread": False, "timeout": 30}
+    if _is_sqlite
     else {}
 )
 engine = create_engine(settings.database_url, connect_args=connect_args, echo=False)
+
+
+if _is_sqlite:
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _rec):
+        """每个新连接落地 PRAGMA：WAL + busy_timeout + 外键。"""
+        cur = dbapi_conn.cursor()
+        try:
+            # 内存库不支持 WAL（WAL 需要文件共享内存），跳过
+            if not _is_memory_sqlite:
+                cur.execute("PRAGMA journal_mode=WAL")
+                cur.execute("PRAGMA synchronous=NORMAL")
+            cur.execute("PRAGMA busy_timeout=30000")
+            cur.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cur.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -76,7 +102,11 @@ def _sqlite_add_column_with_retry(tname: str, col, type_str: str, default_clause
                 low = str(e).lower()
                 is_lock = "locked" in low
                 is_constraint = "constraint" in low or "not null" in low or "default" in low
-                if not is_lock and not is_constraint and "duplicate" not in low:
+                # 重复列=列已存在（多进程双开竞态/重复迁移）：幂等视为成功
+                if "duplicate" in low:
+                    log.info("[migrate] 表 %s 列 %s 已存在（跳过）", tname, col.name)
+                    return
+                if not is_lock and not is_constraint:
                     log.warning("[migrate] 表 %s 列 %s 方式=%s 非预期异常: %s", tname, col.name, label, e)
                 if is_lock and retry < 2:
                     wait = (retry + 1) * 0.5

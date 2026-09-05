@@ -128,12 +128,12 @@ def update_config(payload: MinerConfigIn, db: Session = Depends(get_db)):
 @router.post("/trigger-once", response_model=StandardResponse)
 async def trigger_once():
     """立即触发一次 Miner 三 Loop；返回 running in background，结果查 GET /runs。"""
+    from ..core.bgtasks import safe_create_task
+
     async def _bg():
-        try:
-            await run_miner_once(trigger_from="manual")
-        except Exception as e:  # noqa: BLE001
-            log.error("Miner trigger-once 后台异常: %s", e)
-    asyncio.create_task(_bg())
+        await run_miner_once(trigger_from="manual")
+
+    safe_create_task(_bg(), name="miner:trigger-once")
     return StandardResponse(message="Miner 单轮已在后台执行；可通过 GET /miner/runs 查看执行结果")
 
 
@@ -148,9 +148,9 @@ def list_runs(limit: int = 30, db: Session = Depends(get_db)):
         data.append({
             "id": r.id, "trigger_at": r.trigger_at.isoformat() if r.trigger_at else None,
             "trigger_from": r.trigger_from,
-            "loop1_coverage_count": r.loop1_coverage_count,
-            "loop2_reverify_count": r.loop2_reverify_count,
-            "loop3_link_count": r.loop3_link_count,
+            "loop1_coverage_count": r.loop_coverage_gap_count or 0,
+            "loop2_reverify_count": r.loop_reverify_count or 0,
+            "loop3_link_count": r.loop_link_candidate_count or 0,
             "budget_hit_limit": bool(r.budget_hit_limit),
             "finished_at": r.finished_at.isoformat() if r.finished_at else None,
             "error_log": r.error_log or "",

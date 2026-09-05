@@ -232,9 +232,9 @@ def _loop1_coverage_gap(db: Session, cfg: MinerConfig, budget_left: int) -> tupl
             if task is None:
                 continue
             if cfg.auto_approve == MINER_AUTO_APPROVE_ALL:
+                # status=pending 即自动启动标记；run_miner_once 底部按
+                # status=pending + source like 'miner:' 批量 kickoff
                 task.status = "pending"
-                # 真正的 start_task 调用方会处理（见 run_miner_once 底部批批起）
-                task.params = dict(task.params or {}, _miner_auto_start=True)
             count += 1
             budget_left -= 1
     return count, budget_left
@@ -247,7 +247,6 @@ def _loop2_reverify(db: Session, cfg: MinerConfig, budget_left: int) -> tuple[in
     rows = db.scalars(
         select(Intel).where(and_(Intel.updated_at < cutoff, Intel.lifecycle == "active"))
     ).all()
-    auto_start_ids: list[str] = []
     for it in rows:
         # confidence 衰减：至少保留 0.1
         it.confidence = max(0.1, float(it.confidence or 0.6) * 0.85)
@@ -286,9 +285,8 @@ def _loop2_reverify(db: Session, cfg: MinerConfig, budget_left: int) -> tuple[in
         if task is None:
             continue
         if cfg.auto_approve in (MINER_AUTO_APPROVE_REVERIFY, MINER_AUTO_APPROVE_ALL):
+            # status=pending 由 run_miner_once 底部统一 kickoff（无 params 列）
             task.status = "pending"
-            task.params = dict(task.params or {}, _miner_auto_start=True)
-            auto_start_ids.append(task.id)
         count += 1
         budget_left -= 1
     db.flush()
@@ -315,14 +313,16 @@ async def _kickoff_auto_tasks(task_ids: list[str]) -> None:
         for tid in task_ids:
             try:
                 t = db.get(Task, tid)
-                if t and t.status in ("pending", "collecting", "running"):
+                # 只自动启动 pending 的任务；collecting/running 在跑、
+                # review/done/failed/rejected 都不重复拉起
+                if not t or t.status != "pending":
                     continue
                 await Orchestrator(db).run_task(tid)
             except Exception as e:  # noqa: BLE001
                 log.warning("Miner 自动启动 task %s 异常: %s", tid, e)
                 try:
                     t2 = db.get(Task, tid)
-                    if t2 is not None:
+                    if t2 is not None and t2.status in ("collecting", "running"):
                         t2.status = "failed"
                         t2.error = f"[Miner 自动启动] [{type(e).__name__}] {e}"[:2000]
                         db.commit()
@@ -340,7 +340,8 @@ async def run_miner_once(trigger_from: str = "manual") -> dict:
     db = SessionLocal()
     run_id = uuid.uuid4().hex
     run = MinerRun(id=run_id, trigger_at=datetime.utcnow(), trigger_from=trigger_from,
-                   loop1_coverage_count=0, loop2_reverify_count=0, loop3_link_count=0,
+                   loop_coverage_gap_count=0, loop_reverify_count=0,
+                   loop_link_candidate_count=0,
                    budget_hit_limit=False)
     db.add(run)
     db.commit()
@@ -367,15 +368,15 @@ async def run_miner_once(trigger_from: str = "manual") -> dict:
 
         # ===== Loop 1 Coverage =====
         l1, budget_left = _loop1_coverage_gap(db, cfg, budget_left)
-        run.loop1_coverage_count = l1
+        run.loop_coverage_gap_count = l1
 
         # ===== Loop 2 Reverify =====
         l2, budget_left = _loop2_reverify(db, cfg, budget_left)
-        run.loop2_reverify_count = l2
+        run.loop_reverify_count = l2
 
         # ===== Loop 3 Link Extend (不受 budget) =====
         l3 = _loop3_link_extend(db, cfg)
-        run.loop3_link_count = l3
+        run.loop_link_candidate_count = l3
 
         # Budget 命中标记
         if (budget_hit_before or budget_left <= 0) and (l1 + l2) > 0:
@@ -395,7 +396,9 @@ async def run_miner_once(trigger_from: str = "manual") -> dict:
             .where(Task.created_at >= run.trigger_at - timedelta(seconds=5))
         ).all())
         if auto_ids:
-            asyncio.create_task(_kickoff_auto_tasks(auto_ids))
+            from .bgtasks import safe_create_task
+            safe_create_task(_kickoff_auto_tasks(auto_ids),
+                             name="miner:kickoff-auto-tasks")
 
         run.finished_at = datetime.utcnow()
         db.commit()
@@ -463,20 +466,16 @@ def trigger_miner_cron_refresh(new_cron_expr: str | None = None) -> None:
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
 
-    def _sync_wrapper():
-        # APScheduler asyncio 调度器里 sync func 会在线程池里跑，内部 asyncio.run 一次 miner
-        try:
-            asyncio.run(run_miner_once(trigger_from="cron"))
-        except Exception as e:  # noqa: BLE001
-            log.error("[miner:cron] wrapper 异常: %s", e)
-
+    # 协程函数 job：AsyncIOScheduler 在主事件循环上直接 await，
+    # 不用线程池 + asyncio.run 临时循环（避免内部后台任务被随循环关闭而取消）
     scheduler.add_job(
+        run_miner_once,
+        trig,
         id=job_id,
-        func=_sync_wrapper,
-        trigger=trig,
+        kwargs={"trigger_from": "cron"},
         replace_existing=True,
         misfire_grace_time=3600,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Miner 内部 cron 已刷新: %s", cron)
+    log.info("Miner 内部 cron 已刷新: %s (async job)", cron)

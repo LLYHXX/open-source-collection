@@ -115,20 +115,14 @@ def init_scheduler() -> None:
             miner_cron = "0 2 * * *"
             _trig = CronTrigger.from_crontab(miner_cron, timezone="Asia/Shanghai")
 
-        def __miner_sync_wrapper():
-            """APScheduler asyncio 调度器里的 sync wrapper：在线程池里 asyncio.run。"""
-            try:
-                asyncio.run(run_miner_once(trigger_from="cron"))
-            except Exception as _e:  # noqa: BLE001
-                import logging as _log2
-                _log2.getLogger("aififteen-hunter").error(
-                    "[miner:cron] wrapper 异常: %s", _e
-                )
-
+        # AsyncIOScheduler 原生支持协程函数 job：直接在主事件循环上 await，
+        # 不再用"线程池 + asyncio.run 临时循环"桥接（旧写法会让 run_miner_once
+        # 内部 create_task 的后台任务建在即将关闭的临时循环上，被一并取消）。
         scheduler.add_job(
+            run_miner_once,
+            _trig,
             id="__miner_internal__",
-            func=__miner_sync_wrapper,
-            trigger=_trig,
+            kwargs={"trigger_from": "cron"},
             replace_existing=True,
             misfire_grace_time=3600,
             coalesce=True,
@@ -136,7 +130,7 @@ def init_scheduler() -> None:
         )
         import logging as _l
         _l.getLogger("aififteen-hunter").info(
-            "Miner 内部 cron 已挂载: __miner_internal__ cron=%s", miner_cron
+            "Miner 内部 cron 已挂载: __miner_internal__ cron=%s (async job)", miner_cron
         )
     except Exception as e:  # noqa: BLE001
         import logging as _l2

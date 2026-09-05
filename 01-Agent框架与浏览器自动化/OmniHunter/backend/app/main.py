@@ -70,7 +70,8 @@ def _err(success: bool, code: str, message: str, request_id: str,
     http_status = status_map.get(code, status.HTTP_400_BAD_REQUEST)
     if code.startswith("E-4") and code != "E-4220":
         try:
-            http_status = int("4" + code[3:6])
+            # code 形如 "E-4" + 3 位状态码（E-4404），末 3 位即 HTTP 状态
+            http_status = int(code[3:6])
             if http_status < 400 or http_status > 499:
                 http_status = status.HTTP_400_BAD_REQUEST
         except ValueError:
@@ -136,6 +137,12 @@ def _build_app() -> FastAPI:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # 全局事件循环兜底：任何游离后台任务异常都被捕获记录，不再冒泡打断进程
+    try:
+        from .core.bgtasks import install_loop_exception_handler
+        install_loop_exception_handler()
+    except Exception as e:  # noqa: BLE001
+        log.warning("事件循环异常处理器安装失败（不阻塞启动）: %s", e)
     # 应用动态配置（Setting 表，优先级高于 .env）——重启后依然生效
     try:
         from .config import apply_dynamic_overrides

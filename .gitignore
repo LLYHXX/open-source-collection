@@ -16,6 +16,8 @@ __pycache__/
 
 # Data & env
 *.db
+*.db-wal
+*.db-shm
 **/.env
 **/.env.bak
 **/.env.*.bak

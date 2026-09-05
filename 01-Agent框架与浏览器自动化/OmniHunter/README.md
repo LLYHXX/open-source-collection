@@ -174,7 +174,7 @@ docker compose up -d --build
 ```bash
 # 健康检查
 curl http://localhost:18800/api/health
-# 返回 {"status":"ok","version":"0.1.0"} 即正常
+# 返回 {"status":"ok"} 即正常（脱敏最小响应，不带版本指纹）
 
 # 查看日志
 docker compose logs -f aififteen_hunter
@@ -349,6 +349,22 @@ aififteen Hunter 内置 APScheduler 定时任务调度：
 
 - **渲染引擎**：Jinja2（优先），未安装时 `{{var}}` 简单替换兜底
 - **自定义模板**：控制台 → 报告 → 新建，支持 Jinja2 语法
+- **模板语法错误不再 500**：渲染失败时返回 400 并提示"报告模板语法错误"，不会再带崩后端进程
+
+---
+
+### 后端稳定性与可靠性（一键提交不崩）
+
+平台针对"点确认/提交后后端突然消失、不知错在何处"做了系统加固：
+
+- **SQLite 并发加固**：启用 WAL 日志 + `busy_timeout=30s` + `foreign_keys=ON`。后台挖掘流水线长事务持锁时，前端写入（提交裁决/报告/情报）不再撞 `database is locked`；8 路并发写实测全部成功。
+- **缺列自愈迁移**：升级后启动自动对比模型列并 `ALTER TABLE ADD` 补齐（如 Miner 运行记录表的 `trigger_from`）；多进程/双开同时启动时"列已存在"视为成功，不再因重复列崩溃。
+- **后台任务安全包装**：所有 fire-and-forget 协程统一走 `safe_create_task`（`core/bgtasks.py`），异常被完整记录并回写任务 `error` 字段，不会在 uvicorn/anyio 栈冒泡成未观测异常；并安装事件循环兜底异常处理器。
+- **定时任务原生协程化**：Miner 定时任务由"线程池 + 临时事件循环"改为 APScheduler 原生协程 job，后台任务挂在主循环上、不会随临时循环关闭被误取消。
+- **错误响应标准化**：未捕获异常统一返回 `E-5001`，响应体不含堆栈、仅携带 `request_id`；响应头 `X-Request-Id` 与 body 一致，凭此 ID 可在日志定位根因（出错后端不中断）。
+- **健康检查最小化**：`GET /api/health` 仅返回 `{"status":"ok"}`，不泄露版本/依赖/路径等指纹信息。
+
+自检：`backend/` 下提供 `tests_stability.py`（health/WAL/报告生成/坏模板 400/并发写/Miner 触发全链路 11 项）与 `tests_smoke_miner.py`（自主挖掘三 Loop），可随时回归。
 
 ---
 

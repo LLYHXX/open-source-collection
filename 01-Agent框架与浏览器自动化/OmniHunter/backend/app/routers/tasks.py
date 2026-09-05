@@ -468,7 +468,9 @@ async def approve_task(task_id: str, db: Session = Depends(get_db)):
     task.status = "pending"
     db.commit()
 
-    # 立即启动（复用 start_task 的 Orchestrator.run_task 后台模式）
+    # 立即启动（复用 start_task 的 Orchestrator.run_task 后台模式，统一安全包装）
+    from ..core.bgtasks import safe_create_task
+
     async def _bg():
         db2 = SessionLocal()
         try:
@@ -478,7 +480,8 @@ async def approve_task(task_id: str, db: Session = Depends(get_db)):
         finally:
             db2.close()
 
-    asyncio.create_task(_bg())
+    safe_create_task(_bg(), name=f"task:approve:{task_id}",
+                     on_error=lambda e: _set_task_failed(task_id, e))
     return StandardResponse(message="已批准并启动任务")
 
 
