@@ -57,6 +57,28 @@ async function saveTheme() {
   }
 }
 
+// ===== 调度并发 =====
+const workerConcurrency = ref(5)
+const savingConcurrency = ref(false)
+async function loadConcurrency() {
+  try {
+    const all = await api.listSettings()
+    const row = (all as any[]).find((s: any) => s.key?.toLowerCase() === 'worker_concurrency')
+    if (row) workerConcurrency.value = parseInt(row.value, 10) || 5
+  } catch { /* ignore */ }
+}
+async function saveConcurrency() {
+  savingConcurrency.value = true
+  try {
+    await api.saveSetting({ key: 'worker_concurrency', value: String(workerConcurrency.value) })
+    ElMessage.success(`并发数已设为 ${workerConcurrency.value}，下次启动任务立即生效`)
+  } catch (e: any) {
+    ElMessage.error('保存失败：' + (e?.friendlyMsg || e?.message || e))
+  } finally {
+    savingConcurrency.value = false
+  }
+}
+
 // ===== Autonomous Miner =====
 const miner = reactive({
   enabled: false,
@@ -332,6 +354,21 @@ async function doUpdate() {
   }
 }
 
+// ===== Token 消耗统计 =====
+const tokenInfo = ref<any>({ total_calls: 0, total_tokens: 0, prompt_tokens: 0, completion_tokens: 0, by_model: [] })
+const tokenDays = ref(30)
+const tokenLoading = ref(false)
+async function loadTokens() {
+  tokenLoading.value = true
+  try {
+    const res: any = await api.tokenStats(tokenDays.value)
+    if (res?.data) tokenInfo.value = res.data
+  } catch { /* 静默 */ } finally { tokenLoading.value = false }
+}
+function fmtNum(n: number) {
+  return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(n ?? 0)
+}
+
 // ===== MCP 服务器管理 =====
 const mcpServers = ref<any[]>([])
 const mcpLoading = ref(false)
@@ -494,12 +531,55 @@ onMounted(async () => {
   await loadMinerConfig()
   loadMcp()
   loadPacks()
+  loadTokens()
+  loadConcurrency()
 })
 </script>
 
 <template>
   <div>
     <h2 class="page-title">{{ isCyber ? 'CFG · CONTROL PANEL' : '设置' }}</h2>
+
+    <!-- ===== Token 消耗统计 ===== -->
+    <el-card style="margin-bottom: 16px" v-loading="tokenLoading">
+      <template #header>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span>{{ isCyber ? 'TOKEN · USAGE METER' : 'Token 消耗统计' }}</span>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <el-select v-model="tokenDays" size="small" style="width:110px" @change="loadTokens">
+              <el-option :value="1" label="近 24 小时" />
+              <el-option :value="7" label="近 7 天" />
+              <el-option :value="30" label="近 30 天" />
+              <el-option :value="365" label="全部" />
+            </el-select>
+            <el-button size="small" @click="loadTokens">刷新</el-button>
+          </div>
+        </div>
+      </template>
+      <el-row :gutter="12" style="margin-bottom: 14px;">
+        <el-col :span="6"><el-statistic title="调用次数" :value="tokenInfo.total_calls" /></el-col>
+        <el-col :span="6"><el-statistic title="Token 总量" :value="tokenInfo.total_tokens" /></el-col>
+        <el-col :span="6"><el-statistic title="输入（提问）" :value="tokenInfo.prompt_tokens" /></el-col>
+        <el-col :span="6"><el-statistic title="输出（回答）" :value="tokenInfo.completion_tokens" /></el-col>
+      </el-row>
+      <el-table :data="tokenInfo.by_model" size="small" stripe
+                :empty-text="isCyber ? 'NO LLM CALLS YET' : '还没有 LLM 调用记录（发起任务/扩展分析后自动累计）'">
+        <el-table-column prop="model" label="模型" min-width="220" />
+        <el-table-column prop="calls" label="调用次数" width="100" />
+        <el-table-column label="输入" width="90">
+          <template #default="{ row }">{{ fmtNum(row.prompt_tokens) }}</template>
+        </el-table-column>
+        <el-table-column label="输出" width="90">
+          <template #default="{ row }">{{ fmtNum(row.completion_tokens) }}</template>
+        </el-table-column>
+        <el-table-column label="合计" width="90">
+          <template #default="{ row }">{{ fmtNum(row.total_tokens) }}</template>
+        </el-table-column>
+        <el-table-column label="平均每次" width="100">
+          <template #default="{ row }">{{ fmtNum(row.avg_tokens) }}</template>
+        </el-table-column>
+      </el-table>
+    </el-card>
 
     <!-- ===== UI & Appearance ===== -->
     <el-card style="margin-bottom: 16px">
@@ -515,6 +595,24 @@ onMounted(async () => {
         </el-radio-group>
         <el-button type="primary" :loading="savingTheme" @click="saveTheme">{{ isCyber ? 'SAVE · WRITE ui.theme' : '保存并应用主题' }}</el-button>
       </div>
+    </el-card>
+
+    <!-- ===== 调度并发 ===== -->
+    <el-card style="margin-bottom: 16px">
+      <template #header>{{ isCyber ? 'WORKER CONCURRENCY · CTRL' : '调度并发控制' }}</template>
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
+        <template #title>{{ isCyber ? 'PARALLEL_TARGETS · INDEPENDENT_SESSION' : '同时跑多少个目标——批量 IP/FOFA 不再串行排队' }}</template>
+        <span v-if="isCyber">SEM=worker_concurrency · WAL+busy_timeout=30s</span>
+        <span v-else>填几百上千 IP 时，这里决定同时并行挖几个。值越大挖得越快，但占资源越多。SQLite 已开 WAL 模式+30s 锁等待扛并发写，建议 3~20。</span>
+      </el-alert>
+      <el-form label-width="120px" size="default" inline>
+        <el-form-item :label="isCyber ? 'WORKERS' : '同时并发数'">
+          <el-input-number v-model="workerConcurrency" :min="1" :max="50" :step="1" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="savingConcurrency" @click="saveConcurrency">{{ isCyber ? 'SAVE · INSTANT' : '保存并即时生效' }}</el-button>
+        </el-form-item>
+      </el-form>
     </el-card>
 
     <!-- ===== Autonomous Miner ===== -->
