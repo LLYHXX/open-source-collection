@@ -224,6 +224,25 @@ app.add_middleware(
 )
 
 app.include_router(access_router.router, prefix="/api")
+
+# ---- 漏洞证据截图静态访问（鉴权 + 文件名白名单防穿越）----
+from fastapi import Depends as _Depends
+from fastapi.responses import FileResponse as _FileResponse
+from .auth import verify_token as _verify_token
+from .core.screenshots import shot_dir as _shot_dir, parse_images as _parse_images
+
+
+@app.get("/api/screenshots/{fname}", include_in_schema=False,
+         dependencies=[_Depends(_verify_token)])
+async def _screenshot_file(fname: str):
+    if not _parse_images([fname]):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not Found")
+    f = _shot_dir() / fname
+    if not f.is_file():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _FileResponse(f, media_type="image/png")
 app.include_router(tasks_router.router, prefix="/api")
 app.include_router(agents_router.router, prefix="/api")
 app.include_router(vulns_router.router, prefix="/api")
@@ -292,7 +311,35 @@ def _maybe_mount_debug_boom():
 _maybe_mount_debug_boom()
 
 
-# 前端静态托管（构建产物存在时）
-_frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+# 前端静态托管（构建产物存在时）：兼容 Docker 布局（backend/frontend/dist）
+# 与本地布局（仓库根 frontend/dist），任一存在即挂载。
+# 用 catch-all 而非 StaticFiles(mount)：让 /tokens、/settings 等前端路由
+# 也回落到 index.html（SPA history 模式），/api/* 不受影响（已先注册）。
+_here = Path(__file__).resolve().parent.parent
+_frontend_dist = _here / "frontend" / "dist"
+if not _frontend_dist.exists():
+    _alt = _here.parent / "frontend" / "dist"
+    if _alt.exists():
+        _frontend_dist = _alt
 if _frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+    from fastapi.responses import FileResponse
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Not Found")
+        target = (_frontend_dist / full_path).resolve()
+        try:
+            target.relative_to(_frontend_dist.resolve())
+        except ValueError:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Not Found")
+        if full_path and target.is_file():
+            return FileResponse(target)
+        # 静态资源（assets/ 下的 JS/CSS/图片）不存在时必须 404，
+        # 不能返回 index.html——否则浏览器把 HTML 当 JS 执行导致页面崩溃
+        if full_path.startswith("assets/"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(_frontend_dist / "index.html")
