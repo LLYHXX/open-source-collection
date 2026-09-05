@@ -93,6 +93,11 @@ async def external_upload(file: UploadFile = File(...),
 async def poc_expand_route(payload: PocExpandIn, db: Session = Depends(get_db)):
     """POC 扩展分析：变体生成 → 确定性复验 → 确认漏洞入库 + 子目标提取。"""
     settings = get_settings()
+    # 无 LLM Key 时秒退：扩展分析依赖大模型，避免前端干等 10 分钟超时
+    if not (settings.llm_api_key or "").strip():
+        return StandardResponse(
+            success=False,
+            message="未配置 LLM_API_KEY：POC 扩展分析依赖大模型，请编辑 backend/.env 填写 LLM_API_KEY 后重启后端")
     # 外部 URL 统一校验（防 SSRF，与任务创建同源）
     _validate_target_url(payload.target_url)
 
