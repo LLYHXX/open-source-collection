@@ -331,11 +331,169 @@ async function doUpdate() {
     updating.value = false
   }
 }
+
+// ===== MCP 服务器管理 =====
+const mcpServers = ref<any[]>([])
+const mcpLoading = ref(false)
+const mcpTesting = ref('')
+const mcpDialog = ref(false)
+const mcpForm = ref({ id: '', name: '', command: '', args: '', env: '' })
+
+// 推荐清单（仅预填表单，用户确认后手动添加——不自动安装）
+const MCP_PRESETS = [
+  { label: 'fetch · 网页抓取', command: 'uvx mcp-server-fetch', args: '', env: '' },
+  { label: 'filesystem · 文件访问', command: 'npx -y @modelcontextprotocol/server-filesystem', args: 'C:\\允许访问的目录', env: '' },
+  { label: 'github · 仓库操作', command: 'npx -y @modelcontextprotocol/server-github', args: '', env: 'GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxx' },
+  { label: 'playwright · 浏览器自动化', command: 'npx -y @playwright/mcp@latest', args: '', env: '' },
+  { label: 'memory · 知识图谱记忆', command: 'npx -y @modelcontextprotocol/server-memory', args: '', env: '' },
+]
+
+function applyMcpPreset(label: string) {
+  const p = MCP_PRESETS.find((x) => x.label === label)
+  if (!p) return
+  if (!mcpForm.value.name) mcpForm.value.name = label.split(' · ')[0]
+  mcpForm.value.command = p.command
+  mcpForm.value.args = p.args
+  mcpForm.value.env = p.env
+}
+
+function openMcpDialog(row?: any) {
+  if (row) {
+    mcpForm.value = {
+      id: row.id, name: row.name, command: row.command,
+      args: (row.args || []).join('\n'),
+      env: Object.entries(row.env || {}).map(([k, v]) => `${k}=${v}`).join('\n'),
+    }
+  } else {
+    mcpForm.value = { id: '', name: '', command: '', args: '', env: '' }
+  }
+  mcpDialog.value = true
+}
+
+async function loadMcp() {
+  mcpLoading.value = true
+  try {
+    mcpServers.value = await api.listMcpServers()
+  } catch { /* 忽略 */ } finally { mcpLoading.value = false }
+}
+
+async function saveMcp() {
+  const f = mcpForm.value
+  if (!f.name || !f.command) return ElMessage.warning('名称与启动命令必填')
+  const payload = {
+    name: f.name, command: f.command,
+    args: f.args.split('\n').map((s) => s.trim()).filter(Boolean),
+    env: Object.fromEntries(f.env.split('\n').map((s) => s.trim()).filter((s) => s.includes('='))
+      .map((s) => [s.slice(0, s.indexOf('=')).trim(), s.slice(s.indexOf('=') + 1).trim()])),
+  }
+  try {
+    if (f.id) await api.updateMcpServer(f.id, payload)
+    else await api.addMcpServer(payload)
+    ElMessage.success('已保存（默认停用，测试连接后手动启用）')
+    mcpDialog.value = false
+    await loadMcp()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || e)
+  }
+}
+
+async function testMcp(row: any) {
+  mcpTesting.value = row.id
+  try {
+    const res = await api.testMcpServer(row.id)
+    res.success ? ElMessage.success(res.message) : ElMessage.error(res.message)
+    await loadMcp()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || e)
+  } finally { mcpTesting.value = '' }
+}
+
+async function toggleMcp(row: any) {
+  try {
+    const res = await api.enableMcpServer(row.id, !row.enabled)
+    if (row.enabled === false && !res.enabled && res.status === '连接失败') {
+      ElMessage.error('启用失败：' + (res.last_error || '连接失败'))
+    } else {
+      ElMessage.success(row.enabled ? '已停用' : '已启用，其工具将在任务运行时注入')
+    }
+    await loadMcp()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || e)
+    await loadMcp()
+  }
+}
+
+async function deleteMcp(row: any) {
+  await api.deleteMcpServer(row.id)
+  ElMessage.success('已删除')
+  await loadMcp()
+}
+
+async function refreshMcp() {
+  mcpLoading.value = true
+  try {
+    const res = await api.refreshMcpServers()
+    res.success ? ElMessage.success(res.message) : ElMessage.warning(res.message)
+    await loadMcp()
+  } catch (e: any) {
+    ElMessage.error(e.message || e)
+  } finally { mcpLoading.value = false }
+}
+
+// ===== 技能包管理 =====
+const packs = ref<any[]>([])
+const packLoading = ref(false)
+const packDialog = ref(false)
+const packGitUrl = ref('')
+const packLocalPath = ref('')
+const packInstalling = ref(false)
+
+async function loadPacks() {
+  packLoading.value = true
+  try { packs.value = await api.listSkillPacks() } catch { /* 忽略 */ } finally { packLoading.value = false }
+}
+
+async function installPack() {
+  const git = packGitUrl.value.trim()
+  const local = packLocalPath.value.trim()
+  if (!git && !local) return ElMessage.warning('填写 GitHub 仓库地址或本地路径（二选一）')
+  packInstalling.value = true
+  try {
+    const res = await api.installSkillPack(git ? { git_url: git } : { local_path: local })
+    ElMessage.success(`技能包 ${res.name} 已安装（默认停用，请手动启用）`)
+    packDialog.value = false
+    packGitUrl.value = ''
+    packLocalPath.value = ''
+    await loadPacks()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || e)
+  } finally { packInstalling.value = false }
+}
+
+async function togglePack(row: any) {
+  try {
+    await api.enableSkillPack(row.id, !row.enabled)
+    ElMessage.success(row.enabled ? '已停用' : '已启用，战术指令将注入 Worker Agent')
+    await loadPacks()
+  } catch (e: any) {
+    ElMessage.error(e.message || e)
+    await loadPacks()
+  }
+}
+
+async function deletePack(row: any) {
+  await api.deleteSkillPack(row.id)
+  ElMessage.success('已卸载')
+  await loadPacks()
+}
+
 onMounted(async () => {
   await load()
   readThemeFromList()
   loadVersion()
   await loadMinerConfig()
+  loadMcp()
+  loadPacks()
 })
 </script>
 
@@ -564,6 +722,112 @@ onMounted(async () => {
       </p>
       <el-input v-if="updateLogs" v-model="updateLogs" type="textarea" :rows="10" readonly />
     </el-card>
+
+    <el-card style="margin-bottom: 16px">
+      <template #header>MCP 服务器（能力扩展 · 默认停用 · 手动启用）</template>
+      <el-alert type="warning" :closable="false" style="margin-bottom: 12px"
+        title="MCP 服务器是第三方程序，添加并启用即授权其在本机运行。请只添加可信来源（GitHub 官方/知名仓库）。工具将在任务运行时自动注入全部 Agent。" />
+      <div style="margin-bottom: 12px; display: flex; gap: 8px">
+        <el-button type="primary" @click="openMcpDialog()">添加服务器</el-button>
+        <el-button :loading="mcpLoading" @click="refreshMcp">刷新全部连接</el-button>
+      </div>
+      <el-table :data="mcpServers" border size="small" v-loading="mcpLoading">
+        <el-table-column prop="name" label="名称" width="140" />
+        <el-table-column label="启动命令" min-width="240">
+          <template #default="{ row }">
+            <span class="hex-val">{{ row.command }} {{ (row.args || []).join(' ') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="status" label="状态" width="90" />
+        <el-table-column prop="tool_count" label="工具数" width="70" />
+        <el-table-column label="启用" width="70">
+          <template #default="{ row }">
+            <el-switch :model-value="row.enabled" @change="toggleMcp(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="200">
+          <template #default="{ row }">
+            <el-button size="small" :loading="mcpTesting === row.id" @click="testMcp(row)">测试连接</el-button>
+            <el-button size="small" @click="openMcpDialog(row)">编辑</el-button>
+            <el-button size="small" type="danger"
+              @click="ElMessageBox.confirm(`删除 ${row.name}?`, '确认', { type: 'warning' }).then(() => deleteMcp(row)).catch(() => {})">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-dialog v-model="mcpDialog" :title="mcpForm.id ? '编辑 MCP 服务器' : '添加 MCP 服务器'" width="560px">
+      <el-form label-width="100px">
+        <el-form-item label="推荐清单">
+          <el-select placeholder="点选预填表单（可选）" clearable style="width: 100%" @change="applyMcpPreset">
+            <el-option v-for="p in MCP_PRESETS" :key="p.label" :label="p.label" :value="p.label" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="名称">
+          <el-input v-model="mcpForm.name" placeholder="如 fetch / github" />
+        </el-form-item>
+        <el-form-item label="启动命令">
+          <el-input v-model="mcpForm.command" placeholder="如 npx / uvx / python" />
+        </el-form-item>
+        <el-form-item label="参数">
+          <el-input v-model="mcpForm.args" type="textarea" :rows="2" placeholder="每行一个参数，如：&#10;-y&#10;@modelcontextprotocol/server-memory" />
+        </el-form-item>
+        <el-form-item label="环境变量">
+          <el-input v-model="mcpForm.env" type="textarea" :rows="2" placeholder="每行一个 KEY=VALUE（可选）" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="mcpDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveMcp">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-card style="margin-bottom: 16px">
+      <template #header>技能包（战术指令扩展 · 纯提示词 · 不执行包内代码）</template>
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px"
+        title="技能包 = GitHub 仓库或本地目录：skillpack.json + prompts/*.md（+ recipes 可选）。安装后启用，其战术指令将注入 Worker Agent 的提示词。" />
+      <div style="margin-bottom: 12px">
+        <el-button type="primary" @click="packDialog = true">安装技能包</el-button>
+      </div>
+      <el-table :data="packs" border size="small" v-loading="packLoading">
+        <el-table-column prop="name" label="名称" width="160" />
+        <el-table-column prop="version" label="版本" width="70" />
+        <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="source" label="来源" min-width="180" show-overflow-tooltip />
+        <el-table-column label="启用" width="70">
+          <template #default="{ row }">
+            <el-switch :model-value="row.enabled" @change="togglePack(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="90">
+          <template #default="{ row }">
+            <el-button size="small" type="danger"
+              @click="ElMessageBox.confirm(`卸载 ${row.name}?`, '确认', { type: 'warning' }).then(() => deletePack(row)).catch(() => {})">卸载</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-collapse v-if="packs.some((p: any) => (p.manifest?.recipes || []).length)" style="margin-top: 12px">
+        <el-collapse-item v-for="p in packs.filter((x: any) => (x.manifest?.recipes || []).length)"
+          :key="p.id" :title="`${p.name} · 配方（${(p.manifest?.recipes || []).length}）`">
+          <pre style="white-space: pre-wrap; font-size: 12px">{{ JSON.stringify(p.manifest.recipes, null, 2) }}</pre>
+        </el-collapse-item>
+      </el-collapse>
+    </el-card>
+
+    <el-dialog v-model="packDialog" title="安装技能包" width="520px">
+      <el-form label-width="120px">
+        <el-form-item label="GitHub 仓库">
+          <el-input v-model="packGitUrl" placeholder="https://github.com/xxx/aififteen-skillpack-nuclei" />
+        </el-form-item>
+        <el-form-item label="或本地路径">
+          <el-input v-model="packLocalPath" placeholder="D:\skillpacks\my-pack（二选一）" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="packDialog = false">取消</el-button>
+        <el-button type="primary" :loading="packInstalling" @click="installPack">安装</el-button>
+      </template>
+    </el-dialog>
 
     <el-card>
       <template #header>动态配置（存库，优先级高于 .env）</template>

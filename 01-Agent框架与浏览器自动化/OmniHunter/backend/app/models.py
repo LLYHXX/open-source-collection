@@ -199,6 +199,40 @@ class ReportTemplate(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MCPServer(Base):
+    """MCP 服务器配置：stdio 传输的第三方 MCP server（安全红线：默认停用）。"""
+    __tablename__ = "mcp_servers"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    name = Column(String, nullable=False, unique=True)
+    transport = Column(String, default="stdio")  # stdio（sse 预留）
+    command = Column(String, default="")  # 如 npx / uvx / python
+    args = Column(Text, default="[]")  # JSON 数组，如 ["-y","@playwright/mcp@latest"]
+    env = Column(Text, default="{}")  # JSON 对象，如 {"GITHUB_TOKEN":"..."}
+    url = Column(String, default="")  # sse/http 预留
+    enabled = Column(Boolean, default=False)  # 默认停用，手动启用
+    status = Column(String, default="未连接")  # 未连接/已连接/连接失败/已停用
+    tool_count = Column(Integer, default=0)
+    last_error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SkillPack(Base):
+    """技能包：纯提示词+配方打包（不执行包内代码），从 GitHub/本地安装。"""
+    __tablename__ = "skillpacks"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    name = Column(String, nullable=False, unique=True)
+    version = Column(String, default="1.0.0")
+    description = Column(String, default="")
+    source = Column(String, default="")  # git url 或 local 路径
+    path = Column(String, default="")  # 安装目录（backend/data/skillpacks/<name>）
+    manifest = Column(Text, default="{}")  # skillpack.json 原文
+    enabled = Column(Boolean, default=False)
+    installed_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ====== Spec 2026-08-29: Autonomous Miner ======
 # Task.status 新增状态常量（不破坏现有枚举，仅作可读常量）
 TASK_PENDING_APPROVAL = "pending_approval"

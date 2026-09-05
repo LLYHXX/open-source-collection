@@ -329,3 +329,59 @@ class CollabStartIn(BaseModel):
     extra_sessions: dict = {}          # 附加身份会话
     enable_engine: bool = True        # 是否并行跑自研引擎
     enable_attacker: bool = True      # 是否跑 LLM 攻击 Agent
+
+
+# ===== MCP 服务器 =====
+class MCPServerIn(BaseModel):
+    name: str
+    command: str
+    args: list[str] = []
+    env: dict = {}
+    transport: str = "stdio"  # stdio（sse 预留）
+    url: str = ""
+
+
+class MCPServerOut(BaseModel):
+    id: str
+    name: str
+    transport: str
+    command: str
+    args: list = []
+    env: dict = {}
+    url: str
+    enabled: bool
+    status: str
+    tool_count: int
+    last_error: str
+    created_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class MCPEnableIn(BaseModel):
+    enabled: bool
+
+
+# ===== 技能包 =====
+class SkillPackInstallIn(BaseModel):
+    git_url: str = ""   # 二选一：GitHub 仓库地址
+    local_path: str = ""  # 二选一：本地目录
+
+
+class SkillPackOut(BaseModel):
+    id: str
+    name: str
+    version: str
+    description: str
+    source: str
+    enabled: bool
+    manifest: dict = {}
+    installed_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class SkillPackEnableIn(BaseModel):
+    enabled: bool

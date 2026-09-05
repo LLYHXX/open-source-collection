@@ -30,12 +30,14 @@ class WorkerAgent(BaseAgent):
         intel = recon.get("intel", "无")
         fingerprint = recon.get("fingerprint", "未知")
         tool_names = ", ".join(self.tools.names()) or "无"
+        skill_prompts = str(task_input.get("skill_prompts") or "").strip()
 
         system = self.system_prompt(
             f"目标: {url}\n指纹: {fingerprint}\n已知情报:\n{intel}\n"
             f"关注漏洞类型: {vuln_types}\n可用工具: {tool_names}\n"
             f"规则：1) 只对已授权目标操作 2) 每步调用一个工具并分析结果 "
             f"3) 发现可利用漏洞时记录 payload 与证据 4) 推进 recon→scan→exploit→verify。"
+            + (f"\n{skill_prompts}" if skill_prompts else "")
         )
         messages = [
             {"role": "system", "content": system},

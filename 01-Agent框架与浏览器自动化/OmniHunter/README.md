@@ -74,7 +74,7 @@ start_gui.bat prod   :: Windows 桌面壳（生产模式，对应 start.bat prod
 `start.sh` 与 `start.bat` 能力对齐，依赖同样装进 `backend/vendor`（不污染系统）：
 
 ```bash
-chmod +x start.sh stop.sh
+chmod +x start.sh stop.sh start_gui.sh
 ./start.sh          # 开发模式：后端 18800 + 前端 5173
 ./start.sh prod     # 生产模式：构建前端由后端托管，访问 http://localhost:18800
 ./stop.sh           # 一键停止（先按 pid 停，再按端口兜底清理）

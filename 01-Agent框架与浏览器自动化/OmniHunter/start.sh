@@ -44,6 +44,9 @@ else
 fi
 
 # ---- [4/4] 启动（nohup 后台运行，日志在 .run/） ----
+# vendor 兜底：sitecustomize.py 通常已自动注入，这里双保险
+export PYTHONPATH="$(pwd)/backend/vendor${PYTHONPATH:+:$PYTHONPATH}"
+
 if [ "$MODE" = "prod" ]; then
   echo "[4/4] 构建前端 ..."
   (cd frontend && npm run build)
@@ -62,7 +65,12 @@ else
   URL=http://localhost:5173
 fi
 
-command -v xdg-open >/dev/null 2>&1 && xdg-open "$URL" >/dev/null 2>&1 || true
+# Linux 用 xdg-open，macOS 用 open，都没有就跳过
+if command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$URL" >/dev/null 2>&1 || true
+elif command -v open >/dev/null 2>&1; then
+  open "$URL" >/dev/null 2>&1 || true
+fi
 
 echo ""
 echo "完成。后端 API: http://localhost:18800/docs   界面: $URL"

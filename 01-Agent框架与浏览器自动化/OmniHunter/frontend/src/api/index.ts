@@ -129,6 +129,26 @@ export const api = {
   testAssetPlatform: (platform: string, query = '') =>
     http.post('/settings/asset-platforms/test', { platform, query }).then((r) => r.data),
 
+  // mcp 服务器管理
+  listMcpServers: () => http.get('/mcp/servers', { timeout: 15000 }).then((r) => r.data),
+  addMcpServer: (data: { name: string; command: string; args?: string[]; env?: Record<string, string> }) =>
+    http.post('/mcp/servers', data, { timeout: 15000 }).then((r) => r.data),
+  updateMcpServer: (id: string, data: { name: string; command: string; args?: string[]; env?: Record<string, string> }) =>
+    http.put(`/mcp/servers/${id}`, data, { timeout: 15000 }).then((r) => r.data),
+  deleteMcpServer: (id: string) => http.delete(`/mcp/servers/${id}`).then((r) => r.data),
+  testMcpServer: (id: string) => http.post(`/mcp/servers/${id}/test`, null, { timeout: 60000 }).then((r) => r.data),
+  enableMcpServer: (id: string, enabled: boolean) =>
+    http.post(`/mcp/servers/${id}/enable`, { enabled }, { timeout: 60000 }).then((r) => r.data),
+  refreshMcpServers: () => http.post('/mcp/refresh', null, { timeout: 120000 }).then((r) => r.data),
+
+  // skillpacks 技能包
+  listSkillPacks: () => http.get('/skillpacks').then((r) => r.data),
+  installSkillPack: (data: { git_url?: string; local_path?: string }) =>
+    http.post('/skillpacks/install', data, { timeout: 360000 }).then((r) => r.data),
+  enableSkillPack: (id: string, enabled: boolean) =>
+    http.post(`/skillpacks/${id}/enable`, { enabled }).then((r) => r.data),
+  deleteSkillPack: (id: string) => http.delete(`/skillpacks/${id}`).then((r) => r.data),
+
   // android lab（移动靶场）
   androidStatus: () => http.get('/android/status').then((r) => r.data),
   androidBootstrap: (includeEmulator = true) =>

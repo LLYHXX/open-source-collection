@@ -188,6 +188,12 @@ async def lifespan(app: FastAPI):
     yield
     if scheduler.running:
         scheduler.shutdown(wait=False)
+    # 退出时清理 MCP 子进程（stdio server）
+    try:
+        from .core.mcp_manager import get_mcp_manager
+        get_mcp_manager().shutdown_all()
+    except Exception as e:  # noqa: BLE001
+        log.warning("MCP 进程清理失败: %s", e)
 
 
 app = _build_app()
@@ -227,6 +233,10 @@ app.include_router(settings_router.router, prefix="/api")
 app.include_router(schedules_router.router, prefix="/api")
 app.include_router(reports_router.router, prefix="/api")
 app.include_router(system_router.router, prefix="/api")
+from .routers import mcp as mcp_router  # noqa: E402
+app.include_router(mcp_router.router, prefix="/api")
+from .routers import skillpacks as skillpacks_router  # noqa: E402
+app.include_router(skillpacks_router.router, prefix="/api")
 
 # 移动靶场（安卓模拟器，可选依赖缺失时接口优雅降级）
 from .routers import android as android_router  # noqa: E402

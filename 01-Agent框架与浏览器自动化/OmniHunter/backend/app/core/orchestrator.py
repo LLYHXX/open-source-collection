@@ -370,10 +370,17 @@ class Orchestrator:
                 **self._agent_kwargs(run.id, target, "worker"),
                 memory=memory,
             )
+            # 技能包注入：启用包的战术指令追加进 Worker 提示词（失败不阻塞）
+            try:
+                from .skillpacks import prompt_suffix
+                skill_prompts = prompt_suffix(self.db)
+            except Exception:  # noqa: BLE001
+                skill_prompts = ""
             worker_out = await worker.run({
                 "vuln_types": task.vuln_types,
                 "recon": recon_out,
                 "step_budget": self.settings.worker_step_budget,
+                "skill_prompts": skill_prompts,
             })
 
             # 3) Verifier 独立复现（用大模型做严谨判定）
@@ -904,9 +911,26 @@ def _task_brief(task: Task) -> dict:
 
 
 def build_tool_registry(settings) -> ToolRegistry:
-    """装配命令行工具 + 浏览器工具（在 tools 模块统一注册）。"""
+    """装配命令行工具 + 浏览器工具 + MCP 工具（在 tools 模块统一注册）。"""
     from ..tools import register_all
 
     reg = ToolRegistry()
     register_all(reg, settings)
+    # === MCP 注入：启用服务器的全部工具注册进统一注册表（失败不阻塞任务）===
+    import logging
+
+    _log = logging.getLogger("aififteen-hunter")
+    try:
+        from ..database import SessionLocal
+        from .mcp_manager import get_mcp_manager
+
+        db = SessionLocal()
+        try:
+            n = get_mcp_manager().load_into_registry(reg, db)
+            if n:
+                _log.info("MCP 工具注入完成: %d 个", n)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        _log.warning("MCP 工具注入失败（不阻塞任务）: %s", e)
     return reg
