@@ -185,6 +185,31 @@ async def lifespan(app: FastAPI):
             db.close()
     except Exception as e:  # noqa: BLE001
         log.warning("预置模板 seed 失败（不阻塞启动）: %s", e)
+    # 僵尸任务清理：后端重启后，上次 running/collecting 的任务协程已随进程死亡，
+    # 状态若不改写，前端会永远显示「执行中」但事件流不再推进。
+    try:
+        from .database import SessionLocal
+        from .models import Task as _Task, AgentRun as _Run
+        from datetime import datetime as _dt
+        db = SessionLocal()
+        try:
+            stale_tasks = db.query(_Task).filter(_Task.status.in_(("running", "collecting"))).all()
+            for t in stale_tasks:
+                t.status = "review"
+                t.error = "后端重启/进程中断，任务已停止，可重新启动"
+            stale_runs = db.query(_Run).filter(_Run.status.in_(("pending", "running"))).all()
+            for r in stale_runs:
+                r.status = "failed"
+                r.error = r.error or "后端重启，Run 中断"
+                r.finished_at = _dt.utcnow()
+            db.commit()
+            if stale_tasks or stale_runs:
+                log.info("启动清理：%d 个僵尸任务、%d 个僵尸 Run 已复位",
+                         len(stale_tasks), len(stale_runs))
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        log.warning("僵尸任务清理失败（不阻塞启动）: %s", e)
     yield
     if scheduler.running:
         scheduler.shutdown(wait=False)

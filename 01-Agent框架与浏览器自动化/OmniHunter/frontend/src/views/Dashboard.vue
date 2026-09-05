@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api'
 import { zh, SEVERITY } from '@/i18n/cn'
@@ -44,13 +44,23 @@ function sevClass(s: string) {
   return `sev-tag sev-${s || 'info'}`
 }
 
-async function load() {
+// 健康探测独立于其他统计接口：统计接口失败不影响后端状态显示
+async function loadHealth() {
   try {
-    const [tasks, vulns, intel, h, det] = await Promise.all([
+    const h = await api.health()
+    health.value = (h as any).status || 'err'
+  } catch {
+    health.value = 'err'
+  }
+}
+
+async function load() {
+  loadHealth()
+  try {
+    const [tasks, vulns, intel, det] = await Promise.all([
       api.listTasks(),
       api.listVulns(),
       api.listIntel(),
-      api.health().catch(() => ({ status: 'err' })),
       api.engineDetectors().catch(() => ({ detectors: [] })),
     ])
     // tasks/vulns: listTasks/listVulns 后端直接返回数组

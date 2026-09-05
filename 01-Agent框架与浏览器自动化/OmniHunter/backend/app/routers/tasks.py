@@ -175,6 +175,17 @@ async def start_task(task_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "任务不存在")
     if task.status in ("collecting", "running"):
         raise HTTPException(400, f"任务进行中({task.status})，无法重复启动")
+    # LLM key 前置检查：非 engine 模式（Worker/多Agent 流水线）必须调 LLM，
+    # 没 key 时 Recon 能跑但 Worker 必崩，事件流只剩 httpx/nmap 两个工具——
+    # 秒退友好提示，不干等。
+    if task.mode != "engine":
+        from ..config import get_settings
+        if not (get_settings().llm_api_key or "").strip():
+            raise HTTPException(
+                400,
+                "未配置 LLM_API_KEY：Worker 挖洞必须调用大模型。"
+                "请编辑 backend/.env 填写 LLM_API_KEY 后重启，"
+                "或在设置页配置模型；纯引擎模式(mode=engine)可不配。")
     task.status = "collecting"
     task.error = ""
     db.commit()
