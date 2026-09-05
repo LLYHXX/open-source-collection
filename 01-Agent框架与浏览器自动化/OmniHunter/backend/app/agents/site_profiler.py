@@ -83,7 +83,7 @@ class SiteProfilerAgent(BaseAgent):
         }
 
         # 1) 子域名枚举
-        sub_out = self.tools.execute("subdomain_enum",
+        sub_out = await self.tools.aexecute("subdomain_enum",
                                       {"domain": root, "limit": 50})
         self.tool_call("subdomain_enum", {"domain": root}, sub_out[:500])
         subs = self._parse_subdomains(sub_out, root)
@@ -92,7 +92,7 @@ class SiteProfilerAgent(BaseAgent):
 
         # 2) 端口扫描（主域）
         host = _host(url)
-        port_out = self.tools.execute(
+        port_out = await self.tools.aexecute(
             "port_scan_basic",
             {"host": host, "ports": "22,80,443,3306,6379,8080,8443,9200"})
         self.tool_call("port_scan_basic", {"host": host}, port_out[:500])
@@ -103,7 +103,7 @@ class SiteProfilerAgent(BaseAgent):
         fps: list[str] = []
         combined_fps_for_cms = ""
         for u in candidates:
-            fp = self.tools.execute("httpx_probe", {"url": u})
+            fp = await self.tools.aexecute("httpx_probe", {"url": u})
             self.tool_call("httpx_probe", {"url": u}, fp[:200])
             if fp and "未安装" not in fp:
                 fps.append(fp)
@@ -133,7 +133,7 @@ class SiteProfilerAgent(BaseAgent):
 
         # 4) 关键入口页面正文（给 Modeler 建模用）
         if self.tools and "web_scrape" in self.tools.names():
-            scrape = self.tools.execute("web_scrape", {"url": url})
+            scrape = await self.tools.aexecute("web_scrape", {"url": url})
             self.tool_call("web_scrape", {"url": url},
                            (scrape or "")[:300])
             if scrape and "未配置" not in scrape and "未安装" not in scrape:

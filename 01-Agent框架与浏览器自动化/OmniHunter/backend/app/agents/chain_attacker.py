@@ -34,9 +34,11 @@ class ChainAttackerAgent(BaseAgent):
     def __init__(self, run_id: str, target: Any = None,
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None, memory: Any = None,
-                 on_event: Callable[..., None] | None = None):
+                 on_event: Callable[..., None] | None = None,
+                 router: Any = None, pruning: Any = None):
         super().__init__(run_id, target=target, llm=llm, tools=tools,
-                         memory=memory, on_event=on_event)
+                         memory=memory, on_event=on_event,
+                         router=router, pruning=pruning)
 
     async def run(self, task_input: dict) -> dict:
         url = self.target.url
@@ -46,7 +48,7 @@ class ChainAttackerAgent(BaseAgent):
         self.think(f"业务链路变异攻击: url={url}")
 
         # 1) 链路识别：从基线流量中提取业务流图
-        chain = self._identify_chain(baseline, model, url)
+        chain = await self._identify_chain(baseline, model, url)
         if not chain.get("nodes"):
             self.think("未识别到多步业务链路，跳过链路变异")
             return {"vulns": [], "chain": chain}
@@ -89,7 +91,7 @@ class ChainAttackerAgent(BaseAgent):
 
         return {"vulns": all_vulns, "chain": chain}
 
-    def _identify_chain(self, baseline: str, model: dict, url: str) -> dict:
+    async def _identify_chain(self, baseline: str, model: dict, url: str) -> dict:
         """LLM 从基线流量中识别多步业务链路（业务流图）。"""
         flows = model.get("flows", [])[:5]
         prompt = (
@@ -115,7 +117,7 @@ class ChainAttackerAgent(BaseAgent):
             f"  \"final_node_index\": 3  # 最终状态节点序号（跳步攻击用）\n"
             f"}}。最多 6 节点。只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])
@@ -153,7 +155,7 @@ class ChainAttackerAgent(BaseAgent):
             f"  \"success_signal\": \"如何判定越权成功\"\n"
             f"}}。只输出 JSON 数组。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},
         ])
@@ -184,7 +186,7 @@ class ChainAttackerAgent(BaseAgent):
             f"  \"success_signal\": \"如何判定绕过成功\"\n"
             f"}}。只输出 JSON 数组。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},
         ])
@@ -212,7 +214,7 @@ class ChainAttackerAgent(BaseAgent):
             f"  \"success_signal\": \"如何判定回退成功（如状态恢复/退款到账）\"\n"
             f"}}。只输出 JSON 数组。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},
         ])
@@ -265,7 +267,7 @@ class ChainAttackerAgent(BaseAgent):
             f"\"payload\":\"\",\"target_url\":\"\",\"detail\":\"\","
             f"\"evidence\":\"\",\"confidence\":0-1}}。只输出 JSON 数组。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},
         ])

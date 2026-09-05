@@ -10,6 +10,7 @@
 - prompt: 强制提示词模拟（哑模型用）
 - auto  : 原生优先，失败回退提示词模拟
 """
+import asyncio
 import json
 from typing import Any, Callable
 
@@ -56,7 +57,23 @@ class LLMClient:
         resp = self.client.chat.completions.create(
             model=self.model, messages=messages, temperature=temperature
         )
+        self._record(resp)
         return resp.choices[0].message.content or ""
+
+    def _record(self, resp, prompt_tokens: int | None = None,
+                completion_tokens: int | None = None) -> None:
+        """记录本次调用的 token usage（失败静默）。"""
+        try:
+            from .token_stats import record
+            u = getattr(resp, "usage", None)
+            if u is not None:
+                record(self.model,
+                       getattr(u, "prompt_tokens", 0) or 0,
+                       getattr(u, "completion_tokens", 0) or 0)
+            elif prompt_tokens is not None:
+                record(self.model, prompt_tokens, completion_tokens or 0)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _chat_anthropic(self, messages: list[dict], temperature: float) -> str:
         """Claude messages 协议（httpx 同步实现，不引入 anthropic SDK）。"""
@@ -85,6 +102,10 @@ class LLMClient:
         )
         resp.raise_for_status()
         data = resp.json()
+        u = data.get("usage") or {}
+        self._record(None,
+                     prompt_tokens=u.get("input_tokens") or 0,
+                     completion_tokens=u.get("output_tokens") or 0)
         return "".join(
             block.get("text", "") for block in data.get("content", [])
             if block.get("type") == "text"
@@ -129,6 +150,7 @@ class LLMClient:
                 resp = self.client.chat.completions.create(
                     model=self.model, messages=injected, temperature=temperature
                 )
+            self._record(resp)
             msg = resp.choices[0].message
             history.append(msg.model_dump(exclude_none=True))
 
@@ -163,6 +185,27 @@ class LLMClient:
             return last_text, history
 
         return last_text, history
+
+    # ===== 异步包装：同步实现整体丢线程池，事件循环不被 LLM/工具阻塞 =====
+    async def achat(self, messages: list[dict], temperature: float = 0.3) -> str:
+        return await asyncio.to_thread(self.chat, messages, temperature)
+
+    async def achat_json(self, messages: list[dict], temperature: float = 0.2) -> Any:
+        return await asyncio.to_thread(self.chat_json, messages, temperature)
+
+    async def areact(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        tool_executor: Callable[[str, dict], str],
+        max_steps: int = 8,
+        temperature: float = 0.3,
+        on_step: Callable[[dict], None] | None = None,
+    ) -> tuple[str, list[dict]]:
+        return await asyncio.to_thread(
+            self.react, messages, tools, tool_executor,
+            max_steps=max_steps, temperature=temperature, on_step=on_step,
+        )
 
 
 def _safe_json(text: str) -> Any:

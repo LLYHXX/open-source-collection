@@ -110,7 +110,7 @@ def install_from_git(git_url: str) -> tuple[dict, Path]:
                 # 绕过全局代理直连（代理客户端未开时 clone GitHub 必失败）
                 ["git", "-c", "http.proxy=", "-c", "https.proxy=",
                  "clone", "--depth", "1", git_url, str(clone_dir)],
-                capture_output=True, text=True, timeout=300,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
             )
         except subprocess.TimeoutExpired as e:
             raise SkillPackError("git clone 超时(300s)") from e
@@ -253,8 +253,8 @@ def register_pack_tools(reg, db) -> int:
                     cmd.extend(extra.split())
                 try:
                     proc = subprocess.run(
-                        cmd, cwd=root, capture_output=True, text=True,
-                        timeout=120, errors="replace",
+                        cmd, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        timeout=120,
                     )
                 except subprocess.TimeoutExpired:
                     return f"[超时] {tool_name} 执行超过 120s"
@@ -300,12 +300,15 @@ def prompt_suffix(db, roles: tuple[str, ...] = ()) -> str:
         for role, fname in prompts.items():
             if roles and role not in roles:
                 continue
-            p = pack_dir / str(fname)
-            if p.is_file() and p.suffix.lower() in (".md", ".txt"):
-                try:
-                    texts.append(p.read_text(encoding="utf-8", errors="replace").strip())
-                except Exception:  # noqa: BLE001
-                    continue
+            # 兼容两种 manifest 形态：单文件字符串 / 文件列表（自动转换生成）
+            names = fname if isinstance(fname, (list, tuple)) else [fname]
+            for n in names:
+                p = pack_dir / str(n)
+                if p.is_file() and p.suffix.lower() in (".md", ".txt"):
+                    try:
+                        texts.append(p.read_text(encoding="utf-8", errors="replace").strip())
+                    except Exception:  # noqa: BLE001
+                        continue
         if not texts:
             continue
         body = "\n\n".join(texts)

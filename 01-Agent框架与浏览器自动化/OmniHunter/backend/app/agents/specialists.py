@@ -33,9 +33,11 @@ class SpecialistAgent(BaseAgent):
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None, memory: Any = None,
                  on_event: Callable[..., None] | None = None,
+                 router: Any = None, pruning: Any = None,
                  bus: AgentMessageBus | None = None):
         super().__init__(run_id, target=target, llm=llm, tools=tools,
-                         memory=memory, on_event=on_event)
+                         memory=memory, on_event=on_event,
+                         router=router, pruning=pruning)
         self.bus = bus
 
     async def run(self, task_input: dict) -> dict:
@@ -46,14 +48,14 @@ class SpecialistAgent(BaseAgent):
         self.think(f"[{self.vuln_type}] 专精 agent 启动，目标 {url}")
 
         # 1) 从 payload_library 取本专精的 payload 模板
-        payloads_str = self.tools.execute(
+        payloads_str = await self.tools.aexecute(
             "payload_library",
             {"vuln_type": self.vuln_type, "category": self.category})
         self.tool_call("payload_library",
                         {"vuln_type": self.vuln_type}, payloads_str[:400])
 
         # 2) LLM 基于业务模型 + payload 模板，选目标端点 + 构造具体攻击请求
-        attack_plan = self._plan_attacks(url, model, payloads_str)
+        attack_plan = await self._plan_attacks(url, model, payloads_str)
         if not attack_plan:
             self.think(f"[{self.vuln_type}] LLM 未生成攻击计划，跳过")
             return {"vulns": [], "vuln_type": self.vuln_type}
@@ -63,7 +65,7 @@ class SpecialistAgent(BaseAgent):
         self.think(f"[{self.vuln_type}] 重放 {len(results)} 个攻击请求")
 
         # 4) LLM 判定哪些响应是真漏洞
-        vulns = self._judge_vulns(attack_plan, results, url)
+        vulns = await self._judge_vulns(attack_plan, results, url)
         self.think(f"[{self.vuln_type}] 发现 {len(vulns)} 个候选漏洞")
 
         # 5) 经验沉淀（按 vuln_type 独立沉淀，下次同类复用）
@@ -83,7 +85,7 @@ class SpecialistAgent(BaseAgent):
 
         return {"vulns": vulns, "vuln_type": self.vuln_type}
 
-    def _plan_attacks(self, url: str, model: dict, payloads_str: str) -> list[dict]:
+    async def _plan_attacks(self, url: str, model: dict, payloads_str: str) -> list[dict]:
         """LLM 选目标端点 + 套 payload 模板生成具体攻击请求清单。"""
         prompt = (
             f"你是 {self.vuln_type} 漏洞专精攻击构造器。基于业务模型与 payload 模板，"
@@ -96,7 +98,7 @@ class SpecialistAgent(BaseAgent):
             f"\"headers\":{{}},\"body\":\"\",\"payload\":\"\",\"intent\":\"\"}}。"
             f"只输出 JSON 数组。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},
         ])
@@ -133,7 +135,7 @@ class SpecialistAgent(BaseAgent):
         except Exception as e:  # noqa: BLE001
             return {"error": str(e), "payload": attack.get("payload", "")}
 
-    def _judge_vulns(self, attacks: list[dict], results: list[dict],
+    async def _judge_vulns(self, attacks: list[dict], results: list[dict],
                      url: str) -> list[dict]:
         """LLM 综合判定哪些响应是真漏洞（结合 payload 与响应特征）。"""
         pairs = []
@@ -159,7 +161,7 @@ class SpecialistAgent(BaseAgent):
             f"\"payload\":\"\",\"target_url\":\"\",\"detail\":\"\",\"evidence\":\"\","
             f"\"confidence\":0-1}}。只输出 JSON 数组。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},
         ])

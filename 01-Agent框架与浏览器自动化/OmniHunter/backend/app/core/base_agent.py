@@ -106,6 +106,24 @@ class BaseAgent(ABC):
             ),
         )
 
+    async def areact(self, messages: list[dict], tools: list[dict] | None = None,
+                     max_steps: int = 8) -> tuple[str, list[dict]]:
+        """react 的异步版：整个 ReAct 循环（LLM+工具）在线程池跑，不阻塞事件循环。"""
+        tool_schemas = tools if tools is not None else self.tools.schemas()
+
+        def _executor(name: str, args: dict) -> str:
+            return self.tools.execute(name, args)
+
+        return await self.llm.areact(
+            messages,
+            tool_schemas,
+            _executor,
+            max_steps=max_steps,
+            on_step=lambda s: self.tool_call(
+                s.get("tool", ""), s.get("args", {}), str(s.get("result", ""))
+            ),
+        )
+
     @abstractmethod
     def run(self, task_input: dict) -> dict:
         """子类实现：接收输入，返回结构化结果。"""

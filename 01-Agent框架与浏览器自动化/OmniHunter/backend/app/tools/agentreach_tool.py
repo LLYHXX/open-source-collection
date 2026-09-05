@@ -19,7 +19,7 @@ def agentreach_fetch(url: str, timeout: int = 60) -> str:
     if exe:
         try:
             out = subprocess.run(
-                [exe, "fetch", url], capture_output=True, text=True,
+                [exe, "fetch", url], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=timeout,
             )
             text = (out.stdout or out.stderr or "").strip()

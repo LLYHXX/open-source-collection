@@ -38,7 +38,7 @@ def cutter_analyze(binary_path: str, action: str = "info",
     args = cmd_map.get(action, cmd_map["info"])
     try:
         out = subprocess.run(
-            [exe, *args], capture_output=True, text=True, timeout=timeout,
+            [exe, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
         text = out.stdout or out.stderr or ""
         return text.strip() or f"Cutter({action}) 无输出"

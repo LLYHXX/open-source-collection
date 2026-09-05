@@ -11,7 +11,7 @@ def probe(url: str, timeout: int = 30) -> str:
     cmd = [exe, "-silent", "-title", "-tech-detect", "-status-code",
            "-web-server", "-no-color", url]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return (out.stdout or out.stderr or "").strip() or "httpx 无输出"
     except subprocess.TimeoutExpired:
         return f"httpx 超时({timeout}s)"

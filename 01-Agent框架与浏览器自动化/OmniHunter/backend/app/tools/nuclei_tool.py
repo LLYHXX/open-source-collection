@@ -12,7 +12,7 @@ def scan(url: str, templates: str = "", timeout: int = 180) -> str:
     if templates:
         cmd += ["-tags", templates]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return (out.stdout or out.stderr or "").strip() or "nuclei 无输出（未命中模板）"
     except subprocess.TimeoutExpired:
         return f"nuclei 超时({timeout}s)"

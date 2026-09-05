@@ -44,7 +44,7 @@ class ModelerAgent(BaseAgent):
 
         # 抓取目标首页 / 接口文档（Firecrawl 转 LLM-friendly markdown）
         self.think(f"未命中缓存，开始抓取目标页面与接口文档: {url}")
-        page_md = self.tools.execute("web_scrape", {"url": url})
+        page_md = await self.tools.aexecute("web_scrape", {"url": url})
         self.tool_call("web_scrape", {"url": url}, page_md[:800])
 
         # 尝试常见接口文档路径（Swagger/OpenAPI 等）
@@ -52,7 +52,7 @@ class ModelerAgent(BaseAgent):
         for path in ("/swagger-ui/index.html", "/v3/api-docs", "/api-docs",
                      "/openapi.json", "/docs"):
             doc_url = url.rstrip("/") + path
-            out = self.tools.execute("web_scrape", {"url": doc_url})
+            out = await self.tools.aexecute("web_scrape", {"url": doc_url})
             if "错误" not in out[:20] and "未配置" not in out[:20]:
                 api_doc += f"\n--- {path} ---\n{out[:1500]}"
                 break
@@ -109,7 +109,7 @@ class ModelerAgent(BaseAgent):
                 f"请在 api_list.params 中结合文档补充细节，不要重复生成。\n"
             )
         prompt += "输出业务模型 JSON。"
-        model = self.llm.chat_json([
+        model = await self.llm.achat_json([
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ])

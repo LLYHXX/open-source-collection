@@ -22,9 +22,12 @@ class ReviewerAgent(BaseAgent):
 
     def __init__(self, run_id: str, target: Any = None,
                  llm: LLMClient | None = None,
+                 tools: Any = None, memory: Any = None,
                  on_event: Callable[..., None] | None = None,
+                 router: Any = None, pruning: Any = None,
                  strict: bool = True):
-        super().__init__(run_id, target=target, llm=llm, on_event=on_event)
+        super().__init__(run_id, target=target, llm=llm, tools=tools, memory=memory,
+                         on_event=on_event, router=router, pruning=pruning)
         self.strict = strict
 
     async def run(self, task_input: dict) -> dict:
@@ -38,7 +41,7 @@ class ReviewerAgent(BaseAgent):
             f"{{\"status\": \"keep\" 或 \"discard\", \"reason\": \"\","
             f" \"severity\": \"critical/high/medium/low/info\"}}。只输出 JSON 数组。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},
         ])

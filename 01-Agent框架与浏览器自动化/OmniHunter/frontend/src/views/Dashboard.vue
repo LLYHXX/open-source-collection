@@ -68,12 +68,14 @@ async function load() {
     recent.value = Array.isArray(tasks) ? tasks.slice(0, 6) : []
     recentVulns.value = Array.isArray(vulns) ? vulns.slice(0, 6) : []
     detectors.value = (det as any).detectors || []
-    health.value = (h as any).status
   } catch {
-    health.value = 'err'
+    // 统计接口失败不改健康状态（健康已单独探测）
   }
 }
 onMounted(load)
+// 30s 轮询健康状态，页面驻留期间状态实时
+const healthTimer = window.setInterval(loadHealth, 30000)
+onUnmounted(() => window.clearInterval(healthTimer))
 </script>
 
 <template>

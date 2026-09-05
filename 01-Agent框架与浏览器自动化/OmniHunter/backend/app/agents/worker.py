@@ -17,9 +17,11 @@ class WorkerAgent(BaseAgent):
     def __init__(self, run_id: str, target: Any = None,
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None, memory: Any = None,
-                 on_event: Callable[..., None] | None = None):
+                 on_event: Callable[..., None] | None = None,
+                 router: Any = None, pruning: Any = None):
         super().__init__(run_id, target=target, llm=llm, tools=tools,
-                         memory=memory, on_event=on_event)
+                         memory=memory, on_event=on_event,
+                         router=router, pruning=pruning)
 
     async def run(self, task_input: dict) -> dict:
         recon = task_input.get("recon", {})
@@ -44,9 +46,9 @@ class WorkerAgent(BaseAgent):
             {"role": "user", "content": "开始侦察与挖洞。"},
         ]
         self.think("进入 LLM 自主挖洞循环")
-        final, _ = self.react(messages, max_steps=min(budget, 8))
+        final, _ = await self.areact(messages, max_steps=min(budget, 8))
 
-        vulns = self.llm.chat_json([
+        vulns = await self.llm.achat_json([
             {"role": "system",
              "content": "把挖洞过程汇总为漏洞 JSON 数组，每项含 "
              "vuln_type,severity(info/low/medium/high/critical),title,detail,"

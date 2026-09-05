@@ -28,16 +28,18 @@ class VerifierAgent(BaseAgent):
     def __init__(self, run_id: str, target: Any = None,
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None, memory: Any = None,
-                 on_event: Callable[..., None] | None = None):
+                 on_event: Callable[..., None] | None = None,
+                 router: Any = None, pruning: Any = None):
         super().__init__(run_id, target=target, llm=llm, tools=tools,
-                         memory=memory, on_event=on_event)
+                         memory=memory, on_event=on_event,
+                         router=router, pruning=pruning)
 
     async def run(self, task_input: dict) -> dict:
         v = task_input["vuln"]
         self.think(f"独立复现漏洞: {v.get('title', v.get('vuln_type', ''))}")
 
         # 步骤 1：LLM 设计正向复现 + 负向控制 payload（Strix counterevidence）
-        payload_plan = self._plan_payloads(v)
+        payload_plan = await self._plan_payloads(v)
         self.think(f"反证 payload 方案: positive={payload_plan.get('positive_payload')}, "
                    f"negative={payload_plan.get('negative_payload')}, "
                    f"expected_block={payload_plan.get('expected_negative_status')}")
@@ -51,11 +53,11 @@ class VerifierAgent(BaseAgent):
         self.think(f"负向控制结果: {negative_result[:300]}")
 
         # 步骤 4：综合判定（Strix counterevidence 闭环逻辑）
-        verdict = self._judge_counterevidence(
+        verdict = await self._judge_counterevidence(
             v, payload_plan, positive_result, negative_result)
 
         # Layer 1: 正向语义校验（不只看 200，要匹配响应体业务特征）
-        semantic_ok = self._semantic_validate(
+        semantic_ok = await self._semantic_validate(
             v, positive_result, payload_plan)
         verdict["semantic_validated"] = semantic_ok
         if verdict.get("verified") and not semantic_ok:
@@ -82,7 +84,7 @@ class VerifierAgent(BaseAgent):
         return verdict
 
     # ===== Layer 1: 正向语义校验 =====
-    def _semantic_validate(self, vuln: dict, positive_result: str,
+    async def _semantic_validate(self, vuln: dict, positive_result: str,
                             plan: dict) -> bool:
         """校验正向响应是否匹配业务特征（不只看 HTTP 200）。
 
@@ -106,7 +108,7 @@ class VerifierAgent(BaseAgent):
             f"输出 JSON: {{\"semantic_match\": bool, \"matched_feature\": \"\","
             f"\"reason\": \"\"}}。只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])
@@ -143,7 +145,7 @@ class VerifierAgent(BaseAgent):
             f"输出 JSON: {{\"query_url\":\"\",\"query_method\":\"GET\","
             f"\"expected_data_signal\":\"应出现的数据特征\"}}。只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])
@@ -173,7 +175,7 @@ class VerifierAgent(BaseAgent):
         return False if expected else True
 
     # ===== 步骤 1：设计正向 + 负向 payload =====
-    def _plan_payloads(self, vuln: dict) -> dict:
+    async def _plan_payloads(self, vuln: dict) -> dict:
         """LLM 设计正向复现 payload 与负向控制 payload。
 
         Strix counterevidence 原则：
@@ -199,7 +201,7 @@ class VerifierAgent(BaseAgent):
             f"\"expected_positive_signal\":\"\",\"expected_negative_status\":\"\","
             f"\"replay_tool\":\"\"}}。只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])
@@ -227,7 +229,7 @@ class VerifierAgent(BaseAgent):
             elif tool_name == "nuclei_scan":
                 args["templates"] = payload
             try:
-                result = self.tools.execute(tool_name, args)
+                result = await self.tools.aexecute(tool_name, args)
                 self.tool_call(tool_name, args, result[:500] if result else "")
                 return result or "工具无输出"
             except Exception as e:  # noqa: BLE001
@@ -265,7 +267,7 @@ class VerifierAgent(BaseAgent):
             return f"http 重放错误: {e}"
 
     # ===== 步骤 4：Strix counterevidence 综合判定 =====
-    def _judge_counterevidence(self, vuln: dict, plan: dict,
+    async def _judge_counterevidence(self, vuln: dict, plan: dict,
                                 positive_result: str, negative_result: str) -> dict:
         """LLM 综合正向/负向结果，应用 Strix 反证闭环判定。
 
@@ -294,7 +296,7 @@ class VerifierAgent(BaseAgent):
             f"\"positive_triggered\":bool,\"negative_blocked\":bool,\"reason\":\"\"}}。"
             f"只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])

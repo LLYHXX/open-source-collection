@@ -145,7 +145,7 @@ def dlint_scan(target_path: str, recursive: bool = True) -> str:
             "--show-source",
             target_path]
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         out_text = (r.stdout or r.stderr or "").strip()
         # flake8 找不到 dlint 插件时 stdout 可能为空，stderr 有提示
         if not out_text and r.returncode not in (0, 1):

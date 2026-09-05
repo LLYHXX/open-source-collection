@@ -17,7 +17,7 @@ def scan(url: str, data: str = "", cookie: str = "", timeout: int = 240) -> str:
     if cookie:
         cmd += ["--cookie", cookie]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         text = out.stdout or out.stderr or ""
         return text.strip() or "sqlmap 无输出"
     except subprocess.TimeoutExpired:

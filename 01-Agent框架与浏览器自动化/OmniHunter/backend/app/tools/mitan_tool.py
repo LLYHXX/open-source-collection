@@ -41,7 +41,7 @@ def mitan_assets(query: str, limit: int = 50, timeout: int = 60) -> str:
             return "MITAN_MCP_READY 已设置但未找到 mitan 可执行文件，请设置 MITAN_BIN 环境变量。"
         out = subprocess.run(
             [exe, "search", "-q", query, "-l", str(limit)],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
         return (out.stdout or out.stderr or "").strip() or "mitan 无输出"
     except subprocess.TimeoutExpired:

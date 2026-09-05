@@ -64,7 +64,7 @@ class AttackTreeAgent(BaseAgent):
                     f"预置攻击模板 {len(cms_templates)} 条，直接入树不用 LLM 重复猜")
 
         # LLM 基于资产清单 + 业务模型生成攻击树
-        tree = self._llm_build_tree(
+        tree = await self._llm_build_tree(
             site_profile, business_model, url,
             matched_cms=matched_cms, cms_templates=cms_templates,
         )
@@ -144,7 +144,7 @@ class AttackTreeAgent(BaseAgent):
             tree["priority_actions"] = priority
         return tree
 
-    def _llm_build_tree(self, site_profile: dict,
+    async def _llm_build_tree(self, site_profile: dict,
                         business_model: dict, url: str,
                         matched_cms: list[str] | None = None,
                         cms_templates: list[str] | None = None) -> dict:
@@ -250,7 +250,7 @@ class AttackTreeAgent(BaseAgent):
             f"  ]\n"
             f"}}。只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])

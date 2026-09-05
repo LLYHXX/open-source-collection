@@ -21,9 +21,11 @@ class BrowserAgent(BaseAgent):
     def __init__(self, run_id: str, target: Any = None,
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None, memory: Any = None,
-                 on_event: Callable[..., None] | None = None):
+                 on_event: Callable[..., None] | None = None,
+                 router: Any = None, pruning: Any = None):
         super().__init__(run_id, target=target, llm=llm, tools=tools,
-                         memory=memory, on_event=on_event)
+                         memory=memory, on_event=on_event,
+                         router=router, pruning=pruning)
 
     async def run(self, task_input: dict) -> dict:
         vuln_types = task_input.get("vuln_types", "")
@@ -47,11 +49,17 @@ class BrowserAgent(BaseAgent):
                 for step in range(8):
                     snapshot = await self._snapshot(page)
                     self.think(f"[step {step}] 页面快照(截断):\n{snapshot[:1200]}")
-                    action = self._decide(url, snapshot, vuln_types, step)
+                    action = await self._decide(url, snapshot, vuln_types, step)
                     if not action or action.get("action") == "done":
                         break
                     finding = await self._apply(page, action)
                     if finding:
+                        # 关键点自动截图：发现的漏洞页面即为证据（失败不阻塞）
+                        try:
+                            from ..core.screenshots import capture, set_images
+                            set_images(finding, await capture(page, tag=f"ba_step{step}"))
+                        except Exception:  # noqa: BLE001
+                            pass
                         vulns.append(finding)
                 await browser.close()
         except Exception as e:  # noqa: BLE001
@@ -72,7 +80,7 @@ class BrowserAgent(BaseAgent):
         except Exception as e:  # noqa: BLE001
             return f"快照失败: {e}"
 
-    def _decide(self, url, snapshot, vuln_types, step) -> dict:
+    async def _decide(self, url, snapshot, vuln_types, step) -> dict:
         prompt = (
             f"你是浏览器挖洞决策器。目标: {url}\n关注: {vuln_types}\n第{step}步。\n"
             f"页面快照:\n{snapshot}\n"
@@ -83,7 +91,7 @@ class BrowserAgent(BaseAgent):
             f"发现漏洞时填 finding(vuln_type/severity/title/detail/evidence/confidence)。"
             f"只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])

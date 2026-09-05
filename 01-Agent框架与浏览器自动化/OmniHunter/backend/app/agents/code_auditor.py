@@ -26,9 +26,11 @@ class CodeAuditorAgent(BaseAgent):
     def __init__(self, run_id: str, target: Any = None,
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None, memory: Any = None,
-                 on_event: Callable[..., None] | None = None):
+                 on_event: Callable[..., None] | None = None,
+                 router: Any = None, pruning: Any = None):
         super().__init__(run_id, target=target, llm=llm, tools=tools,
-                         memory=memory, on_event=on_event)
+                         memory=memory, on_event=on_event,
+                         router=router, pruning=pruning)
 
     async def run(self, task_input: dict) -> dict:
         # 白盒模式：target.url 此处表示源码路径（不是 Web URL）
@@ -41,7 +43,7 @@ class CodeAuditorAgent(BaseAgent):
             return {"vulns": [], "error": "未提供源码路径"}
 
         # 1) 调白盒工具静态扫
-        summary = self.tools.execute("code_audit_summary",
+        summary = await self.tools.aexecute("code_audit_summary",
                                       {"target_path": source_path,
                                        "severity": severity})
         self.tool_call("code_audit_summary",
@@ -50,7 +52,7 @@ class CodeAuditorAgent(BaseAgent):
             return {"vulns": [], "error": summary}
 
         # 2) LLM 去误报 + 业务判定 + 结构化
-        vulns = self._llm_judge(summary, source_path, task_input)
+        vulns = await self._llm_judge(summary, source_path, task_input)
         self.think(f"白盒审计判定: {len(vulns)} 条真实漏洞（已去误报）")
 
         # 3) 沉淀 code_audit_profile 进记忆（同源码库下次直接复用）
@@ -70,7 +72,7 @@ class CodeAuditorAgent(BaseAgent):
 
         return {"vulns": vulns, "raw_summary": summary}
 
-    def _llm_judge(self, summary: str, source_path: str,
+    async def _llm_judge(self, summary: str, source_path: str,
                   task_input: dict) -> list[dict]:
         """LLM 综合判定：去误报 + 业务上下文 + 修复建议。"""
         ctx = task_input.get("business_context", "")
@@ -90,7 +92,7 @@ class CodeAuditorAgent(BaseAgent):
             f"\"line\":0,\"detail\":\"\",\"payload\":\"修复建议\",\"evidence\":\"\","
             f"\"confidence\":0-1,\"status\":\"keep\"}}。只输出 JSON 数组。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},
         ])

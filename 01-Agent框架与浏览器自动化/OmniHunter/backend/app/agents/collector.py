@@ -34,9 +34,13 @@ class CollectorAgent(BaseAgent):
     def __init__(self, run_id: str, target: Any = None,
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None,
+                 memory: Any = None,
                  on_event: Callable[..., None] | None = None,
+                 router: Any = None,
+                 pruning: Any = None,
                  settings: Settings | None = None):
-        super().__init__(run_id, target=target, llm=llm, tools=tools, on_event=on_event)
+        super().__init__(run_id, target=target, llm=llm, tools=tools, memory=memory,
+                         on_event=on_event, router=router, pruning=pruning)
         self.settings = settings or get_settings()
 
     async def run(self, task_input: dict) -> dict:
@@ -79,7 +83,7 @@ class CollectorAgent(BaseAgent):
         if method == "nl_intent" and query:
             # all 模式以 FOFA 语法为基准（各平台翻译损耗大，保持确定性）
             target_for_nl = "fofa" if len(platforms) > 1 else platforms[0]
-            translated = await asyncio.to_thread(self._nl_to_query, query, target_for_nl)
+            translated = await self._nl_to_query(query, target_for_nl)
             if translated:
                 query = translated
             self.think(f"自然语言意图转 {target_for_nl.upper()} 语法: {query}")
@@ -103,13 +107,13 @@ class CollectorAgent(BaseAgent):
                                                 by_platform.items()) or "0 条"))
         return items
 
-    def _nl_to_query(self, intent: str, platform: str) -> str:
+    async def _nl_to_query(self, intent: str, platform: str) -> str:
         if not self.llm:
             return intent  # 无 LLM 时原样使用（用户可直接填平台语法）
         hint = _NL_SYNTAX_HINTS.get(platform, _NL_SYNTAX_HINTS["fofa"])
-        return self.llm.chat([
+        return (await self.llm.achat([
             {"role": "system",
              "content": f"把用户的自然语言资产搜集意图翻译为{hint}。"
                         "只输出语法本身，不要解释。"},
             {"role": "user", "content": intent},
-        ]).strip()
+        ])).strip()

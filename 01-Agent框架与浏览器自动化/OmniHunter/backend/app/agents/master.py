@@ -36,10 +36,12 @@ class MasterAgent(BaseAgent):
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None, memory: Any = None,
                  on_event: Callable[..., None] | None = None,
+                 router: Any = None, pruning: Any = None,
                  bus: AgentMessageBus | None = None,
                  max_extra_rounds: int = 1):
         super().__init__(run_id, target=target, llm=llm, tools=tools,
-                         memory=memory, on_event=on_event)
+                         memory=memory, on_event=on_event,
+                         router=router, pruning=pruning)
         self.bus = bus
         self.max_extra_rounds = max_extra_rounds
 
@@ -50,7 +52,7 @@ class MasterAgent(BaseAgent):
         executed_specialists: list[str] = []
 
         # 1) LLM 拆解：选哪些专精 agent 上场
-        plan = self._plan_workers(url, model)
+        plan = await self._plan_workers(url, model)
         worker_types = plan.get("workers", [])
         self.think(f"Master 拆解：首轮调度 {worker_types}")
 
@@ -61,7 +63,7 @@ class MasterAgent(BaseAgent):
 
         # 3) 追加轮：LLM 判断是否需要补 Worker（如发现疑似 SQLi 追加 error-based）
         for r_idx in range(self.max_extra_rounds):
-            extra = self._decide_extra_workers(round_vulns, executed_specialists)
+            extra = await self._decide_extra_workers(round_vulns, executed_specialists)
             if not extra:
                 self.think(f"追加第 {r_idx+1} 轮：无需补充 Worker")
                 break
@@ -87,7 +89,7 @@ class MasterAgent(BaseAgent):
         return {"vulns": deduped, "executed_specialists": executed_specialists,
                 "bus_history": bus_history}
 
-    def _plan_workers(self, url: str, model: dict) -> dict:
+    async def _plan_workers(self, url: str, model: dict) -> dict:
         """LLM 基于目标 + 业务模型选首轮上场的专精 agent。"""
         available = list(SPECIALISTS.keys())
         prompt = (
@@ -103,7 +105,7 @@ class MasterAgent(BaseAgent):
             f"输出 JSON: {{\"workers\": [\"sqli\",\"xss\"],"
             f"\"reason\": \"选择依据\"}}。只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])
@@ -143,7 +145,7 @@ class MasterAgent(BaseAgent):
                 all_vulns.extend(r.get("vulns", []))
         return all_vulns
 
-    def _decide_extra_workers(self, last_vulns: list[dict],
+    async def _decide_extra_workers(self, last_vulns: list[dict],
                                executed: list[str]) -> list[str]:
         """LLM 基于上一轮结果判断是否补 Worker。"""
         if not last_vulns:
@@ -159,7 +161,7 @@ class MasterAgent(BaseAgent):
             f"判定: 已执行过的不再调；发现疑似但未确认的 vuln_type 可追加。\n"
             f"输出 JSON: {{\"extra\": [\"sqli\"],\"reason\":\"\"}}。只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])

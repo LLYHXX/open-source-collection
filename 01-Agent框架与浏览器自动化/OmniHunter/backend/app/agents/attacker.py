@@ -119,7 +119,7 @@ class AttackerAgent(BaseAgent):
                     self.think(f"[规则层] 基线参数提取异常: {exc}")
 
             # ② 隐形参数提取（基于真实流量）
-            hidden = self._extract_hidden_params(baseline_for_llm, model, round_idx,
+            hidden = await self._extract_hidden_params(baseline_for_llm, model, round_idx,
                                                  pre_extracted=extracted_params_round)
             self.think(f"提取隐形参数: {hidden}")
 
@@ -136,7 +136,7 @@ class AttackerAgent(BaseAgent):
             tree_replay_results = await self._replay_mutations(tree_mutations)
 
             # ③-2 LLM 补充变异（仅针对固定变异未覆盖到的方向）
-            llm_mutations = self._mutate_requests(
+            llm_mutations = await self._mutate_requests(
                 baseline_for_llm, hidden, model, round_idx,
                 pre_fixed=fixed_mutations, pre_tree=tree_mutations)
             replay_results_llm = await self._replay_mutations(llm_mutations)
@@ -151,7 +151,7 @@ class AttackerAgent(BaseAgent):
             self._update_pruning_stats(tree_mutations, tree_replay_results)
 
             # ④ 异常观测 → 规则推测 + 漏洞（先用小模型初筛，可疑再大模型判定，省 token）
-            new_rules, round_vulns = self._observe_anomalies(
+            new_rules, round_vulns = await self._observe_anomalies(
                 baseline_for_llm, replay_results, hidden, model, round_idx)
             all_vulns.extend(round_vulns)
             rules_history.extend(new_rules)
@@ -311,7 +311,7 @@ class AttackerAgent(BaseAgent):
         MVP 阶段留出等待窗口给外部代理或人工触发流量。
         """
         port = 8082 + round_idx
-        start = self.tools.execute("start_traffic_capture",
+        start = await self.tools.aexecute("start_traffic_capture",
                                    {"proxy_port": port, "duration": 30})
         self.tool_call("start_traffic_capture", {"proxy_port": port}, start)
         if "已开启" not in start:
@@ -319,9 +319,9 @@ class AttackerAgent(BaseAgent):
         # 等待基线录制窗口（实际部署应驱动 browser 正常遍历业务流程）
         self.think("等待基线录制中（实际部署应驱动 browser 正常遍历业务流程）")
         await asyncio.sleep(3)
-        stop = self.tools.execute("stop_traffic_capture", {})
+        stop = await self.tools.aexecute("stop_traffic_capture", {})
         self.tool_call("stop_traffic_capture", {}, stop)
-        traffic = self.tools.execute("get_captured_traffic", {"max_items": 30})
+        traffic = await self.tools.aexecute("get_captured_traffic", {"max_items": 30})
         self.tool_call("get_captured_traffic", {}, traffic[:1000])
         return traffic
 
@@ -337,7 +337,7 @@ class AttackerAgent(BaseAgent):
         return "\n".join(lines)
 
     # ===== ② 隐形参数提取 =====
-    def _extract_hidden_params(self, baseline: str, model: dict,
+    async def _extract_hidden_params(self, baseline: str, model: dict,
                                round_idx: int,
                                pre_extracted: dict | None = None) -> dict:
         """隐形参数提取：规则层先筛+小模型语义分类，再调 LLM 聚焦隐形参数（省 token）。"""
@@ -384,7 +384,7 @@ class AttackerAgent(BaseAgent):
             f"\"header/cookie/body/query\",\"value_pattern\":\"\",\"risk\":\"\"}}]}}。"
             f"只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])
@@ -523,7 +523,7 @@ class AttackerAgent(BaseAgent):
                 pass
 
     # ===== ③ 参数变异 =====
-    def _mutate_requests(self, baseline: str, hidden: dict,
+    async def _mutate_requests(self, baseline: str, hidden: dict,
                          model: dict, round_idx: int,
                          pre_fixed: list[dict] | None = None,
                          pre_tree: list[dict] | None = None) -> list[dict]:
@@ -561,7 +561,7 @@ class AttackerAgent(BaseAgent):
             f"\"body\":\"\",\"mutation_type\":\"\",\"intent\":\"\",\"branch_id\":\"\"}}。"
             f"最多 3 条。只输出 JSON 数组。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},
         ])
@@ -610,7 +610,7 @@ class AttackerAgent(BaseAgent):
         return results
 
     # ===== ④ 异常观测 → 规则推测 + 漏洞 =====
-    def _observe_anomalies(self, baseline: str, replay_results: list[dict],
+    async def _observe_anomalies(self, baseline: str, replay_results: list[dict],
                            hidden: dict, model: dict,
                            round_idx: int) -> tuple[list[dict], list[dict]]:
         """先用小模型初筛，只有可疑才调大模型 finalize（省 token）。"""
@@ -667,7 +667,7 @@ class AttackerAgent(BaseAgent):
             f"\"title\":\"\",\"detail\":\"\",\"payload\":\"\",\"evidence\":\"\","
             f"\"repro\":\"\",\"confidence\":0-1,\"branch_id\":\"\"}}]}}。只输出 JSON。"
         )
-        out = self.llm.chat_json([
+        out = await self.llm.achat_json([
             {"role": "system", "content": "你只输出 JSON。"},
             {"role": "user", "content": prompt},
         ])

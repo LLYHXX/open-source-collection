@@ -51,6 +51,14 @@ class ToolRegistry:
         except Exception as e:  # noqa: BLE001
             return f"工具执行错误[{name}]: {e}"
 
+    async def aexecute(self, name: str, args: dict | None = None) -> str:
+        """异步执行：把同步工具丢进线程池，避免阻塞事件循环。
+
+        工具本体（nmap/httpx 子进程、MCP 桥接等）仍是同步实现，
+        统一在线程里跑，uvicorn 主循环保持响应。
+        """
+        return await asyncio.to_thread(self.execute, name, args)
+
     def names(self) -> list[str]:
         return list(self._tools.keys())
 

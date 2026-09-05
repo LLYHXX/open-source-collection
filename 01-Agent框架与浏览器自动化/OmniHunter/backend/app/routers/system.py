@@ -18,12 +18,19 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent  # backend/
 _REPO_HINTS = ["https://pypi.tuna.tsinghua.edu.cn/simple"]
 
 
+@router.get("/tokens")
+def token_stats(days: int = 30):
+    """Token 消耗统计：总量 + 按模型明细（次数/输入/输出/平均每次）。"""
+    from ..core.token_stats import stats
+    return StandardResponse(success=True, data=stats(days))
+
+
 def _git_root() -> str:
     """从 backend 目录向上找 git 仓库根。"""
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            cwd=str(_BACKEND_DIR), capture_output=True, text=True, timeout=10,
+            cwd=str(_BACKEND_DIR), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         return out.stdout.strip() or str(_BACKEND_DIR)
     except Exception:  # noqa: BLE001 非 git 仓库或无 git
@@ -36,7 +43,7 @@ def version():
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=_git_root(), capture_output=True, text=True, timeout=10,
+            cwd=_git_root(), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         commit = out.stdout.strip()
     except Exception:  # noqa: BLE001
@@ -61,7 +68,7 @@ def update():
     try:
         out = subprocess.run(
             ["git", "-C", root, "pull", "--ff-only"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
         )
         logs.append(f"[git pull]\n{(out.stdout or '') + (out.stderr or '')}".strip())
     except subprocess.TimeoutExpired:
@@ -78,7 +85,7 @@ def update():
                  "--target", str(_BACKEND_DIR / "vendor"),
                  "-i", _REPO_HINTS[0]],
                 cwd=str(_BACKEND_DIR),
-                capture_output=True, text=True, timeout=300,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
             )
             tail = (out.stdout or "")[-1500:] + (out.stderr or "")[-800:]
             logs.append(f"[pip install]\n{tail}".strip())

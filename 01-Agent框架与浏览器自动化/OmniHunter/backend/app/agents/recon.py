@@ -25,19 +25,21 @@ class ReconAgent(BaseAgent):
     def __init__(self, run_id: str, target: Any = None,
                  llm: LLMClient | None = None,
                  tools: ToolRegistry | None = None, memory: Any = None,
-                 on_event: Callable[..., None] | None = None):
+                 on_event: Callable[..., None] | None = None,
+                 router: Any = None, pruning: Any = None):
         super().__init__(run_id, target=target, llm=llm, tools=tools,
-                         memory=memory, on_event=on_event)
+                         memory=memory, on_event=on_event,
+                         router=router, pruning=pruning)
 
     async def run(self, task_input: dict) -> dict:
         url = self.target.url
         self.think(f"侦察目标 {url}")
 
-        httpx_out = self.tools.execute("httpx_probe", {"url": url})
+        httpx_out = await self.tools.aexecute("httpx_probe", {"url": url})
         self.tool_call("httpx_probe", {"url": url}, httpx_out)
 
         host = getattr(self.target, "host", "") or _host(url)
-        nmap_out = self.tools.execute("nmap_scan", {"host": host})
+        nmap_out = await self.tools.aexecute("nmap_scan", {"host": host})
         self.tool_call("nmap_scan", {"host": host}, nmap_out)
 
         intel = self.memory.summary(url) if self.memory else "无记忆系统"

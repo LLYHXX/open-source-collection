@@ -15,7 +15,7 @@ def scan(host: str, ports: str = "", timeout: int = 120) -> str:
         cmd += ["--top-ports", "200"]
     cmd.append(host)
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return (out.stdout or out.stderr or "").strip() or "nmap 无输出"
     except subprocess.TimeoutExpired:
         return f"nmap 超时({timeout}s)"
