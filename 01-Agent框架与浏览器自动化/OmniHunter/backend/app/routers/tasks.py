@@ -180,12 +180,33 @@ async def start_task(task_id: str, db: Session = Depends(get_db)):
     # 秒退友好提示，不干等。
     if task.mode != "engine":
         from ..config import get_settings
-        if not (get_settings().llm_api_key or "").strip():
+        _st = get_settings()
+        if not (_st.llm_api_key or "").strip():
             raise HTTPException(
                 400,
                 "未配置 LLM_API_KEY：Worker 挖洞必须调用大模型。"
-                "请编辑 backend/.env 填写 LLM_API_KEY 后重启，"
-                "或在设置页配置模型；纯引擎模式(mode=engine)可不配。")
+                "请在设置页配置模型，或编辑 backend/.env 后重启；"
+                "纯引擎模式(mode=engine)可不配。")
+        # 廉价连通性检查：key 过期/无效（401）或地址不通时立即提示，
+        # 避免几百个目标逐个 LLM 401 失败白等。
+        try:
+            from ..core.llm import LLMClient
+            _cli = LLMClient(settings=_st)
+            await asyncio.wait_for(
+                asyncio.to_thread(_cli.chat,
+                                  [{"role": "user", "content": "hi"}], 0),
+                timeout=20)
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                400, "LLM 连通性检查超时（20 秒）：请检查 LLM_BASE_URL 网络或代理设置")
+        except Exception as e:  # noqa: BLE001
+            _m = str(e)
+            _low = _m.lower()
+            if "401" in _m or "auth" in _low or "令牌" in _m or "api key" in _low or "unauthorized" in _low:
+                raise HTTPException(
+                    400, f"LLM API Key 无效或已过期（401）：请在设置页更新 Key。原始错误：{_m[:120]}")
+            raise HTTPException(
+                400, f"LLM 连接失败，请检查设置页模型配置（Base URL/模型名/网络）：{_m[:120]}")
     task.status = "collecting"
     task.error = ""
     db.commit()
